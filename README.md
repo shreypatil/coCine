@@ -2,7 +2,7 @@
 
 Watch a film with friends, in sync, over a peer-to-peer connection.
 
-Phases 0 through 7 of the [build plan](#status) are implemented: mpv is driven
+Phases 0 through 8 of the [build plan](#status) are implemented: mpv is driven
 over JSON IPC inside an Electron shell, a room of clients holds synchronised
 playback inside a 100 ms budget, the film is distributed peer to peer over
 BitTorrent while it plays, voice runs as a WebRTC mesh, voice falls back to a
@@ -44,6 +44,15 @@ npm run phase0    # mpv control: event rate, command latency, seek accuracy
 npm run phase1    # five clients, drift measured against a 100 ms budget
 npm run phase4    # a swarm fetching a film: readiness gate, sync during transfer
 npm run phase7    # relay mode carrying a film, and what a session actually costs
+npm run nat-check # what this machine's network will do to a peer connection
+```
+
+Building installers:
+
+```bash
+node scripts/fetch-mpv.mjs win   # only needed for Windows and macOS
+COCINE_DEFAULT_SERVER=wss://your-server npm run dist:linux
+COCINE_DEFAULT_SERVER=wss://your-server npm run dist:win
 ```
 
 The phase scripts are pass/fail against the plan's exit criteria and exit
@@ -332,6 +341,50 @@ COCINE_R2_BUCKET=cocine COCINE_R2_KEY_ID=... COCINE_R2_SECRET=... \
 Without these the server says so at startup and the host is offered no toggle at
 all, rather than one that fails when pressed.
 
+## Installing it
+
+Three targets, built with electron-builder into `release/`.
+
+| Platform | Artifact | mpv |
+|---|---|---|
+| Linux | `.deb`, AppImage | **not bundled** — the `.deb` declares `Depends: mpv`; the AppImage relies on PATH |
+| Windows | NSIS `.exe` | bundled, ~120 MB, fetched by `scripts/fetch-mpv.mjs` |
+| macOS | `.dmg` | bundled — but the build needs an actual Mac |
+
+The asymmetry is deliberate. On Linux the package manager installs mpv better
+than we can, and shipping a second copy would be both larger and wrong. Windows
+and macOS have no such mechanism, so a copy travels with the application.
+
+When mpv is nowhere to be found the application says so and names the install
+command for that platform, instead of failing with a spawn error against a
+window that never appears. `COCINE_MPV` overrides the search for an unusual
+install.
+
+### The server address is baked in
+
+`COCINE_DEFAULT_SERVER` at build time decides where an installed copy looks for
+rooms, so a friend needs no setup at all. It is a default, not a lock: the
+settings field still overrides it, and `COCINE_SERVER` overrides it at runtime.
+Leave it unset and you get a development build pointing at localhost.
+
+### Updates
+
+Checked on launch, downloaded in the background, installed on quit — nothing
+interrupts a film. What that actually does differs by platform, because these
+builds are unsigned:
+
+- **Windows** and the **Linux AppImage** update normally. SmartScreen warns on
+  first install; it does not interfere afterwards.
+- The **`.deb`** does not self-update. `apt` owns that copy, which is correct.
+- **macOS cannot update unsigned at all** — Squirrel.Mac verifies the signature
+  before swapping the bundle, so the check is skipped rather than downloading
+  something that can never be applied. macOS users reinstall by hand until there
+  is a Developer ID certificate.
+
+Signing is deferred deliberately: among friends an unsigned build is tolerable,
+and certificates have lead times better spent once strangers are installing it.
+The `mac` and `win` sections of `electron-builder.yml` are where that switches on.
+
 ## Keyboard
 
 | Key | |
@@ -406,7 +459,7 @@ which `time-pos` reads stale and the engine corrects against a phantom drift.
 | 05 | Voice | **done** — mesh, push-to-talk, mute/deafen, advisory host mute |
 | 06 | NAT hardening | **done on this machine** — TURN credentials, plane split, forced-relay test; success rate needs real networks |
 | 07 | Relay mode | **done on this machine** — host toggle, signed URLs, film delivered with no peer connection; measured $0.02 a session on R2 |
-| 08 | Packaging | not started — installers, signing, updates |
+| 08 | Packaging | **done for Windows and Linux** — installers, bundled mpv, background updates; macOS needs a Mac to build |
 | 09 | Interface overhaul | not started — **blocked on your list of issues from manual testing** |
 
 Deferred work, and the two things that need a second machine, are listed in

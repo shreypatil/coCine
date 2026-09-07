@@ -1,13 +1,17 @@
 {
   "name": "@cocine/desktop",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "start": "electron-vite preview"
+    "start": "electron-vite preview",
+    "dist": "electron-vite build && electron-builder --config electron-builder.yml",
+    "dist:linux": "electron-vite build && electron-builder --linux --config electron-builder.yml",
+    "dist:win": "electron-vite build && electron-builder --win --config electron-builder.yml",
+    "dist:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml"
   },
   "dependencies": {
     "@cocine/client": "*",
@@ -17,10 +21,17 @@
     "ws": "^8.18.0",
     "zod": "^4.5.4",
     "webtorrent": "^3.0.21",
-    "node-datachannel": "^0.33.2"
+    "node-datachannel": "^0.33.2",
+    "electron-updater": "^6.8.9"
   },
   "devDependencies": {
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
-  }
+  },
+  "description": "Watch a film with friends, in sync",
+  "author": {
+    "name": "coCine"
+  },
+  "homepage": "https://github.com/shreypatil/coCine",
+  "desktopName": "cocine.desktop"
 }

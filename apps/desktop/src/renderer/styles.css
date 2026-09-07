@@ -358,3 +358,35 @@ body {
 }
 .share-mode .sel:focus-visible { outline: 2px solid var(--accent, #7c6cff); outline-offset: 1px; }
 .quiet.small { font-size: 11px; line-height: 1.45; margin: 0; }
+
+/* Shown when the application cannot run at all — currently only a missing mpv.
+   Deliberately not dismissible: there is nothing behind it worth reaching. */
+.wall {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: rgba(9, 10, 16, 0.94);
+  backdrop-filter: blur(6px);
+}
+.wall-card {
+  max-width: 34rem;
+  background: var(--panel, #161923);
+  border: 1px solid var(--line, #2c3040);
+  border-radius: 14px;
+  padding: 26px 28px;
+}
+.wall-card h2 { margin: 0 0 14px; font-size: 17px; line-height: 1.4; font-weight: 600; }
+.wall-card p { margin: 0 0 10px; font-size: 13px; line-height: 1.55; }
+.wall-cmd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  background: var(--panel-2, #1c1f2b);
+  border: 1px solid var(--line, #2c3040);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  user-select: text;
+}

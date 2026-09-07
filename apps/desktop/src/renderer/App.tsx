@@ -47,6 +47,7 @@ interface State {
   voiceIce: RTCIceServer[]
   mode: 'p2p' | 'origin'
   originAvailable: boolean
+  startupError: { message: string; howToInstall: string } | null
   fullscreen: boolean
   transfers: TransferProgress[]
   receiving: { name: string; infoHash: string } | null
@@ -308,6 +309,21 @@ export function App (): ReactElement {
             onClick={() => void guard(() => window.cocine.disconnect())}>Leave</button>
         )}
       </header>
+
+      {s?.startupError && (
+        <div className="wall" role="alert" data-testid="startuperror">
+          <div className="wall-card">
+            <h2>{s.startupError.message}</h2>
+            {s.startupError.howToInstall && (
+              <>
+                <p>To fix it:</p>
+                <p className="wall-cmd">{s.startupError.howToInstall}</p>
+              </>
+            )}
+            <p className="quiet">Restart coCine once it is installed.</p>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="banner" role="alert" data-testid="banner">

@@ -10,6 +10,8 @@ import { createHandlers, type RoomLike } from './handlers.js'
 import { IdentityStore, identityPathFor } from './identity.js'
 import { FilmStore, TransferManager, OriginTransfer, type MediaTransport } from '@cocine/client'
 import { sourceId, type Media } from '@cocine/protocol'
+import { MpvNotFoundError } from '@cocine/player'
+import { startUpdates } from './updates.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -41,6 +43,7 @@ let transfer: MediaTransport | null = null
 /** Which transport `transfer` currently is, so a mode change rebuilds it. */
 let transferMode: 'p2p' | 'origin' | null = null
 let sharedId: string | null = null
+let startupError: { message: string; howToInstall: string } | null = null
 let receiving: { name: string; infoHash: string } | null = null
 
 /**
@@ -112,7 +115,8 @@ const state = (): Record<string, unknown> => {
     receiving,
     roomTorrent: room?.media?.source?.kind === 'p2p' ? room.media.source : null,
     mode: room?.mode ?? 'p2p',
-    originAvailable: room?.originAvailable ?? false
+    originAvailable: room?.originAvailable ?? false,
+    startupError
   }
 }
 
@@ -155,8 +159,33 @@ function createWindow (): void {
   if (devUrl) void mainWin.loadURL(devUrl)
   else void mainWin.loadFile(join(__dirname, '../renderer/index.html'))
 
+  // Fire and forget: an update check must never delay the window appearing, and
+  // never prevent a film being watched if it fails.
+  void (async () => {
+    const { autoUpdater } = await import('electron-updater')
+    const outcome = await startUpdates({
+      updater: autoUpdater as never,
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      log: m => console.log(m),
+      getWindow: () => mainWin
+    })
+    if (!outcome.checked) console.log(`[update] not checking: ${outcome.reason}`)
+  })().catch(err => console.log('[update] skipped:', String(err)))
+
   video = new VideoWindow(mainWin)
-  void video.start().then(async () => {
+  void video.start().catch((err: unknown) => {
+    // Without mpv there is no application, so this is reported as a wall rather
+    // than a dismissible banner. It is the first thing someone who installed
+    // from a link will hit if their platform did not bring mpv with it.
+    startupError = err instanceof MpvNotFoundError
+      ? { message: err.message, howToInstall: err.howToInstall }
+      : { message: `The video player could not start: ${String(err)}`, howToInstall: '' }
+    console.error('[startup]', startupError.message, startupError.howToInstall)
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('state', state())
+    return null
+  }).then(async started => {
+    if (!started) return
     // --film=<path> skips the dialog. Useful for manual testing, and the only
     // way to script a launch that ends with something on screen.
     const arg = process.argv.find(a => a.startsWith('--film='))

@@ -18,7 +18,11 @@
     "phase1:heavy": "tsx apps/server/scripts/drift-test.ts --peers=5 --film=300 --duration=150 --events=10 --latency=40 --jitter=15 --skew=37000 --res=1080",
     "test:app": "vitest run --config vitest.e2e.config.ts",
     "phase4": "tsx apps/server/scripts/transfer-test.ts",
-    "phase7": "tsx apps/server/scripts/relay-cost.ts"
+    "phase7": "tsx apps/server/scripts/relay-cost.ts",
+    "nat-check": "tsx apps/server/scripts/nat-check.ts",
+    "dist:linux": "npm run dist:linux --workspace @cocine/desktop",
+    "dist:win": "npm run dist:win --workspace @cocine/desktop",
+    "fetch-mpv": "node scripts/fetch-mpv.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
@@ -26,7 +30,9 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@types/ws": "^8.18.1",
-    "electron": "^44.2.0",
+    "electron": "44.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-updater": "^6.8.9",
     "electron-vite": "^5.0.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

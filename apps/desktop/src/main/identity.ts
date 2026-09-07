@@ -18,7 +18,24 @@ export interface Identity {
   lastCode: string | null
 }
 
-export const DEFAULT_SERVER = 'ws://127.0.0.1:8787'
+/**
+ * Where the application looks for a room when nobody has said otherwise.
+ *
+ * Baked in at build time from `COCINE_DEFAULT_SERVER`, so a release points at
+ * the instance its users are meant to join and a friend needs no setup at all.
+ * Unset it and this is a development build talking to a local server.
+ *
+ * `COCINE_SERVER` overrides it at runtime, and the settings field overrides both
+ * -- the server address is never hard-coded beyond reach, so anyone technical
+ * can point the same build at their own instance.
+ */
+declare const __COCINE_DEFAULT_SERVER__: string | undefined
+
+export const DEFAULT_SERVER: string =
+  process.env.COCINE_SERVER ??
+  (typeof __COCINE_DEFAULT_SERVER__ === 'string' && __COCINE_DEFAULT_SERVER__
+    ? __COCINE_DEFAULT_SERVER__
+    : 'ws://127.0.0.1:8787')
 
 /** A sensible first guess, so nobody has to type their own name on first run. */
 function suggestedName (): string {

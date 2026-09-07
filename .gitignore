@@ -7,6 +7,14 @@ dist/
 out/
 *.tsbuildinfo
 
+# Bundled mpv binaries, fetched by scripts/fetch-mpv.mjs at build time. Over a
+# hundred megabytes per platform, and reproducible, so they are not committed.
+apps/desktop/resources/mpv/*/*
+!apps/desktop/resources/mpv/*/.gitkeep
+
+# Built installers.
+release/
+
 # Generated test films and scratch fixtures. Regenerated on first run; some are
 # hundreds of megabytes.
 .fixtures/

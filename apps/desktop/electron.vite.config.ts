@@ -9,6 +9,11 @@ const bundleWorkspace = { exclude: ['@cocine/client', '@cocine/player', '@cocine
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin(bundleWorkspace)],
+    // Baked in so a release points at the instance its users should join. A
+    // development build leaves it empty and falls back to localhost.
+    define: {
+      __COCINE_DEFAULT_SERVER__: JSON.stringify(process.env.COCINE_DEFAULT_SERVER ?? '')
+    },
     build: { rollupOptions: { input: resolve(here, 'src/main/index.ts') } }
   },
   preload: {

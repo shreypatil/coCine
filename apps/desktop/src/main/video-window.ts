@@ -1,5 +1,5 @@
 import { BrowserWindow, screen } from 'electron'
-import { EmbeddedMpv, ExternalMpv } from '@cocine/player'
+import { EmbeddedMpv, ExternalMpv, locateMpv } from '@cocine/player'
 
 export interface Rect { x: number; y: number; width: number; height: number }
 
@@ -16,6 +16,14 @@ export interface Rect { x: number; y: number; width: number; height: number }
  * can be drawn on top of the video. Controls sit beside and beneath it, never
  * over it. The layout is built around that rather than fighting it.
  */
+/**
+ * The mpv to run. Resolved once per launch rather than per player, so a missing
+ * mpv is reported the same way whichever path created the player.
+ */
+function mpvBinary (): string {
+  return locateMpv({ resourcesPath: process.resourcesPath })
+}
+
 export class VideoWindow {
   private win: BrowserWindow | null = null
   player: EmbeddedMpv | ExternalMpv | null = null
@@ -28,7 +36,7 @@ export class VideoWindow {
     // application can be driven end to end without anything reaching a display.
     // Everything above this class sees the same PlayerController either way.
     if (process.env.COCINE_HEADLESS) {
-      const player = new ExternalMpv({ headless: true })
+      const player = new ExternalMpv({ headless: true, binary: mpvBinary() })
       await player.start()
       this.player = player
       return player
@@ -51,7 +59,7 @@ export class VideoWindow {
     })
     await this.win.loadURL('data:text/html,<body style="margin:0;background:#000"></body>')
 
-    const player = new EmbeddedMpv(this.win.getNativeWindowHandle())
+    const player = new EmbeddedMpv(this.win.getNativeWindowHandle(), { binary: mpvBinary() })
     await player.start()
     this.player = player
 

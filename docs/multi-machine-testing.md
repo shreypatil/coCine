@@ -32,6 +32,21 @@ other types it in and presses **Join**.
 
 Then one person opens a film. The other should start fetching it automatically.
 
+### Check each machine's network first
+
+```bash
+npm run nat-check
+```
+
+Thirty seconds per machine, and it says what that network will do to a peer
+connection: whether IPv6 works, whether the IPv4 NAT keeps one mapping per socket
+(punchable) or a different one per destination (not), and whether the line is
+behind carrier-grade NAT. Run it on both machines before a session and compare —
+**connectivity is a property of the pair**, so neither result means much alone.
+
+It is also the cheapest way to feed the phase 6 connection-success-rate
+measurement: record both outputs alongside whether the film actually transferred.
+
 ### Adding a relay (optional on a LAN, needed across the internet)
 
 Voice between two people whose routers both refuse direct connections needs a

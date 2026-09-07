@@ -32,7 +32,8 @@ const STATE = {
   transfers: [] as unknown[], receiving: null as unknown,
   phase: 'playing', waitForLatecomers: true, transferStatus: null as unknown,
     memberId: 'me',
-    mode: 'p2p', originAvailable: false, voiceIce: [] as unknown[]
+    mode: 'p2p', originAvailable: false, voiceIce: [] as unknown[],
+    startupError: null as unknown
 }
 
 beforeAll(async () => {
@@ -771,6 +772,37 @@ describe('choosing how the film is shared', () => {
     await open()
     await push({ isHost: false, mode: 'origin' })
     expect(await page.textContent('[data-testid="modenote"]')).toContain('through the server')
+    await page.close()
+  })
+})
+
+describe('when the application cannot run at all', () => {
+  it('replaces the interface with an explanation and how to fix it', async () => {
+    await open()
+    await push({
+      startupError: {
+        message: 'coCine needs the mpv media player, and could not find it.',
+        howToInstall: 'brew install mpv'
+      }
+    })
+    const wall = await page.textContent('[data-testid="startuperror"]')
+    expect(wall).toContain('mpv media player')
+    expect(wall).toContain('brew install mpv')
+    await page.close()
+  })
+
+  it('is not dismissible, because there is nothing behind it worth reaching', async () => {
+    await open()
+    await push({ startupError: { message: 'no mpv', howToInstall: 'install it' } })
+    // The ordinary error banner has a Dismiss button; this deliberately does not.
+    expect(await page.locator('[data-testid="startuperror"] button').count()).toBe(0)
+    await page.close()
+  })
+
+  it('shows nothing when the application started normally', async () => {
+    await open()
+    await push({ startupError: null })
+    expect(await page.locator('[data-testid="startuperror"]').count()).toBe(0)
     await page.close()
   })
 })

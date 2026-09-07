@@ -3,7 +3,7 @@
 A running list of what is deferred, blocked, or waiting on something only you can
 do. Everything here was a deliberate decision to postpone, not an oversight.
 
-Last updated after phase 7 (relay mode).
+Last updated after phase 8 (packaging).
 
 ---
 
@@ -58,6 +58,27 @@ has never touched R2 itself. Before relying on it:
 R2 has no free-egress equivalent to guess at, so the measured figures should hold,
 but they are measured against MinIO's behaviour and R2's own request accounting
 may differ.
+
+### A macOS build, which needs a Mac
+
+Windows and Linux installers are built and verified. macOS cannot be built from
+Linux at all — the `.dmg` target needs macOS. Everything is configured for it, so
+on a Mac `npm run dist:mac` should work, but two parts have never run:
+
+- bundling mpv for macOS (`node scripts/fetch-mpv.mjs mac --from "$(brew --prefix)/bin/mpv"`),
+  including whether its dylib dependencies resolve inside the app bundle
+- the `.dmg` itself
+
+### A public signalling server for the default build
+
+An installed copy points at whatever `COCINE_DEFAULT_SERVER` was set to at build
+time. Until an instance is running somewhere your friends can reach, a release
+build has nowhere to point, and the phase 8 exit criterion — a friend installs
+from a link and joins a room without being told anything — cannot be met however
+good the installer is.
+
+The pieces are all configurable and none of them are hard-coded; what is missing
+is a host.
 
 ---
 
@@ -120,11 +141,6 @@ so the app forces `--ozone-platform=x11` and runs under XWayland on a Wayland
 desktop. The cost is native fractional scaling. A real fix needs either a
 different embedding strategy or rendering frames through the app itself.
 
-### Phase 8 — packaging and release
-
-Installers for Windows, macOS and Linux; code signing; an update path. Nothing
-here is started.
-
 ### Phase 9 — interface overhaul
 
 **Blocked on your list of issues from manual testing.** Not only a visual pass —
@@ -151,11 +167,17 @@ The end-to-end relay test therefore uses static credentials. **When you deploy a
 real coturn, confirm the minted credentials are accepted:** `docker logs` should
 show `ALLOCATE processed, success` rather than `401: Unauthorized`.
 
-### IPv6 candidate preference is untested
+### IPv6 is untested, and probably matters more than "loose end" suggests
 
 ICE gathers and prioritises IPv6 on its own and nothing in the code suppresses
-it, but no test asserts an IPv6 path is preferred where one exists, and the
+it, but no test asserts an IPv6 path is actually used where one exists, and a
 loopback test environment cannot produce that situation.
+
+Worth raising in priority: `npm run nat-check` shows this machine has native
+IPv6 with no NAT on that path, and Jio is one of the largest IPv6 deployments
+anywhere. For a user base on Indian ISPs, IPv6 is plausibly the single biggest
+determinant of whether peer-to-peer works at all — and it is the part with no
+coverage.
 
 ### No runtime test that voice ICE reaches the peer connection
 
@@ -164,6 +186,22 @@ pass-through into `RTCPeerConnection` is type-checked. But the renderer test lay
 does not assert the servers actually arrive at the constructor. This is precisely
 the shape of bug that existed until phase 6 — credentials minted correctly and
 then dropped on the floor — so it is worth closing properly.
+
+### The packages declare no licence
+
+The built `.deb` carries `License: unknown`, because the repository has no
+licence file. Worth settling before anything is distributed, and it interacts
+with bundling mpv: mpv is GPLv2+, and while shipping it as a separate executable
+that coCine talks to over a socket is aggregation rather than a derived work,
+the choice of licence for coCine itself is still yours to make.
+
+### Code signing is deferred, and macOS updates depend on it
+
+Per the plan, both certificates wait until strangers are installing it. Two
+consequences to remember when that changes: Windows SmartScreen warns on first
+install, and macOS cannot auto-update at all until there is a Developer ID
+certificate. Both certificates have lead times, so start them before they are
+urgent.
 
 ### Relay mode has no cost ceiling or quota
 

@@ -1,0 +1,91 @@
+appId: net.cocine.app
+productName: coCine
+copyright: Copyright © 2026 coCine
+
+# Without this the scoped workspace name ("@cocine/desktop") ends up in the
+# filename, slash included.
+artifactName: ${productName}-${version}-${arch}.${ext}
+
+directories:
+  output: ../../release
+  buildResources: build
+
+# A placeholder mark, not a designed identity: two playheads in step. Replace
+# build/icon.svg and regenerate icon.png when there is a real one.
+icon: build/icon.png
+
+# The renderer, main and preload bundles, plus package.json. Everything else in
+# the workspace is either bundled by electron-vite already or is source.
+files:
+  - out/**/*
+  - package.json
+
+# mpv, where it has to ship. Linux packages declare it as a dependency instead
+# and this directory is simply absent there. scripts/fetch-mpv.mjs fills it.
+extraResources:
+  - from: resources/mpv/${os}
+    to: mpv
+    filter: ['**/*']
+
+# Unsigned, deliberately. The plan scoped this to friends first: among people who
+# trust you, a right-click-to-open on macOS is tolerable, and certificates have
+# lead times better spent once strangers are installing it. Both stanzas below
+# are what turn signing on when that changes.
+mac:
+  category: public.app-category.entertainment
+  target: [{ target: dmg, arch: [arm64, x64] }]
+  # identity: null keeps electron-builder from picking up a random keychain
+  # certificate and producing a build signed with something unexpected.
+  identity: null
+  # notarize: true, and set APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID
+  notarize: false
+
+win:
+  target: [{ target: nsis, arch: [x64] }]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  # A shortcut is the whole interface for someone who installed from a link.
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
+linux:
+  category: AudioVideo
+  # Derived from the package name this would be "@cocinedesktop", which is not a
+  # legal filename. It is also what users type to launch it.
+  executableName: cocine
+  # Required for .deb, and visible to anyone who inspects the package. Set to the
+  # GitHub noreply address of the repo owner rather than a personal one; change
+  # it if you would rather be reachable directly.
+  maintainer: shreypatil <shreypatil@users.noreply.github.com>
+  # Without this the desktop environment cannot associate the running window
+  # with its launcher entry, so the taskbar shows a generic icon. The name itself
+  # lives in package.json; this is what copies it onto the window class.
+  syncDesktopName: true
+  synopsis: Watch a film with friends, in sync
+  target: [AppImage, deb]
+  description: >
+    coCine plays a film in step across several machines, with voice and chat,
+    distributing the file peer to peer.
+
+deb:
+  # The reason nothing is bundled on Linux: apt installs mpv itself. An AppImage
+  # cannot express this, which is why the AppImage relies on mpv being on PATH
+  # and says so plainly when it is not.
+  depends:
+    - mpv
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libsecret-1-0
+
+publish:
+  provider: github
+  owner: shreypatil
+  repo: coCine
