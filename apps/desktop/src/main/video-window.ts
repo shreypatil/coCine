@@ -1,5 +1,6 @@
 import { BrowserWindow, screen } from 'electron'
 import { EmbeddedMpv, ExternalMpv, locateMpv } from '@cocine/player'
+import { embedWindow, x11EmbeddingPossible } from './x11-embed.js'
 
 export interface Rect { x: number; y: number; width: number; height: number }
 
@@ -28,6 +29,9 @@ export class VideoWindow {
   private win: BrowserWindow | null = null
   player: EmbeddedMpv | ExternalMpv | null = null
   private slot: Rect | null = null
+  /** True once the surface is a real child of the main window, after which its
+   *  coordinates are relative to the parent rather than to the screen. */
+  private embedded = false
 
   constructor (private readonly parent: BrowserWindow) {}
 
@@ -63,6 +67,15 @@ export class VideoWindow {
     await player.start()
     this.player = player
 
+    // Become a real child of the main window rather than a separate top-level
+    // one the window manager ignores. Without this a tiling window manager
+    // leaves the video painted over whatever workspace you switch to, because
+    // an override-redirect window belongs to no workspace at all.
+    if (x11EmbeddingPossible()) {
+      this.embedded = await embedWindow(this.parent, this.win, 0, 0)
+      if (!this.embedded) console.log('[video] could not embed the surface; it stays a separate window')
+    }
+
     // The child has to follow the parent everywhere, or it detaches visibly.
     const follow = (): void => this.reposition()
     this.parent.on('move', follow)
@@ -88,9 +101,13 @@ export class VideoWindow {
     const content = this.parent.getContentBounds()
     // Renderer rects are in CSS pixels; window bounds are in display pixels.
     const scale = screen.getDisplayMatching(content).scaleFactor || 1
+    // Once embedded the window sits inside the parent, so its origin is the
+    // parent's content origin and adding the screen position would double it.
+    const originX = this.embedded ? 0 : content.x
+    const originY = this.embedded ? 0 : content.y
     const bounds = {
-      x: Math.round(content.x + this.slot.x * scale),
-      y: Math.round(content.y + this.slot.y * scale),
+      x: Math.round(originX + this.slot.x * scale),
+      y: Math.round(originY + this.slot.y * scale),
       width: Math.max(1, Math.round(this.slot.width * scale)),
       height: Math.max(1, Math.round(this.slot.height * scale))
     }

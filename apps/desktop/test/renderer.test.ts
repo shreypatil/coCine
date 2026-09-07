@@ -806,3 +806,51 @@ describe('when the application cannot run at all', () => {
     await page.close()
   })
 })
+
+describe('losing the connection', () => {
+  it('says so, rather than showing a drift reading that is no longer true', async () => {
+    await open()
+    await push({ connected: true, connection: 'reconnecting' })
+    expect(await page.textContent('[data-testid="reconnecting"]')).toContain('reconnecting')
+    // The sync pill is meaningless while disconnected; showing it was the bug.
+    expect(await page.locator('[data-testid="drift"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('goes back to showing sync once reconnected', async () => {
+    await open()
+    await push({ connected: true, connection: 'reconnecting' })
+    await push({ connected: true, connection: 'connected' })
+    expect(await page.locator('[data-testid="reconnecting"]').count()).toBe(0)
+    expect(await page.locator('[data-testid="drift"]').count()).toBe(1)
+    await page.close()
+  })
+})
+
+describe('a window a tiling manager made narrow', () => {
+  it('keeps every header control reachable at 305px', async () => {
+    // i3 tiles this window to about 300px wide alongside other windows. At that
+    // size the header used to overflow and put Open film past the right edge:
+    // present in the DOM, impossible to click.
+    await open({ width: 305, height: 506 })
+    await push({ connected: true })
+
+    const header = (await page.locator('[data-testid="header"]').boundingBox())!
+    for (const id of ['open', 'films', 'leave']) {
+      const box = await page.locator(`[data-testid="${id}"]`).boundingBox()
+      if (!box) continue
+      expect(box.x).toBeGreaterThanOrEqual(header.x - 1)
+      expect(box.x + box.width).toBeLessThanOrEqual(header.x + header.width + 1)
+    }
+    await page.close()
+  })
+
+  it('still lays out on one row when there is room', async () => {
+    await open({ width: 1180, height: 800 })
+    await push({ connected: true })
+    const header = (await page.locator('[data-testid="header"]').boundingBox())!
+    expect(header.height).toBeLessThan(60)
+    await page.close()
+  })
+})
+

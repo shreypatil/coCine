@@ -159,6 +159,22 @@ so the app forces `--ozone-platform=x11` and runs under XWayland on a Wayland
 desktop. The cost is native fractional scaling. A real fix needs either a
 different embedding strategy or rendering frames through the app itself.
 
+### Chat in fullscreen does not actually appear yet
+
+The overlay window is built, embedded and covered by seven tests, but it cannot
+be seen: **nothing can be stacked above the mpv surface.** Raising the overlay,
+lowering the video, `setAlwaysOnTop`, `moveTop`, `xdotool windowraise` and a
+direct X `ConfigureWindow` with a forced round trip were all tried against the
+running application, and the video window stays topmost regardless.
+
+That confirms the note already in `video-window.ts`: the one real cost of
+reparenting mpv into its own window is that nothing can be drawn over the video.
+
+The route that avoids the problem entirely is mpv's own OSD, which composites
+text into the video rather than over it — no second window and no stacking. Input
+can still come from the main window, which keeps keyboard focus in fullscreen.
+The `Overlay` component and its tests carry over as the content model.
+
 ### Phase 9 — interface overhaul
 
 Waiting on your list of issues from using it. What follows is what a read of the

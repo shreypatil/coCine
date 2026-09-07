@@ -59,6 +59,15 @@ export class RoomClient extends EventEmitter {
   trackerUrl = ''
 
   /**
+   * Whether the room is actually reachable right now. `reconnecting` is the
+   * state that previously did not exist and was displayed as `connected`.
+   */
+  connection: 'connected' | 'reconnecting' | 'closed' = 'closed'
+  private wantConnection = true
+  private reconnectAttempts = 0
+  private reconnectTimer: NodeJS.Timeout | null = null
+
+  /**
    * ICE servers, as issued by the server at welcome. The two planes are handed
    * out separately and deliberately differ: voice may be given a TURN relay,
    * bulk transfer never is. Relaying a film means the server carries it twice,
@@ -82,6 +91,12 @@ export class RoomClient extends EventEmitter {
       ws.once('error', reject)
     })
     ws.on('message', raw => this.onMessage(String(raw)))
+    // A socket that dies is not an error the caller can await -- it happens an
+    // hour into a film, long after connect() resolved. Without this the room
+    // went on showing a code and a drift reading while nothing worked.
+    ws.on('close', () => this.onSocketClosed(ws))
+    ws.on('error', () => { /* close follows, and is where recovery starts */ })
+    this.connection = 'connected'
     this.send({ t: 'hello', code: this.o.code, name: this.o.name })
 
     // Burst a few pings so the first estimate is usable immediately, then settle.
@@ -128,6 +143,9 @@ export class RoomClient extends EventEmitter {
         this.memberId = msg.memberId
         this.code = msg.code
         this.ice = msg.ice
+        // Remember it for a reconnect: a client that created the room was given
+        // a null code, and rejoining with null would create a second room.
+        this.o.code = msg.code
         this.emit('welcome', msg.code)
         break
       case 'room.state':
@@ -314,8 +332,53 @@ export class RoomClient extends EventEmitter {
   }
 
   async close (): Promise<void> {
+    // Deliberate: stop trying to come back.
+    this.wantConnection = false
+    this.connection = 'closed'
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null }
     for (const t of this.timers) clearInterval(t)
     this.timers = []
     this.ws?.close()
+  }
+
+  /**
+   * The socket went away on its own.
+   *
+   * Reconnecting rejoins by room code, which is what the code is for -- the
+   * server has no session to resume, so this arrives as a new member with a new
+   * id. Chat history and room state come back with the join; playback state is
+   * the server's and is re-anchored on the next schedule.
+   */
+  private onSocketClosed (ws: WebSocket): void {
+    if (ws !== this.ws) return
+    for (const t of this.timers) clearInterval(t)
+    this.timers = []
+    if (!this.wantConnection) {
+      this.connection = 'closed'
+      this.emit('connection', this.connection)
+      return
+    }
+    this.connection = 'reconnecting'
+    this.emit('connection', this.connection)
+    this.scheduleReconnect()
+  }
+
+  private scheduleReconnect (): void {
+    if (this.reconnectTimer) return
+    // Backing off matters when the server is down rather than the network
+    // blipping: a tight retry loop against a dead host is just noise.
+    const delay = Math.min(30_000, 500 * 2 ** Math.min(this.reconnectAttempts, 6))
+    this.reconnectAttempts++
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      if (!this.wantConnection) return
+      void this.connect()
+        .then(() => {
+          this.reconnectAttempts = 0
+          this.emit('connection', this.connection)
+        })
+        .catch(() => { if (this.wantConnection) this.scheduleReconnect() })
+    }, delay)
+    this.reconnectTimer.unref?.()
   }
 }

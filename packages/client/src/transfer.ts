@@ -236,6 +236,21 @@ export class TransferManager extends EventEmitter implements MediaTransport {
     scheduler.update(positionSec)
   }
 
+  /** Drop the torrent so nothing writes into the film's directory any more. */
+  async stop (id: string): Promise<void> {
+    const key = id.toLowerCase()
+    const torrent = this.torrents.get(key)
+    if (!torrent) return
+    this.torrents.delete(key)
+    this.schedulers.delete(key)
+    await new Promise<void>(resolve => {
+      // The files stay on disk; the caller is about to delete the directory
+      // itself, and destroying the store here would race with that.
+      try { torrent.destroy(() => resolve()) } catch { resolve() }
+      setTimeout(resolve, 2000).unref?.()
+    })
+  }
+
   progress (): TransferProgress[] {
     return [...this.torrents.values()].map(t => ({
       infoHash: t.infoHash,

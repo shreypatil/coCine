@@ -31,9 +31,16 @@ export interface VideoLike {
   bounds: () => Rect | null
 }
 
+export interface OverlayLike {
+  setSlot: (slot: Rect) => void
+  focus: () => void
+  releaseFocus: () => void
+}
+
 export interface TransferLike {
   share: (filePath: string) => Promise<MediaSource>
   receive: (source: MediaSource) => Promise<{ path: string }>
+  stop: (id: string) => Promise<void>
   progress: () => TransferProgress[]
 }
 
@@ -86,6 +93,7 @@ export interface HandlerDeps {
   getIdentity: () => Identity
   saveIdentity: (patch: Partial<Omit<Identity, 'id'>>) => Identity
   getTransfer: () => TransferLike | null
+  getOverlay?: () => OverlayLike | null
   getFilmStore: () => FilmStoreLike | null
   setSharedInfoHash?: (infoHash: string | null) => void
   log?: (message: string) => void
@@ -174,7 +182,22 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     'video:slot': (slot: Rect) => {
       const video = deps.getVideo()
       video?.setSlot(slot)
+      // The overlay is positioned inside the video rectangle, so it needs the
+      // same measurement.
+      deps.getOverlay?.()?.setSlot(slot)
       return video?.bounds() ?? null
+    },
+
+    /** Fullscreen only: hand the keyboard to the chat overlay. */
+    'overlay:focus': () => {
+      deps.getOverlay?.()?.focus()
+      return { ok: true }
+    },
+
+    /** And hand it back, or the main window's shortcuts stay dead. */
+    'overlay:releaseFocus': () => {
+      deps.getOverlay?.()?.releaseFocus()
+      return { ok: true }
     },
 
     'file:open': async () => {
@@ -228,6 +251,9 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       const open = deps.getMediaPath()
       const film = (await store.list()).find(f => f.infoHash.toLowerCase() === infoHash.toLowerCase())
       if (film && open && film.path === open) throw new Error('That film is open. Close it first.')
+      // Stop fetching it first. A transfer still running writes bytes back into
+      // the directory while it is being removed, and the film reappears.
+      try { await deps.getTransfer()?.stop(infoHash) } catch { /* stopping is best effort */ }
       await store.remove(infoHash)
       log(`[films] removed ${infoHash}`)
     },

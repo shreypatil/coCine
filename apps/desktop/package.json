@@ -22,7 +22,8 @@
     "zod": "^4.5.4",
     "webtorrent": "^3.0.21",
     "node-datachannel": "^0.33.2",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "x11": "^4.1.0"
   },
   "devDependencies": {
     "react": "^19.2.0",

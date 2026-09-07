@@ -62,6 +62,18 @@ interface Held {
   stopped: boolean
 }
 
+/**
+ * The identity a relayed film is filed under on disk.
+ *
+ * The object key is a path with slashes in it and cannot be a directory name,
+ * so it is flattened. It has to be derived the same way everywhere: the films
+ * list shows what this returns, and deleting a film looks it up by the same
+ * value.
+ */
+export function storeIdFor (key: string): string {
+  return key.replace(/[^A-Za-z0-9]/g, '').slice(-40) || 'origin'
+}
+
 /** Identifies content without hashing gigabytes: the head, the tail and the
  *  size. Two different films sharing all three is not a case worth designing
  *  for; re-uploading a film the sharer already uploaded is. */
@@ -165,7 +177,7 @@ export class OriginTransfer extends EventEmitter implements MediaTransport {
     if (existing) return { path: existing.path }
 
     await this.o.store.ensureRoomFor(source.bytes)
-    const dir = this.o.store.dirFor(source.key.replace(/[^A-Za-z0-9]/g, '').slice(-40) || 'origin')
+    const dir = this.o.store.dirFor(storeIdFor(source.key))
     await mkdir(dir, { recursive: true })
     const name = basename(source.key)
     const path = join(dir, name)
@@ -182,6 +194,16 @@ export class OriginTransfer extends EventEmitter implements MediaTransport {
       lastMeasureMs: Date.now(), lastMeasureBytes: total(ranges), fetching: null, stopped: false
     }
     this.held.set(source.key, held)
+
+    // Recorded so the film appears in the films-on-disk view and can be deleted
+    // from there. Without this a relayed film accumulated gigabytes invisibly:
+    // FilmStore.list() skips any directory with no metadata beside the file.
+    await this.o.store.record({
+      infoHash: storeIdFor(source.key),
+      name,
+      bytes: source.bytes,
+      addedAtMs: Date.now()
+    })
 
     // The head carries the container's metadata; without it nothing can open.
     await this.ensure(held, 0, Math.min(this.chunk, source.bytes))
@@ -379,6 +401,18 @@ export class OriginTransfer extends EventEmitter implements MediaTransport {
     held.playheadSec = positionSec
     if (durationSec > 0) held.durationSec = durationSec
     if (!held.fetching && total(held.ranges) < held.source.bytes) void this.prefetch(held)
+  }
+
+  /** Matches either the object key or the identity the films list shows. */
+  async stop (id: string): Promise<void> {
+    for (const [key, held] of this.held) {
+      if (key !== id && storeIdFor(key) !== id) continue
+      held.stopped = true
+      try { await held.fetching } catch { /* stopping */ }
+      try { await held.handle?.close() } catch { /* going away */ }
+      held.handle = null
+      this.held.delete(key)
+    }
   }
 
   progress (): TransferProgress[] {

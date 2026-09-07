@@ -41,6 +41,13 @@ export interface MediaTransport {
   reportFor (id: string, positionSec: number, durationSec: number): TransferReport | null
   /** Tell the transport where playback is, so it fetches that part first. */
   updatePlayhead (id: string, positionSec: number, durationSec: number): void
+  /**
+   * Stop working on one film and let go of its files.
+   *
+   * Needed before deleting it: a transfer still running will write bytes back
+   * into a directory that is being removed, and the film reappears.
+   */
+  stop (id: string): Promise<void>
   progress (): TransferProgress[]
   destroy (): Promise<void>
 }

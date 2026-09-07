@@ -26,6 +26,13 @@ const api = {
   startAnyway: () => ipcRenderer.invoke('room:startAnyway'),
   setWaitForLatecomers: (wait: boolean) => ipcRenderer.invoke('room:setWaitForLatecomers', wait),
   setMode: (mode: 'p2p' | 'origin') => ipcRenderer.invoke('room:setMode', mode),
+  releaseChatFocus: () => ipcRenderer.invoke('overlay:releaseFocus'),
+  focusChat: () => ipcRenderer.invoke('overlay:focus'),
+  onFocusChat: (h: () => void) => {
+    const fn = (): void => h()
+    ipcRenderer.on('overlay:focus', fn)
+    return () => { ipcRenderer.removeListener('overlay:focus', fn) }
+  },
   sendSignal: (to: string, payload: unknown) => ipcRenderer.invoke('voice:signal', to, payload),
   setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => ipcRenderer.invoke('voice:state', v),
   moderateVoice: (memberId: string, action: 'mute' | 'unmute') => ipcRenderer.invoke('voice:moderate', memberId, action),

@@ -1,5 +1,11 @@
 import { createRoot } from 'react-dom/client'
 import { App } from './App.js'
+import { Overlay } from './Overlay.js'
 import './styles.css'
 
-createRoot(document.getElementById('root')!).render(<App />)
+// One bundle, two entry points. The fullscreen chat overlay is a second window
+// loading the same file with #overlay, which keeps the build to a single
+// renderer and the two views sharing their types and formatting.
+const isOverlay = window.location.hash === '#overlay'
+
+createRoot(document.getElementById('root')!).render(isOverlay ? <Overlay /> : <App />)

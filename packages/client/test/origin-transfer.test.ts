@@ -2,8 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { OriginTransfer } from '../src/origin-transfer.js'
+import { join, basename } from 'node:path'
+import { OriginTransfer, storeIdFor } from '../src/origin-transfer.js'
 import { FilmStore } from '../src/storage.js'
 import { presign, type OriginConfig } from '../../../apps/server/src/origin.js'
 
@@ -172,5 +172,43 @@ suite('relay mode', () => {
     // the room's durability display claim a resilience that does not exist.
     expect(report.peers).toBe(0)
     expect(report.upBps).toBe(0)
+  }, 90000)
+
+  it('files the film in the library, so it can be seen and deleted', async () => {
+    // Without this a relayed film accumulates gigabytes that the films-on-disk
+    // view never lists and the delete button cannot reach.
+    const path = join(dir, 'film6.mkv')
+    writeFileSync(path, FILM)
+    const { t: sharer } = transport('sharer6')
+    const source = await sharer.share(path)
+    if (source.kind !== 'origin') throw new Error('unreachable')
+
+    const store = new FilmStore(join(dir, 'receiver6'))
+    const receiver = new OriginTransfer({
+      store,
+      chunkBytes: 1024 * 1024,
+      getUploadUrl: async () => ({ url: '', key: '' }),
+      getDownloadUrl: async () => presign(cfg, { method: 'GET', key: source.key })
+    })
+    cleanups.push(() => receiver.destroy())
+
+    expect(await store.list()).toHaveLength(0)
+    await receiver.receive(source)
+
+    const films = await store.list()
+    expect(films).toHaveLength(1)
+    expect(films[0]!.name).toBe(basename(source.key))
+    expect(films[0]!.bytes).toBe(FILM.length)
+    // Deleting goes through the same identity the list reports.
+    expect(films[0]!.infoHash).toBe(storeIdFor(source.key))
+
+    // Deleting a film that is still arriving has to stop the transfer first,
+    // or it writes its bookkeeping back into the directory being removed and
+    // the film comes back.
+    await receiver.stop(films[0]!.infoHash)
+    await store.remove(films[0]!.infoHash)
+    expect(await store.list()).toHaveLength(0)
+    await new Promise(r => setTimeout(r, 400))
+    expect(await store.list()).toHaveLength(0)
   }, 90000)
 })

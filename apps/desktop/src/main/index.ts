@@ -12,6 +12,7 @@ import { FilmStore, TransferManager, OriginTransfer, type MediaTransport } from 
 import { sourceId, type Media } from '@cocine/protocol'
 import { MpvNotFoundError } from '@cocine/player'
 import { startUpdates } from './updates.js'
+import { ChatOverlay } from './chat-overlay.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -31,6 +32,7 @@ if (process.env.COCINE_HEADLESS) {
 
 let mainWin: BrowserWindow | null = null
 let video: VideoWindow | null = null
+let overlay: ChatOverlay | null = null
 let room: RoomClient | null = null
 let mediaPath: string | null = null
 let statusTimer: NodeJS.Timeout | null = null
@@ -90,6 +92,7 @@ const state = (): Record<string, unknown> => {
   return {
     ready: !!player,
     connected: !!room,
+    connection: room?.connection ?? 'closed',
     members: room?.members ?? [],
     memberId: room?.memberId ?? '',
     code: room?.code ?? null,
@@ -151,6 +154,15 @@ function createWindow (): void {
   const pushState = (): void => {
     if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('state', state())
   }
+  // Chat is hidden with the rest of the sidebar in fullscreen, so it comes back
+  // as an overlay over the film. Only while in a room -- there is nothing to
+  // show otherwise.
+  const syncOverlay = (): void => {
+    const show = !!mainWin?.isFullScreen() && !!room && !process.env.COCINE_HEADLESS
+    void overlay?.setVisible(show).catch(err => console.error('[overlay]', err))
+  }
+  mainWin.on('enter-full-screen', syncOverlay)
+  mainWin.on('leave-full-screen', syncOverlay)
   mainWin.on('enter-full-screen', pushState)
   mainWin.on('leave-full-screen', pushState)
   mainWin.on('closed', () => { mainWin = null })
@@ -158,6 +170,13 @@ function createWindow (): void {
   const devUrl = process.env.ELECTRON_RENDERER_URL
   if (devUrl) void mainWin.loadURL(devUrl)
   else void mainWin.loadFile(join(__dirname, '../renderer/index.html'))
+
+  // Same bundle, different entry: #overlay renders the compact chat instead of
+  // the whole interface.
+  overlay = new ChatOverlay(mainWin, async win => {
+    if (devUrl) await win.loadURL(`${devUrl}#overlay`)
+    else await win.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'overlay' })
+  })
 
   // Fire and forget: an update check must never delay the window appearing, and
   // never prevent a film being watched if it fails.
@@ -309,6 +328,8 @@ app.on('before-quit', event => {
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null }
     try { await transfer?.destroy() } catch { /* going away */ }
     try { await room?.close() } catch { /* going away */ }
+    overlay?.destroy()
+    overlay = null
     try { await video?.close() } catch { /* going away */ }
     app.quit()
   })()
