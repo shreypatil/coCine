@@ -69,6 +69,24 @@ on a Mac `npm run dist:mac` should work, but two parts have never run:
   including whether its dylib dependencies resolve inside the app bundle
 - the `.dmg` itself
 
+### The Windows installer has been built but never run
+
+`coCine-0.1.0-x64.exe` builds cleanly under wine and carries mpv, but no Windows
+machine has executed it. Untested there: whether the bundled `mpv.exe` starts,
+whether `--wid` reparenting works on Windows at all (it is a different windowing
+path from X11), and whether SmartScreen's warning is as tolerable as assumed.
+
+The Linux artifacts, by contrast, were run: the AppImage boots, finds mpv, and
+reports properly when mpv is missing.
+
+### Xvfb on this machine is broken
+
+`Xvfb` fails with `libnettle.so.9: cannot open shared object file` — a
+rolling-release library mismatch, not anything to do with coCine. It means the
+virtual-display path for headless GUI testing is unavailable, and Electron tests
+currently run on the real display with `COCINE_HEADLESS=1` (which never shows a
+window). Reinstalling `xorg-server-xvfb` should fix it.
+
 ### A public signalling server for the default build
 
 An installed copy points at whatever `COCINE_DEFAULT_SERVER` was set to at build
@@ -143,9 +161,59 @@ different embedding strategy or rendering frames through the app itself.
 
 ### Phase 9 — interface overhaul
 
-**Blocked on your list of issues from manual testing.** Not only a visual pass —
-you flagged that there are several real problems visible in use. The list is the
-input to this phase, and without it the phase cannot be scoped.
+Waiting on your list of issues from using it. What follows is what a read of the
+frontend turned up, to go alongside it.
+
+**Broken, in rough order of severity**
+
+1. **Films received through relay mode are invisible and undeletable.**
+   `OriginTransfer.receive` never calls `store.record()`, so no `meta.json` is
+   written and `FilmStore.list()` skips the directory. Gigabytes accumulate with
+   no way to see or remove them from the app — which is exactly what the films-
+   on-disk view was required to prevent.
+2. **"Use default" resets a packaged build to `ws://127.0.0.1:8787`.** The
+   renderer holds its own copy of the default server address, which stopped being
+   true when the real default became a build-time value. The button also shows
+   permanently for every packaged user, since their address never equals the
+   hard-coded one.
+3. **The durability line lies in relay mode**, saying the film "needs the sharer"
+   when the origin holds it and the sharer is irrelevant.
+4. **There is no chat in fullscreen.** `.app.fullscreen .sidebar { display: none }`
+   hides it entirely, so the overlaid-in-a-corner chat that was asked for during
+   the phase 2.5 redesign does not exist.
+5. **Push-to-talk only binds lowercase `v`.** Holding Shift, or Caps Lock being
+   on, silently stops the microphone opening while the interface still says
+   "Hold V to talk".
+6. **A stray `console.log('open film clicked')`** ships in the Open film handler.
+
+**Robustness**
+
+7. **A dropped connection is never noticed.** Nothing handles the socket closing,
+   so after a wifi blip or a server restart the interface still shows the room
+   code and a drift reading while nothing works. No reconnect, and no indication
+   anything is wrong.
+8. **Keyboard shortcuts ignore permissions.** Space and the arrow keys call
+   playback for someone without control, who gets an error banner rather than the
+   keypress doing nothing.
+9. **One global `busy` flag disables every control** during any operation, so a
+   slow request freezes unrelated buttons.
+10. **The error banner is transient local state**, cleared by the next action
+    whether or not it was related, and inserting it shifts the video stage — which
+    moves the native mpv window underneath.
+11. **No text overflow handling anywhere.** Long names and filenames have nothing
+    to clip them inside a 276px sidebar.
+
+**Design and information architecture**
+
+12. The readiness gate — the most time-sensitive thing on screen — renders below
+    the chat in the sidebar.
+13. Every heading is an `<h4>`; there is no `<h1>`, and the video stage is an
+    empty `<div>` with nothing for assistive technology.
+14. The per-member actions are four ambiguous words (`take`, `give`, `host`,
+    `mute`) with meaning only in the title attribute.
+15. Two unrelated things are both called relaying: the TURN relay for voice and
+    origin mode for films. The interface says "through the server" for one of
+    them and nothing for the other.
 
 ---
 
