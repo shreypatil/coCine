@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createHandlers, type HandlerDeps, type PlayerLike, type RoomLike, type VideoLike } from '../src/main/handlers.js'
+import { createHandlers, type HandlerDeps, type PlayerLike, type RoomLike, type VideoLike, type TransferLike, type FilmStoreLike } from '../src/main/handlers.js'
 
 /**
  * Every case below reproduces a bug that actually shipped. None of them needs
@@ -22,6 +22,26 @@ const video = (p: PlayerLike | null = player()): VideoLike => ({
   resume: vi.fn(),
   setSlot: vi.fn(),
   bounds: () => ({ x: 0, y: 0, width: 10, height: 10 })
+})
+
+const TORRENT = { infoHash: 'a'.repeat(40), magnet: 'magnet:?xt=urn:btih:' + 'a'.repeat(40), bytes: 4_000_000_000, pieceLength: 262144 }
+
+const transfer = (over: Partial<TransferLike> = {}): TransferLike => ({
+  share: vi.fn(async () => TORRENT),
+  receive: vi.fn(async () => ({ path: '/films/aaa/dune.mkv' })),
+  progress: () => [],
+  ...over
+})
+
+const filmStore = (over: Partial<FilmStoreLike> = {}): FilmStoreLike => ({
+  list: vi.fn(async () => [{
+    infoHash: 'a'.repeat(40), name: 'dune.mkv', path: '/films/aaa/dune.mkv',
+    bytes: 100, onDiskBytes: 100, complete: true, addedAtMs: 1
+  }]),
+  remove: vi.fn(async () => {}),
+  totalBytes: async () => 100,
+  freeBytes: async () => 1_000_000,
+  ...over
 })
 
 const room = (): RoomLike => ({
@@ -56,6 +76,8 @@ function build (over: Partial<HandlerDeps> = {}): {
     isFullScreen: () => fullscreen,
     getIdentity: () => identity,
     saveIdentity: patch => { identity = { ...identity, ...patch }; return identity },
+    getTransfer: () => null,
+    getFilmStore: () => filmStore(),
     ...over
   }
   return { h: createHandlers(deps), deps, win }
@@ -121,7 +143,82 @@ describe('file:open', () => {
     const r = room()
     const { h } = build({ getVideo: () => video(), getRoom: () => r })
     await call(h, 'file:open')
-    expect(r.announceMedia).toHaveBeenCalledWith('dune.mkv', 120)
+    expect(r.announceMedia).toHaveBeenCalledWith('dune.mkv', 120, null)
+  })
+})
+
+describe('sharing what you open', () => {
+  it('shares the film and tells the room where to get it', async () => {
+    const tx = transfer()
+    const r = room()
+    const { h } = build({ getVideo: () => video(), getRoom: () => r, getTransfer: () => tx })
+    await call(h, 'file:openPath', '/films/dune.mkv')
+    expect(tx.share).toHaveBeenCalledWith('/films/dune.mkv')
+    expect(r.announceMedia).toHaveBeenCalledWith('dune.mkv', 120, TORRENT)
+  })
+
+  it('still lets you watch when sharing fails', async () => {
+    // Whoever opened the film should not lose it because hashing broke.
+    const tx = transfer({ share: vi.fn(async () => { throw new Error('disk went away') }) })
+    const r = room()
+    const p = player()
+    const { h } = build({ getVideo: () => video(p), getRoom: () => r, getTransfer: () => tx })
+    const res = await call(h, 'file:openPath', '/films/dune.mkv') as { infoHash: string | null }
+    expect(p.load).toHaveBeenCalled()
+    expect(res.infoHash).toBeNull()
+    expect(r.announceMedia).toHaveBeenCalledWith('dune.mkv', 120, null)
+  })
+
+  it('announces without a torrent when there is nothing to share through', async () => {
+    const r = room()
+    const { h } = build({ getVideo: () => video(), getRoom: () => r, getTransfer: () => null })
+    await call(h, 'file:openPath', '/films/dune.mkv')
+    expect(r.announceMedia).toHaveBeenCalledWith('dune.mkv', 120, null)
+  })
+})
+
+describe('films on disk', () => {
+  it('lists what is stored, with space used and free', async () => {
+    const { h } = build()
+    const r = await call(h, 'films:list') as { films: unknown[]; usedBytes: number; freeBytes: number }
+    expect(r.films).toHaveLength(1)
+    expect(r.usedBytes).toBe(100)
+    expect(r.freeBytes).toBe(1_000_000)
+  })
+
+  it('removes a film', async () => {
+    const store = filmStore()
+    const { h } = build({ getFilmStore: () => store })
+    await call(h, 'films:remove', 'a'.repeat(40))
+    expect(store.remove).toHaveBeenCalledWith('a'.repeat(40))
+  })
+
+  it('refuses to delete the film that is currently open', async () => {
+    // Otherwise the file disappears from under mpv mid-playback.
+    const store = filmStore()
+    const { h } = build({ getVideo: () => video(), getFilmStore: () => store })
+    await call(h, 'file:openPath', '/films/aaa/dune.mkv')
+    await expect(call(h, 'films:remove', 'a'.repeat(40))).rejects.toThrow(/open/)
+    expect(store.remove).not.toHaveBeenCalled()
+  })
+
+  it('reports an empty library rather than failing when nothing is stored', async () => {
+    const { h } = build({ getFilmStore: () => null })
+    expect(await call(h, 'films:list')).toEqual({ films: [], usedBytes: 0, freeBytes: 0 })
+  })
+})
+
+describe('receiving a film the room is sharing', () => {
+  it('asks the transfer manager for it', async () => {
+    const tx = transfer()
+    const { h } = build({ getTransfer: () => tx })
+    expect(await call(h, 'film:receive', TORRENT)).toEqual({ path: '/films/aaa/dune.mkv' })
+    expect(tx.receive).toHaveBeenCalledWith(TORRENT)
+  })
+
+  it('refuses clearly when transfer is not available', async () => {
+    const { h } = build({ getTransfer: () => null })
+    await expect(call(h, 'film:receive', TORRENT)).rejects.toThrow(/transfer not ready/)
   })
 })
 

@@ -38,7 +38,83 @@ non-zero on failure, so they work as CI gates rather than as demos.
 Requires `mpv` and `ffmpeg` on PATH. Test films are generated on first run and
 cached in `.fixtures/`.
 
-### Keyboard
+### Transfer (phase 4, in progress)
+
+The signalling server now hosts a **private BitTorrent tracker on its own port**
+at `/announce`, alongside the WebSocket signalling on `/`. It answers only for
+info hashes a room has announced, so it cannot be used as a public tracker for
+arbitrary torrents — the info hash is a capability that only reaches you by
+being in the room.
+
+It has to be a *WebSocket* tracker rather than HTTP: WebRTC peers exchange
+offers and answers to connect at all, and that exchange is what the tracker's
+websocket protocol carries.
+
+**One line stands between working and a bug that only appears on real
+networks.** WebTorrent looks for a WebRTC implementation on `globalThis.WRTC`
+and Node has none. Call `installWebRtc()` from `@cocine/client` before
+constructing any client, or you get a TCP-only swarm that works flawlessly on a
+LAN and fails for everyone behind a NAT, with no error — falling back to TCP is
+not a failure as far as WebTorrent is concerned. There is a test asserting the
+global is present.
+
+### Sharing and receiving
+
+Opening a film while in a room hashes it and shares it — **seeded in place, never
+copied**, which matters at four gigabytes. Hashing was measured at roughly
+780 MB/s with worst-case event-loop lag of 1.0 ms, because WebTorrent streams
+and hashes in chunks; it does not need a worker thread, which was checked before
+the design was settled rather than assumed.
+
+Films you receive are kept under `films/` in the user-data directory, laid out
+as `<infoHash>/<name>` so two films with the same name cannot collide. The
+**Films** button in the title bar lists what is stored with sizes and a delete
+button, and shows space used and free — keeping films without a way to see or
+remove them fills a drive silently.
+
+A transfer that will not fit is refused before it starts, with a message in
+gigabytes, rather than failing at ninety per cent.
+
+**Native modules must stay external to the Electron bundle.** `node-datachannel`
+is native, and electron-vite will happily bundle it, which breaks the relative
+path to its `.node` binary and stops the app booting with
+`Cannot find module '../../../build/Release/node_datachannel.node'`. The fix is
+to declare it in `apps/desktop`'s dependencies so `externalizeDepsPlugin` can
+see it. The same applies to `webtorrent`.
+
+**Local WebRTC tests use no ICE servers.** Loopback peers connect on host
+candidates; reaching a public STUN server made the suite slow and intermittently
+flaky. STUN is for real networks, and belongs in phase 6 alongside coturn.
+
+### Which pieces get fetched
+
+Rarest-first is right for swarm health and wrong for watching — it optimises for
+the file eventually existing, not for the next ten seconds being ready. Strict
+sequential is wrong too: it starves the swarm of piece diversity and quietly
+makes everyone slower. So the file is split into zones that move with the room's
+playhead, and only the zones near it override the default.
+
+- **critical** — about ten seconds ahead, fetched as soon as possible
+- **buffer** — about sixty seconds ahead, ahead of the bulk but not urgent
+- everything else keeps WebTorrent's own rarest-first behaviour
+
+Windows follow the *room's* position rather than the local player's, because
+while a film is still arriving the local player may not have opened it yet.
+
+**The container index comes before the first frame.** Matroska keeps its Cues —
+the seek index — at the *end* of the file, and mpv cannot seek without them.
+Fetch sequentially from the start and seeking appears broken for the whole
+session, which reads as a broken application rather than a partial download. So
+both ends of the file are fetched first. MP4 has the same problem whenever the
+moov atom was never moved to the front.
+
+Two WebTorrent details shape `PieceScheduler`. `critical()` only ever sets flags
+— there is no way to clear one — so a range is re-issued only when it actually
+changes. `select()` *accumulates* rather than replacing, so the previous window
+must be deselected first, or the selection list grows until every range is
+equally important, which is the same as having no windows at all.
+
+## Keyboard
 
 | Key | |
 |---|---|
@@ -107,7 +183,7 @@ which `time-pos` reads stale and the engine corrects against a phantom drift.
 | 01 | Sync engine | **done** — 5 clients, 20 events, 40 ms ± 15 ms link, 37 s server clock skew: **p99 drift 35 ms**, 0 of 2598 samples over budget, every event re-converged in 0.3 s |
 | 02 | Single-window shell | **done** — Electron with mpv reparented via `--wid`; see caveat below |
 | 03 | Rooms, roles, chat | **done** — invite codes, chat, host controls; 105 tests |
-| 04 | Transfer | |
+| 04 | Transfer | in progress — 4.1–4.6 done: tracker, swarm, sharing, storage, piece selection |
 | 05 | Voice | |
 | 06 | NAT hardening | |
 | 07 | Relay mode | |

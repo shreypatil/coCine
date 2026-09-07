@@ -3,6 +3,9 @@ const electron = require("electron");
 const api = {
   setVideoSlot: (slot) => electron.ipcRenderer.invoke("video:slot", slot),
   getIdentity: () => electron.ipcRenderer.invoke("identity:get"),
+  listFilms: () => electron.ipcRenderer.invoke("films:list"),
+  removeFilm: (infoHash) => electron.ipcRenderer.invoke("films:remove", infoHash),
+  receiveFilm: (info) => electron.ipcRenderer.invoke("film:receive", info),
   openFile: () => electron.ipcRenderer.invoke("file:open"),
   openPath: (path) => electron.ipcRenderer.invoke("file:openPath", path),
   /** Electron removed File.path; this is the supported way to recover a real

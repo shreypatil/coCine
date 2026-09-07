@@ -8,6 +8,7 @@ import { RoomClient } from '@cocine/client'
 import { VideoWindow } from './video-window.js'
 import { createHandlers, type RoomLike } from './handlers.js'
 import { IdentityStore, identityPathFor } from './identity.js'
+import { FilmStore, TransferManager } from '@cocine/client'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -31,6 +32,21 @@ let room: RoomClient | null = null
 let mediaPath: string | null = null
 let statusTimer: NodeJS.Timeout | null = null
 const identity = new IdentityStore(identityPathFor(app.getPath('userData')))
+// Films are kept until removed, so they live somewhere stable rather than a
+// temporary directory. The store owns listing and deletion, because retaining
+// gigabytes without a way to see them fills a drive silently.
+const films = new FilmStore(join(app.getPath('userData'), 'films'))
+let transfer: TransferManager | null = null
+let sharedInfoHash: string | null = null
+let receiving: { name: string; infoHash: string } | null = null
+
+/** Created once the room tells us where to announce; the URL is never guessed. */
+function ensureTransfer (trackerUrl: string): TransferManager {
+  if (transfer) return transfer
+  transfer = new TransferManager({ store: films, trackerUrl })
+  transfer.on('error', err => console.error('[transfer]', err))
+  return transfer
+}
 
 const state = (): Record<string, unknown> => {
   const player = video?.player
@@ -55,7 +71,10 @@ const state = (): Record<string, unknown> => {
     clockOffsetMs: room?.clock.offsetMs() ?? null,
     rttMs: room?.clock.rttMs() ?? null,
     lastAction: room?.lastSyncAction()?.type ?? null,
-    fullscreen: mainWin?.isFullScreen() ?? false
+    fullscreen: mainWin?.isFullScreen() ?? false,
+    transfers: transfer?.progress() ?? [],
+    receiving,
+    roomTorrent: room?.media?.torrent ?? null
   }
 }
 
@@ -108,6 +127,14 @@ function createWindow (): void {
       try { await video?.player?.load(mediaPath) } catch (e) { console.error('could not load film:', e) }
     }
     statusTimer = setInterval(() => {
+      // Keep the fetch windows on the playhead. Uses the room's position rather
+      // than the local player's, because while a film is still arriving the
+      // local player may not have opened it yet.
+      const t = room?.media?.torrent
+      if (t && transfer) {
+        const at = room?.expectedPosition() ?? 0
+        transfer.updatePlayhead(t.infoHash, at, room?.media?.durationSec ?? 0)
+      }
       if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('state', state())
     }, 100)
   })
@@ -122,6 +149,38 @@ const handlers = createHandlers({
   createRoom: async o => {
     const client = new RoomClient({ url: o.url, code: o.code, name: o.name, player: o.player as never })
     await client.connect()
+    // The tracker URL arrives with room state, so the transfer manager cannot
+    // exist before this point.
+    if (client.trackerUrl) ensureTransfer(client.trackerUrl)
+
+    // Someone else put a film on. Fetch it unless this is the one we are
+    // sharing ourselves, or we already have it on disk.
+    client.on('media', (media: { name: string; torrent: { infoHash: string; bytes: number } | null } | null) => {
+      void (async () => {
+        const t = media?.torrent
+        if (!t || t.infoHash === sharedInfoHash) return
+        try {
+          const tm = ensureTransfer(client.trackerUrl)
+          console.log(`[film] room is sharing ${media?.name}; fetching`)
+          receiving = { name: media?.name ?? '', infoHash: t.infoHash }
+          const { path } = await tm.receive(t as never)
+          const torrent = tm.get(t.infoHash)
+          const load = async (): Promise<void> => {
+            await video?.player?.load(path)
+            mediaPath = path
+            receiving = null
+            console.log(`[film] received and loaded ${path}`)
+          }
+          // Watching before it finishes is phase 4.5; for now it opens when the
+          // file is whole, which is at least honest about what it is doing.
+          if (torrent?.done) await load()
+          else torrent?.on('done', () => { void load().catch(e => console.error('[film]', e)) })
+        } catch (err) {
+          receiving = null
+          console.error('[film] could not receive:', err)
+        }
+      })()
+    })
     return client as unknown as RoomLike
   },
   getMediaPath: () => mediaPath,
@@ -130,6 +189,9 @@ const handlers = createHandlers({
   isFullScreen: () => mainWin?.isFullScreen() ?? false,
   getIdentity: () => identity.get(),
   saveIdentity: patch => identity.save(patch),
+  getTransfer: () => transfer,
+  getFilmStore: () => films,
+  setSharedInfoHash: h => { sharedInfoHash = h },
   log: m => console.log(m)
 })
 for (const [channel, fn] of Object.entries(handlers)) {
@@ -152,6 +214,7 @@ app.on('before-quit', event => {
   shuttingDown = true
   void (async () => {
     if (statusTimer) { clearInterval(statusTimer); statusTimer = null }
+    try { await transfer?.destroy() } catch { /* going away */ }
     try { await room?.close() } catch { /* going away */ }
     try { await video?.close() } catch { /* going away */ }
     app.quit()

@@ -9,6 +9,9 @@ const api = {
   setVideoSlot: (slot: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.invoke('video:slot', slot),
   getIdentity: () => ipcRenderer.invoke('identity:get'),
+  listFilms: () => ipcRenderer.invoke('films:list'),
+  removeFilm: (infoHash: string) => ipcRenderer.invoke('films:remove', infoHash),
+  receiveFilm: (info: unknown) => ipcRenderer.invoke('film:receive', info),
   openFile: () => ipcRenderer.invoke('file:open'),
   openPath: (path: string) => ipcRenderer.invoke('file:openPath', path),
   /** Electron removed File.path; this is the supported way to recover a real

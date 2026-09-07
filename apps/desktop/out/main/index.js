@@ -6,6 +6,9 @@ import { tmpdir, userInfo } from "node:os";
 import WebSocket from "ws";
 import { EventEmitter } from "node:events";
 import { z } from "zod";
+import polyfill from "node-datachannel/polyfill";
+import { stat, mkdir, writeFile, readdir, readFile, rm, statfs } from "node:fs/promises";
+import WebTorrent from "webtorrent";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -77,11 +80,27 @@ const ChatMessage = z.object({
   atServerMs: z.number()
 });
 const MAX_CHAT_LENGTH = 800;
+const TorrentInfo = z.object({
+  infoHash: z.string().regex(/^[0-9a-f]{40}$/i),
+  magnet: z.string().min(1),
+  bytes: z.number().int().positive(),
+  pieceLength: z.number().int().positive()
+});
+const Media = z.object({
+  name: z.string(),
+  durationSec: z.number(),
+  torrent: TorrentInfo.nullable()
+});
 z.discriminatedUnion("t", [
   /** No code creates a room and returns one; a code joins an existing room. */
   z.object({ t: z.literal("hello"), code: z.string().nullable(), name: z.string().min(1).max(40) }),
   z.object({ t: z.literal("time.ping"), c1: z.number() }),
-  z.object({ t: z.literal("media.announce"), name: z.string(), durationSec: z.number() }),
+  z.object({
+    t: z.literal("media.announce"),
+    name: z.string(),
+    durationSec: z.number(),
+    torrent: TorrentInfo.nullable().default(null)
+  }),
   z.object({
     t: z.literal("playback.request"),
     intent: z.enum(["play", "pause", "seek"]),
@@ -100,7 +119,9 @@ const ServerMessage = z.discriminatedUnion("t", [
     t: z.literal("room.state"),
     code: z.string(),
     members: z.array(Member),
-    media: z.object({ name: z.string(), durationSec: z.number() }).nullable()
+    media: Media.nullable(),
+    /** Where to announce, so clients do not have to guess the tracker URL. */
+    trackerUrl: z.string()
   }),
   z.object({ t: z.literal("playback.schedule"), state: PlaybackState, seq: z.number() }),
   z.object({ t: z.literal("chat.message"), message: ChatMessage }),
@@ -179,6 +200,9 @@ class RoomClient extends EventEmitter {
   members = [];
   memberId = "";
   code = "";
+  media = null;
+  /** Where the room's swarm announces. Learned from the server, never guessed. */
+  trackerUrl = "";
   /** Bounded locally as well as on the server, so a long session cannot grow
    *  the renderer's state without limit. */
   messages = [];
@@ -227,6 +251,13 @@ class RoomClient extends EventEmitter {
       case "room.state":
         this.members = msg.members;
         this.code = msg.code;
+        this.trackerUrl = msg.trackerUrl;
+        if (msg.media?.torrent?.infoHash !== this.media?.torrent?.infoHash) {
+          this.media = msg.media;
+          this.emit("media", msg.media);
+        } else {
+          this.media = msg.media;
+        }
         this.emit("members", msg.members);
         break;
       case "chat.history":
@@ -312,8 +343,9 @@ class RoomClient extends EventEmitter {
   lastSyncAction() {
     return this.lastAction;
   }
-  announceMedia(name, durationSec) {
-    this.send({ t: "media.announce", name, durationSec });
+  /** A null torrent means "everyone is expected to already have this file". */
+  announceMedia(name, durationSec, torrent = null) {
+    this.send({ t: "media.announce", name, durationSec, torrent });
   }
   sendChat(text) {
     const t = text.trim();
@@ -345,6 +377,286 @@ class RoomClient extends EventEmitter {
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     this.ws?.close();
+  }
+}
+let installed = false;
+function installWebRtc() {
+  if (installed) return;
+  const g = globalThis;
+  if (!g.WRTC) g.WRTC = polyfill;
+  installed = true;
+}
+const DEFAULT_ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+class OutOfSpaceError extends Error {
+  constructor(needBytes, freeBytes) {
+    super(`Not enough room: this film needs ${gb(needBytes)} and only ${gb(freeBytes)} is free`);
+    this.needBytes = needBytes;
+    this.freeBytes = freeBytes;
+    this.name = "OutOfSpaceError";
+  }
+  needBytes;
+  freeBytes;
+}
+const gb = (n) => `${(n / 1024 ** 3).toFixed(1)} GB`;
+class FilmStore {
+  constructor(root) {
+    this.root = root;
+  }
+  root;
+  dirFor(infoHash) {
+    return join(this.root, infoHash.toLowerCase());
+  }
+  async has(infoHash) {
+    try {
+      return (await stat(this.dirFor(infoHash))).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+  async record(m) {
+    const dir = this.dirFor(m.infoHash);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "meta.json"), JSON.stringify(m, null, 2));
+  }
+  async list() {
+    let entries;
+    try {
+      entries = await readdir(this.root);
+    } catch {
+      return [];
+    }
+    const films2 = [];
+    for (const infoHash of entries) {
+      const dir = join(this.root, infoHash);
+      try {
+        const meta = JSON.parse(await readFile(join(dir, "meta.json"), "utf8"));
+        let onDiskBytes = 0;
+        try {
+          onDiskBytes = (await stat(join(dir, meta.name))).size;
+        } catch {
+        }
+        films2.push({
+          infoHash: meta.infoHash,
+          name: meta.name,
+          path: join(dir, meta.name),
+          bytes: meta.bytes,
+          onDiskBytes,
+          complete: onDiskBytes >= meta.bytes,
+          addedAtMs: meta.addedAtMs
+        });
+      } catch {
+      }
+    }
+    return films2.sort((a, b) => b.addedAtMs - a.addedAtMs);
+  }
+  async remove(infoHash) {
+    await rm(this.dirFor(infoHash), { recursive: true, force: true });
+  }
+  async totalBytes() {
+    return (await this.list()).reduce((n, f) => n + f.onDiskBytes, 0);
+  }
+  async freeBytes() {
+    await mkdir(this.root, { recursive: true });
+    const s = await statfs(this.root);
+    return Number(s.bsize) * Number(s.bavail);
+  }
+  /**
+   * Refuse before starting rather than failing at ninety per cent. The margin
+   * covers the filesystem's own overhead and leaves the machine usable.
+   */
+  async ensureRoomFor(bytes, marginBytes = 512 * 1024 * 1024) {
+    const free = await this.freeBytes();
+    if (free < bytes + marginBytes) throw new OutOfSpaceError(bytes + marginBytes, free);
+  }
+}
+const DEFAULT_WINDOWS = { criticalSec: 10, bufferSec: 60 };
+const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+function pieceAt(positionSec, g) {
+  if (g.pieceCount <= 0) return 0;
+  if (!(g.durationSec > 0)) return 0;
+  const fraction = clamp(positionSec / g.durationSec, 0, 1);
+  return clamp(Math.floor(fraction * g.totalBytes / g.pieceLength), 0, g.pieceCount - 1);
+}
+function secondsToPieces(seconds, g) {
+  if (!(g.durationSec > 0) || g.pieceLength <= 0) return 0;
+  const bytesPerSec = g.totalBytes / g.durationSec;
+  return Math.max(1, Math.ceil(seconds * bytesPerSec / g.pieceLength));
+}
+function windowsFor(positionSec, g, cfg = DEFAULT_WINDOWS) {
+  const last = Math.max(0, g.pieceCount - 1);
+  const start = pieceAt(positionSec, g);
+  const criticalEnd = clamp(start + secondsToPieces(cfg.criticalSec, g), start, last);
+  const bufferEnd = clamp(start + secondsToPieces(cfg.bufferSec, g), criticalEnd, last);
+  return { critical: [start, criticalEnd], buffer: [start, bufferEnd] };
+}
+function indexRanges(g, headBytes = 2 * 1024 * 1024, tailBytes = 4 * 1024 * 1024) {
+  if (g.pieceCount <= 0 || g.pieceLength <= 0) return [];
+  const last = g.pieceCount - 1;
+  const headEnd = clamp(Math.ceil(headBytes / g.pieceLength) - 1, 0, last);
+  const tailStart = clamp(last - (Math.ceil(tailBytes / g.pieceLength) - 1), 0, last);
+  if (tailStart <= headEnd + 1) return [[0, last]];
+  return [[0, headEnd], [tailStart, last]];
+}
+const HIGH_PRIORITY = 1;
+class PieceScheduler {
+  constructor(torrent, durationSec, cfg = DEFAULT_WINDOWS) {
+    this.torrent = torrent;
+    this.durationSec = durationSec;
+    this.cfg = cfg;
+  }
+  torrent;
+  durationSec;
+  cfg;
+  primed = false;
+  lastCritical = null;
+  lastBuffer = null;
+  setDuration(seconds) {
+    this.durationSec = seconds;
+  }
+  geometry() {
+    return {
+      pieceLength: this.torrent.pieceLength,
+      pieceCount: this.torrent.pieces.length,
+      totalBytes: this.torrent.length,
+      durationSec: this.durationSec
+    };
+  }
+  /** Fetch the container's head and tail before anything else. Once only. */
+  prime() {
+    if (this.primed) return [];
+    this.primed = true;
+    const ranges = indexRanges(this.geometry());
+    for (const [a, b] of ranges) this.torrent.critical(a, b);
+    return ranges;
+  }
+  update(positionSec) {
+    const w = windowsFor(positionSec, this.geometry(), this.cfg);
+    if (!this.lastCritical || this.lastCritical[0] !== w.critical[0] || this.lastCritical[1] !== w.critical[1]) {
+      this.torrent.critical(w.critical[0], w.critical[1]);
+      this.lastCritical = w.critical;
+    }
+    if (!this.lastBuffer || this.lastBuffer[0] !== w.buffer[0] || this.lastBuffer[1] !== w.buffer[1]) {
+      if (this.lastBuffer) this.torrent.deselect(this.lastBuffer[0], this.lastBuffer[1]);
+      this.torrent.select(w.buffer[0], w.buffer[1], HIGH_PRIORITY);
+      this.lastBuffer = w.buffer;
+    }
+    return w;
+  }
+}
+class TransferManager extends EventEmitter {
+  constructor(o) {
+    super();
+    this.o = o;
+    installWebRtc();
+  }
+  o;
+  client = null;
+  torrents = /* @__PURE__ */ new Map();
+  schedulers = /* @__PURE__ */ new Map();
+  ensureClient() {
+    if (this.client) return this.client;
+    this.client = new WebTorrent({
+      dht: false,
+      lsd: false,
+      natUpnp: false,
+      utp: false,
+      webSeeds: false,
+      ...this.o.webrtcOnly ? { tcp: false } : {},
+      tracker: { rtcConfig: { iceServers: this.o.iceServers ?? DEFAULT_ICE_SERVERS } }
+    });
+    this.client.on("error", (err) => this.emit("error", err));
+    return this.client;
+  }
+  /** Seed a film already on this machine. The file is not copied or moved. */
+  async share(filePath) {
+    const size = (await stat(filePath)).size;
+    const torrent = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`timed out hashing ${basename(filePath)}`)), 15 * 6e4);
+      this.ensureClient().seed(
+        filePath,
+        { announce: [this.o.trackerUrl], path: dirname(filePath) },
+        (t) => {
+          clearTimeout(timer);
+          resolve(t);
+        }
+      );
+    });
+    this.track(torrent);
+    return {
+      infoHash: torrent.infoHash,
+      magnet: torrent.magnetURI,
+      bytes: size,
+      pieceLength: torrent.pieceLength
+    };
+  }
+  /**
+   * Fetch a film from the room. Resolves as soon as the torrent's metadata is
+   * ready and the file has a path -- not when it has finished, because the
+   * whole point is watching before it finishes.
+   */
+  async receive(info) {
+    const existing = this.torrents.get(info.infoHash.toLowerCase());
+    if (existing) return { path: existing.files[0]?.path ?? "", torrent: existing };
+    await this.o.store.ensureRoomFor(info.bytes);
+    const dir = this.o.store.dirFor(info.infoHash);
+    const torrent = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("no metadata from the swarm within 60s")), 6e4);
+      this.ensureClient().add(info.magnet, { announce: [this.o.trackerUrl], path: dir }, (t) => {
+        clearTimeout(timer);
+        resolve(t);
+      });
+    });
+    await this.o.store.record({
+      infoHash: torrent.infoHash,
+      name: torrent.name,
+      bytes: info.bytes,
+      addedAtMs: Date.now()
+    });
+    this.track(torrent);
+    const scheduler = new PieceScheduler(torrent, 0, this.o.windows);
+    this.schedulers.set(torrent.infoHash.toLowerCase(), scheduler);
+    scheduler.prime();
+    return { path: `${dir}/${torrent.name}`, torrent };
+  }
+  track(torrent) {
+    this.torrents.set(torrent.infoHash.toLowerCase(), torrent);
+    torrent.on("done", () => this.emit("done", torrent.infoHash));
+    torrent.on("error", (err) => this.emit("error", err));
+  }
+  get(infoHash) {
+    return this.torrents.get(infoHash.toLowerCase());
+  }
+  schedulerFor(infoHash) {
+    return this.schedulers.get(infoHash.toLowerCase());
+  }
+  /**
+   * Move the windows to follow playback. Called as the room's playhead moves,
+   * including while the film is still arriving -- which is the whole point of
+   * windowing rather than fetching in order.
+   */
+  updatePlayhead(infoHash, positionSec, durationSec) {
+    const scheduler = this.schedulers.get(infoHash.toLowerCase());
+    if (!scheduler) return;
+    if (durationSec > 0) scheduler.setDuration(durationSec);
+    scheduler.update(positionSec);
+  }
+  progress() {
+    return [...this.torrents.values()].map((t) => ({
+      infoHash: t.infoHash,
+      name: t.name,
+      progress: t.progress,
+      downBps: t.downloadSpeed,
+      upBps: t.uploadSpeed,
+      peers: t.numPeers,
+      done: t.done,
+      bytes: t.length
+    }));
+  }
+  async destroy() {
+    this.torrents.clear();
+    this.schedulers.clear();
+    await new Promise((res) => this.client ? this.client.destroy(() => res()) : res());
+    this.client = null;
   }
 }
 class MpvIpc extends EventEmitter {
@@ -808,8 +1120,19 @@ function createHandlers(deps) {
     deps.setMediaPath(path);
     const durationSec = video2.player.duration();
     log(`[film] loaded ${basename(path)} · duration ${durationSec ?? "unknown"}`);
-    deps.getRoom()?.announceMedia(basename(path), durationSec ?? 0);
-    return { path, name: basename(path), durationSec };
+    let torrent = null;
+    const transfer2 = deps.getTransfer();
+    if (transfer2) {
+      try {
+        torrent = await transfer2.share(path);
+        deps.setSharedInfoHash?.(torrent.infoHash);
+        log(`[film] sharing as ${torrent.infoHash}`);
+      } catch (err) {
+        log(`[film] could not share: ${String(err)}`);
+      }
+    }
+    deps.getRoom()?.announceMedia(basename(path), durationSec ?? 0, torrent);
+    return { path, name: basename(path), durationSec, infoHash: torrent?.infoHash ?? null };
   };
   return {
     "video:slot": (slot) => {
@@ -847,6 +1170,28 @@ function createHandlers(deps) {
       return await loadInto(path);
     },
     "identity:get": () => deps.getIdentity(),
+    "films:list": async () => {
+      const store = deps.getFilmStore();
+      if (!store) return { films: [], usedBytes: 0, freeBytes: 0 };
+      return { films: await store.list(), usedBytes: await store.totalBytes(), freeBytes: await store.freeBytes() };
+    },
+    "films:remove": async (infoHash) => {
+      const store = deps.getFilmStore();
+      if (!store) throw new Error("no film store");
+      const open = deps.getMediaPath();
+      const film = (await store.list()).find((f) => f.infoHash.toLowerCase() === infoHash.toLowerCase());
+      if (film && open && film.path === open) throw new Error("That film is open. Close it first.");
+      await store.remove(infoHash);
+      log(`[films] removed ${infoHash}`);
+    },
+    /** Fetch a film the room is sharing that this machine does not have. */
+    "film:receive": async (info) => {
+      const transfer2 = deps.getTransfer();
+      if (!transfer2) throw new Error("transfer not ready");
+      log(`[film] receiving ${info.infoHash} (${(info.bytes / 1024 ** 3).toFixed(2)} GB)`);
+      const { path } = await transfer2.receive(info);
+      return { path };
+    },
     /** A null code creates a room; a code joins one. */
     "room:connect": async (o) => {
       const player = deps.getVideo()?.player;
@@ -972,6 +1317,16 @@ let room = null;
 let mediaPath = null;
 let statusTimer = null;
 const identity = new IdentityStore(identityPathFor(app.getPath("userData")));
+const films = new FilmStore(join(app.getPath("userData"), "films"));
+let transfer = null;
+let sharedInfoHash = null;
+let receiving = null;
+function ensureTransfer(trackerUrl) {
+  if (transfer) return transfer;
+  transfer = new TransferManager({ store: films, trackerUrl });
+  transfer.on("error", (err) => console.error("[transfer]", err));
+  return transfer;
+}
 const state = () => {
   const player = video?.player;
   const now = Date.now();
@@ -995,7 +1350,10 @@ const state = () => {
     clockOffsetMs: room?.clock.offsetMs() ?? null,
     rttMs: room?.clock.rttMs() ?? null,
     lastAction: room?.lastSyncAction()?.type ?? null,
-    fullscreen: mainWin?.isFullScreen() ?? false
+    fullscreen: mainWin?.isFullScreen() ?? false,
+    transfers: transfer?.progress() ?? [],
+    receiving,
+    roomTorrent: room?.media?.torrent ?? null
   };
 };
 function createWindow() {
@@ -1045,6 +1403,11 @@ function createWindow() {
       }
     }
     statusTimer = setInterval(() => {
+      const t = room?.media?.torrent;
+      if (t && transfer) {
+        const at = room?.expectedPosition() ?? 0;
+        transfer.updatePlayhead(t.infoHash, at, room?.media?.durationSec ?? 0);
+      }
       if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("state", state());
     }, 100);
   });
@@ -1060,6 +1423,33 @@ const handlers = createHandlers({
   createRoom: async (o) => {
     const client = new RoomClient({ url: o.url, code: o.code, name: o.name, player: o.player });
     await client.connect();
+    if (client.trackerUrl) ensureTransfer(client.trackerUrl);
+    client.on("media", (media) => {
+      void (async () => {
+        const t = media?.torrent;
+        if (!t || t.infoHash === sharedInfoHash) return;
+        try {
+          const tm = ensureTransfer(client.trackerUrl);
+          console.log(`[film] room is sharing ${media?.name}; fetching`);
+          receiving = { name: media?.name ?? "", infoHash: t.infoHash };
+          const { path } = await tm.receive(t);
+          const torrent = tm.get(t.infoHash);
+          const load = async () => {
+            await video?.player?.load(path);
+            mediaPath = path;
+            receiving = null;
+            console.log(`[film] received and loaded ${path}`);
+          };
+          if (torrent?.done) await load();
+          else torrent?.on("done", () => {
+            void load().catch((e) => console.error("[film]", e));
+          });
+        } catch (err) {
+          receiving = null;
+          console.error("[film] could not receive:", err);
+        }
+      })();
+    });
     return client;
   },
   getMediaPath: () => mediaPath,
@@ -1070,6 +1460,11 @@ const handlers = createHandlers({
   isFullScreen: () => mainWin?.isFullScreen() ?? false,
   getIdentity: () => identity.get(),
   saveIdentity: (patch) => identity.save(patch),
+  getTransfer: () => transfer,
+  getFilmStore: () => films,
+  setSharedInfoHash: (h) => {
+    sharedInfoHash = h;
+  },
   log: (m) => console.log(m)
 });
 for (const [channel, fn] of Object.entries(handlers)) {
@@ -1091,6 +1486,10 @@ app.on("before-quit", (event) => {
     if (statusTimer) {
       clearInterval(statusTimer);
       statusTimer = null;
+    }
+    try {
+      await transfer?.destroy();
+    } catch {
     }
     try {
       await room?.close();

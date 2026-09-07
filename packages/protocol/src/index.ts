@@ -48,11 +48,39 @@ export type ChatMessage = z.infer<typeof ChatMessage>
 
 export const MAX_CHAT_LENGTH = 800
 
+/**
+ * What the swarm needs to fetch a film.
+ *
+ * Nullable on purpose: a room can still announce a film that everyone is
+ * expected to already have, which is how phases 1 through 3 worked and remains
+ * the right mode when nobody needs anything transferred. Its presence is what
+ * means "and you can get it from us".
+ */
+export const TorrentInfo = z.object({
+  infoHash: z.string().regex(/^[0-9a-f]{40}$/i),
+  magnet: z.string().min(1),
+  bytes: z.number().int().positive(),
+  pieceLength: z.number().int().positive()
+})
+export type TorrentInfo = z.infer<typeof TorrentInfo>
+
+export const Media = z.object({
+  name: z.string(),
+  durationSec: z.number(),
+  torrent: TorrentInfo.nullable()
+})
+export type Media = z.infer<typeof Media>
+
 export const ClientMessage = z.discriminatedUnion('t', [
   /** No code creates a room and returns one; a code joins an existing room. */
   z.object({ t: z.literal('hello'), code: z.string().nullable(), name: z.string().min(1).max(40) }),
   z.object({ t: z.literal('time.ping'), c1: z.number() }),
-  z.object({ t: z.literal('media.announce'), name: z.string(), durationSec: z.number() }),
+  z.object({
+    t: z.literal('media.announce'),
+    name: z.string(),
+    durationSec: z.number(),
+    torrent: TorrentInfo.nullable().default(null)
+  }),
   z.object({
     t: z.literal('playback.request'),
     intent: z.enum(['play', 'pause', 'seek']),
@@ -73,7 +101,9 @@ export const ServerMessage = z.discriminatedUnion('t', [
     t: z.literal('room.state'),
     code: z.string(),
     members: z.array(Member),
-    media: z.object({ name: z.string(), durationSec: z.number() }).nullable()
+    media: Media.nullable(),
+    /** Where to announce, so clients do not have to guess the tracker URL. */
+    trackerUrl: z.string()
   }),
   z.object({ t: z.literal('playback.schedule'), state: PlaybackState, seq: z.number() }),
   z.object({ t: z.literal('chat.message'), message: ChatMessage }),

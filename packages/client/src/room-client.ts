@@ -1,7 +1,7 @@
 import WebSocket from 'ws'
 import { EventEmitter } from 'node:events'
 import { ClockSync, tick, extrapolatePosition, DEFAULT_SYNC_CONFIG, type SyncConfig, type SyncAction } from '@cocine/sync'
-import { decodeServer, encode, type ChatMessage, type ClientMessage, type Member, type PlaybackState } from '@cocine/protocol'
+import { decodeServer, encode, type ChatMessage, type ClientMessage, type Media, type Member, type PlaybackState, type TorrentInfo } from '@cocine/protocol'
 import type { PlayerController } from '@cocine/player'
 
 export interface RoomClientOptions {
@@ -35,6 +35,9 @@ export class RoomClient extends EventEmitter {
   members: Member[] = []
   memberId = ''
   code = ''
+  media: Media | null = null
+  /** Where the room's swarm announces. Learned from the server, never guessed. */
+  trackerUrl = ''
   /** Bounded locally as well as on the server, so a long session cannot grow
    *  the renderer's state without limit. */
   messages: ChatMessage[] = []
@@ -85,6 +88,13 @@ export class RoomClient extends EventEmitter {
       case 'room.state':
         this.members = msg.members
         this.code = msg.code
+        this.trackerUrl = msg.trackerUrl
+        if (msg.media?.torrent?.infoHash !== this.media?.torrent?.infoHash) {
+          this.media = msg.media
+          this.emit('media', msg.media)
+        } else {
+          this.media = msg.media
+        }
         this.emit('members', msg.members)
         break
       case 'chat.history':
@@ -165,7 +175,10 @@ export class RoomClient extends EventEmitter {
   currentRate (): number { return this.rate }
   lastSyncAction (): SyncAction { return this.lastAction }
 
-  announceMedia (name: string, durationSec: number): void { this.send({ t: 'media.announce', name, durationSec }) }
+  /** A null torrent means "everyone is expected to already have this file". */
+  announceMedia (name: string, durationSec: number, torrent: TorrentInfo | null = null): void {
+    this.send({ t: 'media.announce', name, durationSec, torrent })
+  }
   sendChat (text: string): void {
     const t = text.trim()
     if (t) this.send({ t: 'chat.send', text: t.slice(0, 800) })

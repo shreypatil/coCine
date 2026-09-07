@@ -569,8 +569,8 @@ function requireReact_production() {
   react_production.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE = ReactSharedInternals;
   react_production.__COMPILER_RUNTIME = {
     __proto__: null,
-    c: function(size) {
-      return ReactSharedInternals.H.useMemoCache(size);
+    c: function(size2) {
+      return ReactSharedInternals.H.useMemoCache(size2);
     }
   };
   react_production.cache = function(fn) {
@@ -4105,7 +4105,7 @@ function requireReactDomClient_production() {
     }
     throw Error(formatProdErrorMessage(438, String(usable)));
   }
-  function useMemoCache(size) {
+  function useMemoCache(size2) {
     var memoCache = null, updateQueue = currentlyRenderingFiber.updateQueue;
     null !== updateQueue && (memoCache = updateQueue.memoCache);
     if (null == memoCache) {
@@ -4122,7 +4122,7 @@ function requireReactDomClient_production() {
     updateQueue.memoCache = memoCache;
     updateQueue = memoCache.data[memoCache.index];
     if (void 0 === updateQueue)
-      for (updateQueue = memoCache.data[memoCache.index] = Array(size), current = 0; current < size; current++)
+      for (updateQueue = memoCache.data[memoCache.index] = Array(size2), current = 0; current < size2; current++)
         updateQueue[current] = REACT_MEMO_CACHE_SENTINEL;
     memoCache.index++;
     return updateQueue;
@@ -12449,6 +12449,12 @@ function requireClient() {
 }
 var clientExports = requireClient();
 var reactExports = requireReact();
+const size = (b) => {
+  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GB`;
+  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MB`;
+  return `${(b / 1024).toFixed(0)} kB`;
+};
+const rate = (b) => b > 0 ? `${(b / 1024 ** 2).toFixed(1)} MB/s` : "—";
 const clock = (s) => {
   if (s == null || !isFinite(s)) return "--:--:--";
   const t = Math.max(0, Math.floor(s));
@@ -12473,6 +12479,8 @@ function App() {
   const [busy, setBusy] = reactExports.useState(false);
   const [error, setError] = reactExports.useState(null);
   const [dropping, setDropping] = reactExports.useState(false);
+  const [view, setView] = reactExports.useState("room");
+  const [library, setLibrary] = reactExports.useState(null);
   const slotRef = reactExports.useRef(null);
   const chatRef = reactExports.useRef(null);
   reactExports.useEffect(() => window.cocine.onState(setS), []);
@@ -12520,6 +12528,19 @@ function App() {
     const el = chatRef.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [count]);
+  const refreshLibrary = reactExports.useCallback(async () => {
+    try {
+      setLibrary(await window.cocine.listFilms());
+    } catch {
+      setLibrary(null);
+    }
+  }, []);
+  reactExports.useEffect(() => {
+    if (view !== "films") return;
+    void refreshLibrary();
+    const iv = setInterval(() => void refreshLibrary(), 2e3);
+    return () => clearInterval(iv);
+  }, [view, refreshLibrary]);
   const guard = reactExports.useCallback(async (fn) => {
     setBusy(true);
     setError(null);
@@ -12631,6 +12652,15 @@ function App() {
               children: "Open film"
             }
           ),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: view === "films" ? "btn on" : "btn",
+              "data-testid": "films",
+              onClick: () => setView((v) => v === "films" ? "room" : "films"),
+              children: "Films"
+            }
+          ),
           s?.connected && /* @__PURE__ */ jsxRuntimeExports.jsx(
             "button",
             {
@@ -12649,7 +12679,34 @@ function App() {
         /* @__PURE__ */ jsxRuntimeExports.jsxs("main", { className: "body", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "stage", ref: slotRef, "data-testid": "stage" }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("aside", { className: "sidebar", children: [
-            !s?.connected ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect join", children: [
+            view === "films" ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect library", "data-testid": "library", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "Films on this machine" }),
+              !library || library.films.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "quiet", children: "Nothing stored yet. Films you receive are kept here." }) : /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "filmlist", children: library.films.map((f) => /* @__PURE__ */ jsxRuntimeExports.jsxs("li", { "data-testid": "storedfilm", "data-name": f.name, children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "fl-name", children: f.name }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "fl-meta", children: [
+                  f.complete ? size(f.bytes) : `${size(f.onDiskBytes)} of ${size(f.bytes)}`,
+                  !f.complete && /* @__PURE__ */ jsxRuntimeExports.jsx("em", { children: " partial" })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    className: "mini",
+                    "data-testid": "removefilm",
+                    onClick: () => void guard(async () => {
+                      await window.cocine.removeFilm(f.infoHash);
+                      await refreshLibrary();
+                    }),
+                    children: "delete"
+                  }
+                )
+              ] }, f.infoHash)) }),
+              library && /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "quiet space", children: [
+                size(library.usedBytes),
+                " used · ",
+                size(library.freeBytes),
+                " free on disk"
+              ] })
+            ] }) : !s?.connected ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect join", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "Watch together" }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { children: [
                 "Your name",
@@ -12755,10 +12812,30 @@ function App() {
                 ) })
               ] })
             ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect film", children: [
+            view === "room" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect film", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "Film" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "fname", children: s?.mediaName ?? "Nothing open" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "quiet", children: duration > 0 ? `${clock(duration)} long` : "Drop a file anywhere, or use Open film" })
+              s?.receiving ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "fname", children: s.receiving.name }),
+                (() => {
+                  const t = s.transfers.find((x) => x.infoHash === s.receiving.infoHash);
+                  const pct = Math.round((t?.progress ?? 0) * 100);
+                  return /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "bar", "data-testid": "receivebar", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { width: `${pct}%` } }) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "quiet", children: [
+                      "receiving · ",
+                      pct,
+                      "% · ",
+                      rate(t?.downBps ?? 0),
+                      " · ",
+                      t?.peers ?? 0,
+                      " peers"
+                    ] })
+                  ] });
+                })()
+              ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "fname", children: s?.mediaName ?? "Nothing open" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "quiet", children: duration > 0 ? `${clock(duration)} long` : "Drop a file anywhere, or use Open film" })
+              ] })
             ] })
           ] })
         ] }),

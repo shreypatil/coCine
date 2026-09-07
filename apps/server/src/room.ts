@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { positionAt, type ChatMessage, type Member, type PlaybackState } from '@cocine/protocol'
+import { positionAt, type ChatMessage, type Media, type Member, type PlaybackState } from '@cocine/protocol'
 
 /** Enough backlog that a latecomer sees the conversation, not so much that a
  *  long session grows without bound. */
@@ -16,7 +16,7 @@ const CHAT_HISTORY = 200
 export class Room {
   readonly members = new Map<string, Member>()
   state: PlaybackState = { kind: 'idle' }
-  media: { name: string; durationSec: number } | null = null
+  media: Media | null = null
   seq = 0
   readonly chat: ChatMessage[] = []
   lastEmptyAtMs: number | null = Date.now()

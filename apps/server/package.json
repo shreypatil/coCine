@@ -6,6 +6,7 @@
   "main": "./src/index.ts",
   "dependencies": {
     "@cocine/protocol": "*",
+    "bittorrent-tracker": "^11.2.3",
     "ws": "^8.18.0"
   },
   "exports": {

@@ -15,7 +15,9 @@
     "@cocine/protocol": "*",
     "@cocine/sync": "*",
     "ws": "^8.18.0",
-    "zod": "^4.5.4"
+    "zod": "^4.5.4",
+    "webtorrent": "^3.0.21",
+    "node-datachannel": "^0.33.2"
   },
   "devDependencies": {
     "react": "^19.2.0",

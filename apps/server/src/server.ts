@@ -1,4 +1,6 @@
 import { WebSocketServer, type WebSocket } from 'ws'
+import { createServer, type Server as HttpServer } from 'node:http'
+import { RoomTracker, ANNOUNCE_PATH } from './tracker.js'
 import { randomUUID } from 'node:crypto'
 import { ClientMessage, encode, normaliseCode, type ServerMessage } from '@cocine/protocol'
 import type { Room } from './room.js'
@@ -26,7 +28,9 @@ export interface SignallingServerOptions {
 }
 
 export class SignallingServer {
+  private http: HttpServer | null = null
   private wss: WebSocketServer | null = null
+  readonly tracker = new RoomTracker()
   private conns = new Map<WebSocket, Conn>()
   private sweeper: NodeJS.Timeout | null = null
   readonly rooms: RoomStore
@@ -36,6 +40,8 @@ export class SignallingServer {
   private readonly delayMs: number
   private readonly jitterMs: number
   private readonly skewMs: number
+  /** Filled in once listening, so clients are told where to announce. */
+  private trackerUrl = ''
 
   constructor (private readonly opts: SignallingServerOptions = {}) {
     this.startLeadMs = opts.startLeadMs ?? 300
@@ -48,13 +54,26 @@ export class SignallingServer {
   }
 
   async listen (): Promise<number> {
-    this.wss = new WebSocketServer({ port: this.opts.port ?? 0 })
-    await new Promise<void>(res => this.wss!.once('listening', res))
+    // One port carries both planes: signalling on the root path, tracker
+    // announces on /announce. Two ports would mean two things to open in a
+    // firewall for no benefit.
+    this.http = createServer((_req, res) => { res.writeHead(404); res.end() })
+    this.wss = new WebSocketServer({ noServer: true })
     this.wss.on('connection', ws => this.onConnection(ws))
+
+    this.http.on('upgrade', (req, socket, head) => {
+      const path = (req.url ?? '/').split('?')[0]
+      if (path === ANNOUNCE_PATH) return this.tracker.handleUpgrade(req, socket, head)
+      this.wss!.handleUpgrade(req, socket, head, ws => this.wss!.emit('connection', ws, req))
+    })
+
+    await new Promise<void>(res => this.http!.listen(this.opts.port ?? 0, res))
     this.sweeper = setInterval(() => this.rooms.sweep(this.roomTtlMs), 60_000)
     this.sweeper.unref?.()
-    const addr = this.wss.address()
-    return typeof addr === 'object' && addr ? addr.port : 0
+    const addr = this.http.address()
+    const port = typeof addr === 'object' && addr ? addr.port : 0
+    this.trackerUrl = `ws://127.0.0.1:${port}${ANNOUNCE_PATH}`
+    return port
   }
 
   private onConnection (ws: WebSocket): void {
@@ -118,7 +137,10 @@ export class SignallingServer {
 
     switch (msg.t) {
       case 'media.announce': {
-        conn.room.media = { name: msg.name, durationSec: msg.durationSec }
+        conn.room.media = { name: msg.name, durationSec: msg.durationSec, torrent: msg.torrent }
+        // Only info hashes a room has announced are answerable, so this cannot
+        // be used as a public tracker for arbitrary torrents.
+        if (msg.torrent) this.tracker.allow(msg.torrent.infoHash)
         conn.room.state = { kind: 'paused', positionSec: 0 }
         conn.room.seq++
         this.emitChat(conn.room, 'system', me.name, `put on ${msg.name}`, me.id)
@@ -165,7 +187,13 @@ export class SignallingServer {
   }
 
   private broadcastState (room: Room): void {
-    this.broadcast(room, { t: 'room.state', code: room.code, members: [...room.members.values()], media: room.media })
+    this.broadcast(room, {
+      t: 'room.state',
+      code: room.code,
+      members: [...room.members.values()],
+      media: room.media,
+      trackerUrl: this.trackerUrl
+    })
   }
 
   private broadcast (room: Room, msg: ServerMessage): void {
@@ -187,6 +215,8 @@ export class SignallingServer {
   async close (): Promise<void> {
     if (this.sweeper) clearInterval(this.sweeper)
     for (const c of this.conns.keys()) c.terminate()
-    await new Promise<void>(res => this.wss ? this.wss.close(() => res()) : res())
+    this.tracker.close()
+    this.wss?.close()
+    await new Promise<void>(res => this.http ? this.http.close(() => res()) : res())
   }
 }

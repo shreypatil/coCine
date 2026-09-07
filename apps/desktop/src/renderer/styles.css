@@ -207,6 +207,22 @@ body {
 .mini:hover { background: var(--s4); color: var(--tx); }
 .tag.muted { color: var(--warn); opacity: .8; }
 
+/* ---------------------------------------------------------------- library */
+.btn.on { border-color: var(--a); color: var(--tx); background: rgba(123, 92, 255, .16); }
+.library { flex: 1; min-height: 0; overflow-y: auto; }
+.filmlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.filmlist li {
+  display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; align-items: center;
+  padding: 9px 10px; background: var(--s2); border: 1px solid var(--line-soft); border-radius: var(--r-panel);
+}
+.fl-name { font-size: 12.5px; font-weight: 550; overflow-wrap: anywhere; }
+.fl-meta { grid-column: 1; font-size: 11px; color: var(--tx3); font-family: var(--mono); }
+.fl-meta em { font-style: normal; color: var(--warn); }
+.filmlist .mini { grid-row: 1 / span 2; grid-column: 2; }
+.space { margin-top: 12px; font-family: var(--mono); }
+.bar { height: 6px; border-radius: 99px; background: var(--s4); overflow: hidden; margin: 8px 0 6px; }
+.bar span { display: block; height: 100%; background: var(--grad); transition: width .3s; }
+
 /* ---------------------------------------------------------------- chat */
 .chatwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 14px 0 0; border-bottom: 1px solid var(--line-soft); }
 .chatwrap h4 {

@@ -10,6 +10,16 @@ interface ChatMessage {
   text: string
   atServerMs: number
 }
+interface StoredFilm {
+  infoHash: string; name: string; path: string
+  bytes: number; onDiskBytes: number; complete: boolean; addedAtMs: number
+}
+interface TransferProgress {
+  infoHash: string; name: string; progress: number
+  downBps: number; upBps: number; peers: number; done: boolean; bytes: number
+}
+interface Library { films: StoredFilm[]; usedBytes: number; freeBytes: number }
+
 interface State {
   ready: boolean; connected: boolean; members: Member[]
   code: string | null; messages: ChatMessage[]
@@ -19,6 +29,8 @@ interface State {
   paused: boolean; rate: number
   clockOffsetMs: number | null; rttMs: number | null; lastAction: string | null
   fullscreen: boolean
+  transfers: TransferProgress[]
+  receiving: { name: string; infoHash: string } | null
 }
 
 declare global {
@@ -29,6 +41,8 @@ declare global {
       openPath: (path: string) => Promise<{ path: string; name: string; durationSec: number | null }>
       pathForFile: (f: File) => string | null
       getIdentity: () => Promise<{ id: string; name: string; server: string; lastCode: string | null }>
+      listFilms: () => Promise<Library>
+      removeFilm: (infoHash: string) => Promise<void>
       connect: (o: { url: string; code: string | null; name: string }) => Promise<{ memberId: string; code: string }>
       disconnect: () => Promise<void>
       sendChat: (text: string) => Promise<void>
@@ -42,6 +56,13 @@ declare global {
     }
   }
 }
+
+const size = (b: number): string => {
+  if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GB`
+  if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MB`
+  return `${(b / 1024).toFixed(0)} kB`
+}
+const rate = (b: number): string => b > 0 ? `${(b / 1024 ** 2).toFixed(1)} MB/s` : '—'
 
 const clock = (s: number | null | undefined): string => {
   if (s == null || !isFinite(s)) return '--:--:--'
@@ -71,6 +92,8 @@ export function App (): ReactElement {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [dropping, setDropping] = useState(false)
+  const [view, setView] = useState<'room' | 'films'>('room')
+  const [library, setLibrary] = useState<Library | null>(null)
   const slotRef = useRef<HTMLDivElement>(null)
   const chatRef = useRef<HTMLDivElement>(null)
 
@@ -126,6 +149,19 @@ export function App (): ReactElement {
     const el = chatRef.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [count])
+
+  const refreshLibrary = useCallback(async () => {
+    try { setLibrary(await window.cocine.listFilms()) } catch { setLibrary(null) }
+  }, [])
+
+  // Refresh while the library is on screen, so a transfer's growing file and a
+  // deletion elsewhere both show up without needing a reload.
+  useEffect(() => {
+    if (view !== 'films') return
+    void refreshLibrary()
+    const iv = setInterval(() => void refreshLibrary(), 2000)
+    return () => clearInterval(iv)
+  }, [view, refreshLibrary])
 
   const guard = useCallback(async (fn: () => Promise<unknown>) => {
     setBusy(true); setError(null)
@@ -212,6 +248,8 @@ export function App (): ReactElement {
           onClick={() => { console.log('open film clicked'); void guard(() => window.cocine.openFile()) }}>
           Open film
         </button>
+        <button className={view === 'films' ? 'btn on' : 'btn'} data-testid="films"
+          onClick={() => setView(v => v === 'films' ? 'room' : 'films')}>Films</button>
         {s?.connected && (
           <button className="btn" data-testid="leave" disabled={busy}
             onClick={() => void guard(() => window.cocine.disconnect())}>Leave</button>
@@ -231,7 +269,33 @@ export function App (): ReactElement {
         <div className="stage" ref={slotRef} data-testid="stage" />
 
         <aside className="sidebar">
-          {!s?.connected ? (
+          {view === 'films' ? (
+            <div className="sect library" data-testid="library">
+              <h4>Films on this machine</h4>
+              {!library || library.films.length === 0
+                ? <p className="quiet">Nothing stored yet. Films you receive are kept here.</p>
+                : (
+                  <ul className="filmlist">
+                    {library.films.map(f => (
+                      <li key={f.infoHash} data-testid="storedfilm" data-name={f.name}>
+                        <span className="fl-name">{f.name}</span>
+                        <span className="fl-meta">
+                          {f.complete ? size(f.bytes) : `${size(f.onDiskBytes)} of ${size(f.bytes)}`}
+                          {!f.complete && <em> partial</em>}
+                        </span>
+                        <button className="mini" data-testid="removefilm"
+                          onClick={() => void guard(async () => { await window.cocine.removeFilm(f.infoHash); await refreshLibrary() })}>
+                          delete
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              {library && (
+                <p className="quiet space">{size(library.usedBytes)} used · {size(library.freeBytes)} free on disk</p>
+              )}
+            </div>
+          ) : !s?.connected ? (
             <div className="sect join">
               <h4>Watch together</h4>
               <label>Your name<input value={name} onChange={e => setName(e.target.value)} spellCheck={false} data-testid="name" /></label>
@@ -299,11 +363,31 @@ export function App (): ReactElement {
               </div>
             </>
           )}
-          <div className="sect film">
-            <h4>Film</h4>
-            <p className="fname">{s?.mediaName ?? 'Nothing open'}</p>
-            <p className="quiet">{duration > 0 ? `${clock(duration)} long` : 'Drop a file anywhere, or use Open film'}</p>
-          </div>
+          {view === 'room' && (
+            <div className="sect film">
+              <h4>Film</h4>
+              {s?.receiving ? (
+                <>
+                  <p className="fname">{s.receiving.name}</p>
+                  {(() => {
+                    const t = s.transfers.find(x => x.infoHash === s.receiving!.infoHash)
+                    const pct = Math.round((t?.progress ?? 0) * 100)
+                    return (
+                      <>
+                        <div className="bar" data-testid="receivebar"><span style={{ width: `${pct}%` }} /></div>
+                        <p className="quiet">receiving · {pct}% · {rate(t?.downBps ?? 0)} · {t?.peers ?? 0} peers</p>
+                      </>
+                    )
+                  })()}
+                </>
+              ) : (
+                <>
+                  <p className="fname">{s?.mediaName ?? 'Nothing open'}</p>
+                  <p className="quiet">{duration > 0 ? `${clock(duration)} long` : 'Drop a file anywhere, or use Open film'}</p>
+                </>
+              )}
+            </div>
+          )}
         </aside>
       </main>
 

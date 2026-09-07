@@ -1,6 +1,8 @@
 import { basename } from 'node:path'
 import type { ChatMessage, Member } from '@cocine/protocol'
 import type { Identity } from './identity.js'
+import type { StoredFilm, TransferProgress } from '@cocine/client'
+import type { TorrentInfo } from '@cocine/protocol'
 
 /**
  * Every IPC handler, as plain functions over injected dependencies.
@@ -28,8 +30,21 @@ export interface VideoLike {
   bounds: () => Rect | null
 }
 
+export interface TransferLike {
+  share: (filePath: string) => Promise<TorrentInfo>
+  receive: (info: TorrentInfo) => Promise<{ path: string }>
+  progress: () => TransferProgress[]
+}
+
+export interface FilmStoreLike {
+  list: () => Promise<StoredFilm[]>
+  remove: (infoHash: string) => Promise<void>
+  totalBytes: () => Promise<number>
+  freeBytes: () => Promise<number>
+}
+
 export interface RoomLike {
-  announceMedia: (name: string, durationSec: number) => void
+  announceMedia: (name: string, durationSec: number, torrent?: TorrentInfo | null) => void
   requestPlay: (positionSec?: number) => void
   requestPause: (positionSec?: number) => void
   requestSeek: (positionSec: number) => void
@@ -61,6 +76,9 @@ export interface HandlerDeps {
   isFullScreen: () => boolean
   getIdentity: () => Identity
   saveIdentity: (patch: Partial<Omit<Identity, 'id'>>) => Identity
+  getTransfer: () => TransferLike | null
+  getFilmStore: () => FilmStoreLike | null
+  setSharedInfoHash?: (infoHash: string | null) => void
   log?: (message: string) => void
 }
 
@@ -86,7 +104,7 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
   }
 
   /** Shared by the dialog and by drag-and-drop, so both behave identically. */
-  const loadInto = async (path: string): Promise<{ path: string; name: string; durationSec: number | null }> => {
+  const loadInto = async (path: string): Promise<{ path: string; name: string; durationSec: number | null; infoHash: string | null }> => {
     const video = deps.getVideo()
     if (!video?.player) throw new Error('player not ready')
     try {
@@ -98,8 +116,24 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     deps.setMediaPath(path)
     const durationSec = video.player.duration()
     log(`[film] loaded ${basename(path)} · duration ${durationSec ?? 'unknown'}`)
-    deps.getRoom()?.announceMedia(basename(path), durationSec ?? 0)
-    return { path, name: basename(path), durationSec }
+
+    // Sharing is what makes the film available to everyone else. Hashing runs
+    // in chunks and measured at roughly 780 MB/s, so it does not need a worker
+    // -- but it is still seconds on a large film, and a failure to share must
+    // not stop the person who opened it from watching.
+    let torrent: TorrentInfo | null = null
+    const transfer = deps.getTransfer()
+    if (transfer) {
+      try {
+        torrent = await transfer.share(path)
+        deps.setSharedInfoHash?.(torrent.infoHash)
+        log(`[film] sharing as ${torrent.infoHash}`)
+      } catch (err) {
+        log(`[film] could not share: ${String(err)}`)
+      }
+    }
+    deps.getRoom()?.announceMedia(basename(path), durationSec ?? 0, torrent)
+    return { path, name: basename(path), durationSec, infoHash: torrent?.infoHash ?? null }
   }
 
   return {
@@ -145,6 +179,33 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     },
 
     'identity:get': () => deps.getIdentity(),
+
+    'films:list': async () => {
+      const store = deps.getFilmStore()
+      if (!store) return { films: [], usedBytes: 0, freeBytes: 0 }
+      return { films: await store.list(), usedBytes: await store.totalBytes(), freeBytes: await store.freeBytes() }
+    },
+
+    'films:remove': async (infoHash: string) => {
+      const store = deps.getFilmStore()
+      if (!store) throw new Error('no film store')
+      // Removing the film currently open would pull the file out from under
+      // mpv, so refuse rather than produce a confusing playback failure.
+      const open = deps.getMediaPath()
+      const film = (await store.list()).find(f => f.infoHash.toLowerCase() === infoHash.toLowerCase())
+      if (film && open && film.path === open) throw new Error('That film is open. Close it first.')
+      await store.remove(infoHash)
+      log(`[films] removed ${infoHash}`)
+    },
+
+    /** Fetch a film the room is sharing that this machine does not have. */
+    'film:receive': async (info: TorrentInfo) => {
+      const transfer = deps.getTransfer()
+      if (!transfer) throw new Error('transfer not ready')
+      log(`[film] receiving ${info.infoHash} (${(info.bytes / 1024 ** 3).toFixed(2)} GB)`)
+      const { path } = await transfer.receive(info)
+      return { path }
+    },
 
     /** A null code creates a room; a code joins one. */
     'room:connect': async (o: { url: string; code: string | null; name: string }) => {

@@ -28,7 +28,8 @@ const STATE = {
   positionSec: 12, expectedSec: 12, driftMs: 4,
   paused: true, rate: 1, clockOffsetMs: 3, rttMs: 20, lastAction: 'none',
   fullscreen: false,
-  code: 'BCDFGHJK', messages: [] as unknown[], isHost: true, mayControl: true
+  code: 'BCDFGHJK', messages: [] as unknown[], isHost: true, mayControl: true,
+  transfers: [] as unknown[], receiving: null as unknown
 }
 
 beforeAll(async () => {
@@ -72,6 +73,11 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
       openPath: rec('openPath'),
       pathForFile: () => '/films/stub.mkv',
       getIdentity: () => Promise.resolve({ id: 'local-1', name: 'anjali', server: 'ws://box:9000', lastCode: 'BCDFGHJK' }),
+      listFilms: () => {
+        (w.__calls as Array<{ name: string; args: unknown[] }>).push({ name: 'listFilms', args: [] })
+        return Promise.resolve(w.__library ?? { films: [], usedBytes: 0, freeBytes: 500 * 1024 ** 3 })
+      },
+      removeFilm: rec('removeFilm'),
       connect: rec('connect'),
       disconnect: rec('disconnect'),
       play: rec('play'),
@@ -258,6 +264,84 @@ const MSGS = [
   { id: '2', kind: 'said', memberId: 'a', name: 'anjali', text: 'starting in five', atServerMs: 1_700_000_060_000 },
   { id: '3', kind: 'system', memberId: 'a', name: 'anjali', text: 'put on dune.mkv', atServerMs: 1_700_000_120_000 }
 ]
+
+describe('films on disk', () => {
+  const FILMS = {
+    films: [
+      { infoHash: 'a'.repeat(40), name: 'dune.mkv', path: '/f/a/dune.mkv', bytes: 4 * 1024 ** 3, onDiskBytes: 4 * 1024 ** 3, complete: true, addedAtMs: 2 },
+      { infoHash: 'b'.repeat(40), name: 'arrival.mkv', path: '/f/b/arrival.mkv', bytes: 2 * 1024 ** 3, onDiskBytes: 1024 ** 3, complete: false, addedAtMs: 1 }
+    ],
+    usedBytes: 5 * 1024 ** 3,
+    freeBytes: 120 * 1024 ** 3
+  }
+
+  const openLibrary = async (): Promise<void> => {
+    await page.evaluate(l => { (window as unknown as Record<string, unknown>).__library = l }, FILMS)
+    await push()
+    await page.click('[data-testid="films"]')
+    await page.waitForSelector('[data-testid="storedfilm"]')
+  }
+
+  it('lists what is stored, in gigabytes rather than bytes', async () => {
+    await open()
+    await openLibrary()
+    expect(await page.locator('[data-testid="storedfilm"]').count()).toBe(2)
+    expect(await page.textContent('[data-testid="library"]')).toContain('4.0 GB')
+    expect(await page.textContent('[data-testid="library"]')).toContain('120.0 GB free')
+    await page.close()
+  })
+
+  it('marks a partial download rather than pretending it is whole', async () => {
+    await open()
+    await openLibrary()
+    const row = await page.textContent('[data-testid="storedfilm"][data-name="arrival.mkv"]')
+    expect(row).toContain('1.0 GB of 2.0 GB')
+    expect(row).toContain('partial')
+    await page.close()
+  })
+
+  it('deletes a film', async () => {
+    await open()
+    await openLibrary()
+    await page.click('[data-testid="storedfilm"][data-name="dune.mkv"] [data-testid="removefilm"]')
+    expect((await calls('removeFilm'))[0]).toEqual(['a'.repeat(40)])
+    await page.close()
+  })
+
+  it('says so plainly when nothing is stored', async () => {
+    await open()
+    await push()
+    await page.click('[data-testid="films"]')
+    await page.waitForSelector('[data-testid="library"]')
+    expect(await page.textContent('[data-testid="library"]')).toContain('Nothing stored yet')
+    await page.close()
+  })
+
+  it('returns to the room when toggled off', async () => {
+    await open()
+    await openLibrary()
+    await page.click('[data-testid="films"]')
+    expect(await page.locator('[data-testid="library"]').count()).toBe(0)
+    expect(await page.locator('[data-testid="chat"]').count()).toBe(1)
+    await page.close()
+  })
+})
+
+describe('receiving a film', () => {
+  it('shows progress instead of the film details while one is arriving', async () => {
+    await open()
+    await push({
+      receiving: { name: 'dune.mkv', infoHash: 'a'.repeat(40) },
+      transfers: [{ infoHash: 'a'.repeat(40), name: 'dune.mkv', progress: 0.42, downBps: 3 * 1024 ** 2, upBps: 0, peers: 3, done: false, bytes: 100 }]
+    })
+    await page.waitForSelector('[data-testid="receivebar"]')
+    const text = await page.textContent('.sect.film')
+    expect(text).toContain('42%')
+    expect(text).toContain('3.0 MB/s')
+    expect(text).toContain('3 peers')
+    await page.close()
+  })
+})
 
 describe('remembered identity', () => {
   it('fills the join panel from what was stored, instead of asking again', async () => {
