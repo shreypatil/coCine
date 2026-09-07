@@ -1,0 +1,14 @@
+{
+  "name": "realistic",
+  "note": "Full scale, ~25 minutes of wall clock. The scaled-down scenarios understate the value of sequential selection, because a 20s buffer is a sixth of a 60 MB file but only a hundredth of a real one. Run this before drawing a final conclusion about time-to-first-frame.",
+  "fileMB": 4000,
+  "runtimeSec": 7200,
+  "sharer": { "name": "rohan", "up": 25 },
+  "peers": [
+    { "name": "anjali", "up": 40, "down": 300 },
+    { "name": "dev",    "up": 20, "down": 150 },
+    { "name": "priya",  "up": 10, "down": 100 },
+    { "name": "sam",    "up": 5,  "down": 60 }
+  ],
+  "config": { "maxSec": 3600 }
+}

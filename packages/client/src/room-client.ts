@@ -1,0 +1,166 @@
+import WebSocket from 'ws'
+import { EventEmitter } from 'node:events'
+import { ClockSync, tick, extrapolatePosition, DEFAULT_SYNC_CONFIG, type SyncConfig, type SyncAction } from '@cocine/sync'
+import { decodeServer, encode, type ClientMessage, type Member, type PlaybackState } from '@cocine/protocol'
+import type { PlayerController } from '@cocine/player'
+
+export interface RoomClientOptions {
+  url: string
+  room: string
+  name: string
+  player: PlayerController
+  syncConfig?: SyncConfig
+  /** How often the sync engine runs. mpv reports position at ~25 Hz, so there
+   *  is no value above that; 20 Hz keeps control lag well inside the budget. */
+  tickHz?: number
+  pingIntervalMs?: number
+}
+
+/**
+ * Composes the three pieces: a socket to the server, a clock estimate, and the
+ * pure sync engine driving a player. This is what Electron's main process will
+ * hold, and what the drift test instantiates five of.
+ *
+ * It owns all the I/O so that `@cocine/sync` does not have to.
+ */
+export class RoomClient extends EventEmitter {
+  readonly clock = new ClockSync()
+  private ws: WebSocket | null = null
+  private target: PlaybackState = { kind: 'idle' }
+  private rate = 1
+  private busy = false
+  private timers: NodeJS.Timeout[] = []
+  private lastAction: SyncAction = { type: 'none' }
+  members: Member[] = []
+  memberId = ''
+
+  constructor (private readonly o: RoomClientOptions) { super() }
+
+  async connect (): Promise<void> {
+    const ws = new WebSocket(this.o.url)
+    this.ws = ws
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', resolve)
+      ws.once('error', reject)
+    })
+    ws.on('message', raw => this.onMessage(String(raw)))
+    this.send({ t: 'hello', room: this.o.room, name: this.o.name })
+
+    // Burst a few pings so the first estimate is usable immediately, then settle.
+    for (let i = 0; i < 8; i++) { this.ping(); await new Promise(r => setTimeout(r, 25)) }
+    await this.waitForClock()
+
+    const pingMs = this.o.pingIntervalMs ?? 2000
+    this.timers.push(setInterval(() => this.ping(), pingMs))
+    const tickMs = 1000 / (this.o.tickHz ?? 20)
+    this.timers.push(setInterval(() => { void this.runTick() }, tickMs))
+  }
+
+  private async waitForClock (timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    while (!this.clock.ready) {
+      if (Date.now() > deadline) throw new Error('no clock samples from server')
+      await new Promise(r => setTimeout(r, 20))
+    }
+  }
+
+  private ping (): void { this.send({ t: 'time.ping', c1: Date.now() }) }
+
+  private onMessage (raw: string): void {
+    const msg = decodeServer(raw)
+    switch (msg.t) {
+      case 'time.pong':
+        this.clock.addExchange(msg.c1, msg.s1, msg.s2, Date.now())
+        break
+      case 'welcome':
+        this.memberId = msg.memberId
+        break
+      case 'room.state':
+        this.members = msg.members
+        this.emit('members', msg.members)
+        break
+      case 'playback.schedule':
+        this.target = msg.state
+        this.emit('schedule', msg.state)
+        // React immediately rather than waiting for the next tick: a scheduled
+        // start needs its seek to complete before the anchor instant arrives.
+        void this.runTick()
+        break
+      case 'error':
+        this.emit('server-error', msg.message)
+        break
+    }
+  }
+
+  private async runTick (): Promise<void> {
+    if (this.busy || !this.clock.ready) return
+    const localNowMs = Date.now()
+    const action = tick({
+      target: this.target,
+      serverNowMs: this.clock.serverNow(localNowMs),
+      localNowMs,
+      player: {
+        positionSec: this.o.player.position(),
+        observedAtMs: this.o.player.positionObservedAt(),
+        paused: this.o.player.isPaused(),
+        rate: this.rate
+      },
+      config: this.o.syncConfig ?? DEFAULT_SYNC_CONFIG
+    })
+    if (action.type === 'none') return
+
+    this.busy = true
+    try {
+      switch (action.type) {
+        case 'seek': await this.o.player.seek(action.toSec); break
+        case 'play': await this.o.player.play(); break
+        case 'pause': await this.o.player.pause(); break
+        case 'setRate': await this.o.player.setRate(action.rate); this.rate = action.rate; break
+      }
+      this.lastAction = action
+      this.emit('action', action)
+    } catch (err) {
+      this.emit('action-error', err)
+    } finally {
+      this.busy = false
+    }
+  }
+
+  /** Where the room says the film should be, right now, in seconds. */
+  expectedPosition (localNowMs = Date.now()): number | null {
+    const s = this.target
+    if (s.kind === 'idle') return null
+    if (s.kind === 'paused') return s.positionSec
+    const serverNow = this.clock.serverNow(localNowMs)
+    if (serverNow < s.atServerMs) return s.positionSec
+    return s.positionSec + (serverNow - s.atServerMs) / 1000
+  }
+
+  /** Where this client's film actually is, extrapolated past a stale reading. */
+  actualPosition (localNowMs = Date.now()): number {
+    return extrapolatePosition({
+      positionSec: this.o.player.position(),
+      observedAtMs: this.o.player.positionObservedAt(),
+      paused: this.o.player.isPaused(),
+      rate: this.rate
+    }, localNowMs)
+  }
+
+  currentRate (): number { return this.rate }
+  lastSyncAction (): SyncAction { return this.lastAction }
+
+  announceMedia (name: string, durationSec: number): void { this.send({ t: 'media.announce', name, durationSec }) }
+  requestPlay (positionSec?: number): void { this.send({ t: 'playback.request', intent: 'play', positionSec }) }
+  requestPause (positionSec?: number): void { this.send({ t: 'playback.request', intent: 'pause', positionSec }) }
+  requestSeek (positionSec: number): void { this.send({ t: 'playback.request', intent: 'seek', positionSec }) }
+
+  private send (m: ClientMessage): void {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(encode(m))
+  }
+
+  async close (): Promise<void> {
+    for (const t of this.timers) clearInterval(t)
+    this.timers = []
+    this.ws?.close()
+  }
+}

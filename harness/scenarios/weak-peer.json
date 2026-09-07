@@ -1,0 +1,13 @@
+{
+  "name": "weak-peer",
+  "note": "One person on a 5 Mbps downlink against a 4 Mbps film — barely above the floor. Predicted to be where stock lets the weak peer stall repeatedly while the others race ahead and finish. The scenario the decision most likely turns on.",
+  "fileMB": 60,
+  "runtimeSec": 120,
+  "sharer": { "name": "rohan", "up": 25 },
+  "peers": [
+    { "name": "anjali", "up": 20, "down": 100 },
+    { "name": "dev",    "up": 20, "down": 100 },
+    { "name": "priya",  "up": 20, "down": 100 },
+    { "name": "sam",    "up": 2,  "down": 5 }
+  ]
+}

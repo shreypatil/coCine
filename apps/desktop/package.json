@@ -1,0 +1,24 @@
+{
+  "name": "@cocine/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview"
+  },
+  "dependencies": {
+    "@cocine/client": "*",
+    "@cocine/player": "*",
+    "@cocine/protocol": "*",
+    "@cocine/sync": "*",
+    "ws": "^8.18.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  }
+}

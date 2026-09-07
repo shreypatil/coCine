@@ -1,0 +1,13 @@
+{
+  "name": "baseline-5",
+  "note": "Five friends, comparable home connections, cold start. Expectation: stock is already near T_min and a custom policy buys almost nothing. If that holds, it is the single most useful result in the suite.",
+  "fileMB": 60,
+  "runtimeSec": 120,
+  "sharer": { "name": "rohan", "up": 25 },
+  "peers": [
+    { "name": "anjali", "up": 20, "down": 100 },
+    { "name": "dev",    "up": 20, "down": 100 },
+    { "name": "priya",  "up": 20, "down": 100 },
+    { "name": "sam",    "up": 20, "down": 100 }
+  ]
+}

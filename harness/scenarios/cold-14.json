@@ -1,0 +1,17 @@
+{
+  "name": "cold-14",
+  "note": "A large room, cold start. Peers now outnumber BitTorrent's unchoke slots, so the choker and its 30s optimistic rotation should start to cost real time. Predicted: the clearest win for the planned policy after weak-peer.",
+  "fileMB": 30,
+  "runtimeSec": 60,
+  "sharer": { "name": "rohan", "up": 25 },
+  "peers": [
+    { "name": "p01", "up": 10, "down": 80 }, { "name": "p02", "up": 10, "down": 80 },
+    { "name": "p03", "up": 10, "down": 80 }, { "name": "p04", "up": 10, "down": 80 },
+    { "name": "p05", "up": 10, "down": 80 }, { "name": "p06", "up": 10, "down": 80 },
+    { "name": "p07", "up": 10, "down": 80 }, { "name": "p08", "up": 10, "down": 80 },
+    { "name": "p09", "up": 10, "down": 80 }, { "name": "p10", "up": 10, "down": 80 },
+    { "name": "p11", "up": 10, "down": 80 }, { "name": "p12", "up": 10, "down": 80 },
+    { "name": "p13", "up": 10, "down": 80 }, { "name": "p14", "up": 10, "down": 80 }
+  ],
+  "config": { "startBufferSec": 10, "bufferSec": 30 }
+}

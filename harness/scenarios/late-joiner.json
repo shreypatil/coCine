@@ -1,0 +1,13 @@
+{
+  "name": "late-joiner",
+  "note": "Sam arrives 45s in, after the others are buffered and effectively seeding. Predicted: both arms handle it, because BitTorrent seeds do not tit-for-tat. Included to test that claim rather than assume it.",
+  "fileMB": 60,
+  "runtimeSec": 120,
+  "sharer": { "name": "rohan", "up": 25 },
+  "peers": [
+    { "name": "anjali", "up": 20, "down": 100 },
+    { "name": "dev",    "up": 20, "down": 100 },
+    { "name": "priya",  "up": 20, "down": 100 },
+    { "name": "sam",    "up": 20, "down": 100, "joinAtSec": 45 }
+  ]
+}

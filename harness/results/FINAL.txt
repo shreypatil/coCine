@@ -1,0 +1,90 @@
+
+══════════════════════════════════════════════════════════════════════
+  baseline-5   (T_min 20.1s, r 4.2 Mbps, 4 peers)
+══════════════════════════════════════════════════════════════════════
+
+  policy          TTFF  stalls  stalled s  min margin  p05 margin  complete  ×T_min
+  ─────────────────────────────────────────────────────────────────────────────────
+  stock            7.8       0        0.0        22.4        23.1      38.2    1.90
+  sequential       8.1       0        0.0        20.5        21.3      39.6    1.97
+  planned          7.8       0        0.0        21.3        22.1      38.6    1.92
+
+  stock → sequential   what correct API usage buys:
+      TTFF 7.8s → 8.1s
+      stalled 0.0s → 0.0s
+  sequential → planned  what writing your own policy buys:
+      TTFF 8.1s → 7.8s
+      stalled 0.0s → 0.0s
+      min margin 20.5s → 21.3s
+
+══════════════════════════════════════════════════════════════════════
+  cold-14   (T_min 21.4s, r 4.2 Mbps, 14 peers)
+══════════════════════════════════════════════════════════════════════
+
+  policy          TTFF  stalls  stalled s  min margin  p05 margin  complete  ×T_min
+  ─────────────────────────────────────────────────────────────────────────────────
+  stock           13.5       0        0.0         9.8        10.2      38.8    1.82
+  sequential      14.7       0        0.0        10.8        11.3      40.9    1.92
+  planned         13.7       0        0.0        10.0        11.0      37.9    1.78
+
+  stock → sequential   what correct API usage buys:
+      TTFF 13.5s → 14.7s
+      stalled 0.0s → 0.0s
+  sequential → planned  what writing your own policy buys:
+      TTFF 14.7s → 13.7s
+      stalled 0.0s → 0.0s
+      min margin 10.8s → 10.0s
+
+══════════════════════════════════════════════════════════════════════
+  freeloader   (T_min 20.1s, r 4.2 Mbps, 4 peers)
+══════════════════════════════════════════════════════════════════════
+
+  policy          TTFF  stalls  stalled s  min margin  p05 margin  complete  ×T_min
+  ─────────────────────────────────────────────────────────────────────────────────
+  stock            9.3       0        0.0        21.3        24.4      46.7    2.32
+  sequential       8.3       0        0.0        20.0        21.3      40.4    2.01
+  planned          8.6       0        0.0        20.3        21.6      42.5    2.11
+
+  stock → sequential   what correct API usage buys:
+      TTFF 9.3s → 8.3s
+      stalled 0.0s → 0.0s
+  sequential → planned  what writing your own policy buys:
+      TTFF 8.3s → 8.6s
+      stalled 0.0s → 0.0s
+      min margin 20.0s → 20.3s
+
+══════════════════════════════════════════════════════════════════════
+  late-joiner   (T_min 20.1s, r 4.2 Mbps, 4 peers)
+══════════════════════════════════════════════════════════════════════
+
+  policy          TTFF  stalls  stalled s  min margin  p05 margin  complete  ×T_min
+  ─────────────────────────────────────────────────────────────────────────────────
+  stock            6.8       1        2.5         0.0         0.0      50.6    2.51
+  sequential       8.0       1        1.8         0.0         0.6      50.7    2.52
+  planned          6.3       1        1.8         0.0         0.3      50.8    2.52
+
+  stock → sequential   what correct API usage buys:
+      TTFF 6.8s → 8.0s
+      stalled 2.5s → 1.8s
+  sequential → planned  what writing your own policy buys:
+      TTFF 8.0s → 6.3s
+      stalled 1.8s → 1.8s
+      min margin 0.0s → 0.0s
+
+══════════════════════════════════════════════════════════════════════
+  weak-peer   (T_min 100.7s, r 4.2 Mbps, 4 peers)
+══════════════════════════════════════════════════════════════════════
+
+  policy          TTFF  stalls  stalled s  min margin  p05 margin  complete  ×T_min
+  ─────────────────────────────────────────────────────────────────────────────────
+  stock           18.1       0        0.0        15.8        18.3     101.3    1.01
+  sequential      18.8       0        0.0        17.5        19.5     101.6    1.01
+  planned         19.3       0        0.0        17.5        19.9     101.7    1.01
+
+  stock → sequential   what correct API usage buys:
+      TTFF 18.1s → 18.8s
+      stalled 0.0s → 0.0s
+  sequential → planned  what writing your own policy buys:
+      TTFF 18.8s → 19.3s
+      stalled 0.0s → 0.0s
+      min margin 17.5s → 17.5s

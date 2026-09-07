@@ -1,0 +1,12 @@
+{
+  "name": "smoke",
+  "note": "Tiny sanity run — validates the harness, not the question.",
+  "fileMB": 12,
+  "runtimeSec": 48,
+  "sharer": { "name": "rohan", "up": 25 },
+  "peers": [
+    { "name": "anjali", "up": 20, "down": 100 },
+    { "name": "dev",    "up": 20, "down": 100 }
+  ],
+  "config": { "startBufferSec": 8, "bufferSec": 24, "maxSec": 180 }
+}

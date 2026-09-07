@@ -1,0 +1,36 @@
+{
+  "name": "cocine",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p apps/desktop/tsconfig.node.json --noEmit && tsc -p apps/desktop/tsconfig.web.json --noEmit",
+    "phase0": "tsx packages/player/scripts/verify.ts",
+    "phase1": "tsx apps/server/scripts/drift-test.ts",
+    "server": "tsx apps/server/scripts/serve.ts",
+    "desktop": "npm run build --workspace @cocine/desktop && electron apps/desktop",
+    "desktop:dev": "npm run dev --workspace @cocine/desktop",
+    "phase1:heavy": "tsx apps/server/scripts/drift-test.ts --peers=5 --film=300 --duration=150 --events=10 --latency=40 --jitter=15 --skew=37000 --res=1080",
+    "test:app": "vitest run --config vitest.e2e.config.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@types/ws": "^8.18.1",
+    "electron": "^44.2.0",
+    "electron-vite": "^5.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vite": "^7.3.6",
+    "vitest": "^5.0.0"
+  }
+}

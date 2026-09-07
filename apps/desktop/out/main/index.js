@@ -1,0 +1,983 @@
+import { BrowserWindow, screen, app, ipcMain, dialog } from "electron";
+import { fileURLToPath } from "node:url";
+import { join, basename, dirname } from "node:path";
+import WebSocket from "ws";
+import { EventEmitter } from "node:events";
+import { z } from "zod";
+import { spawn } from "node:child_process";
+import { connect } from "node:net";
+import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
+import __cjs_mod__ from "node:module";
+const __filename = import.meta.filename;
+const __dirname = import.meta.dirname;
+const require2 = __cjs_mod__.createRequire(import.meta.url);
+class ClockSync {
+  samples = [];
+  windowSize;
+  maxAgeMs;
+  constructor(opts = {}) {
+    this.windowSize = opts.windowSize ?? 16;
+    this.maxAgeMs = opts.maxAgeMs ?? 12e4;
+  }
+  addExchange(c1, s1, s2, c2) {
+    const offsetMs = (s1 - c1 + (s2 - c2)) / 2;
+    const rttMs = c2 - c1 - (s2 - s1);
+    const sample = { offsetMs, rttMs, atMs: c2 };
+    this.samples.push(sample);
+    if (this.samples.length > this.windowSize) this.samples.shift();
+    return sample;
+  }
+  best(nowMs) {
+    const lowestRtt = (acc, s) => !acc || s.rttMs < acc.rttMs ? s : acc;
+    const fresh = this.samples.filter((s) => nowMs - s.atMs <= this.maxAgeMs);
+    if (fresh.length > 0) return fresh.reduce(lowestRtt, null);
+    return this.samples.reduce(lowestRtt, null);
+  }
+  /** Estimated offset to add to local time to obtain server time. */
+  offsetMs(nowMs = Date.now()) {
+    return this.best(nowMs)?.offsetMs ?? 0;
+  }
+  /** Round trip of the sample the offset came from -- the honest error bound. */
+  rttMs(nowMs = Date.now()) {
+    return this.best(nowMs)?.rttMs ?? 0;
+  }
+  /** Half the best round trip: the most this estimate should be off by. */
+  uncertaintyMs(nowMs = Date.now()) {
+    return this.rttMs(nowMs) / 2;
+  }
+  serverNow(nowMs = Date.now()) {
+    return nowMs + this.offsetMs(nowMs);
+  }
+  get sampleCount() {
+    return this.samples.length;
+  }
+  get ready() {
+    return this.samples.length > 0;
+  }
+}
+const PlaybackState = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("idle") }),
+  z.object({ kind: z.literal("paused"), positionSec: z.number() }),
+  z.object({ kind: z.literal("playing"), positionSec: z.number(), atServerMs: z.number() })
+]);
+const Member = z.object({
+  id: z.string(),
+  name: z.string(),
+  isHost: z.boolean(),
+  mayControl: z.boolean()
+});
+z.discriminatedUnion("t", [
+  z.object({ t: z.literal("hello"), room: z.string(), name: z.string() }),
+  z.object({ t: z.literal("time.ping"), c1: z.number() }),
+  z.object({ t: z.literal("media.announce"), name: z.string(), durationSec: z.number() }),
+  z.object({
+    t: z.literal("playback.request"),
+    intent: z.enum(["play", "pause", "seek"]),
+    positionSec: z.number().optional()
+  })
+]);
+const ServerMessage = z.discriminatedUnion("t", [
+  z.object({ t: z.literal("welcome"), memberId: z.string(), serverMs: z.number() }),
+  /** c1 echoed back, plus the server's receive and send stamps. Four timestamps
+   *  are what let a client separate clock offset from network delay. */
+  z.object({ t: z.literal("time.pong"), c1: z.number(), s1: z.number(), s2: z.number() }),
+  z.object({ t: z.literal("room.state"), members: z.array(Member), media: z.object({ name: z.string(), durationSec: z.number() }).nullable() }),
+  z.object({ t: z.literal("playback.schedule"), state: PlaybackState, seq: z.number() }),
+  z.object({ t: z.literal("error"), message: z.string() })
+]);
+const encode = (m) => JSON.stringify(m);
+const decodeServer = (raw) => ServerMessage.parse(JSON.parse(raw));
+function positionAt(state2, serverMs) {
+  if (state2.kind === "idle") return null;
+  if (state2.kind === "paused") return state2.positionSec;
+  return state2.positionSec + Math.max(0, serverMs - state2.atServerMs) / 1e3;
+}
+const DEFAULT_SYNC_CONFIG = {
+  deadbandSec: 0.012,
+  seekThresholdSec: 1,
+  correctionHorizonSec: 2,
+  maxRateDeviation: 0.05,
+  seekLeadSec: 0.05
+};
+function extrapolatePosition(p, localNowMs) {
+  if (p.paused) return p.positionSec;
+  const elapsed = Math.max(0, localNowMs - p.observedAtMs) / 1e3;
+  return p.positionSec + elapsed * p.rate;
+}
+function tick(input) {
+  const cfg = input.config ?? DEFAULT_SYNC_CONFIG;
+  const { target, serverNowMs, localNowMs, player } = input;
+  const here = extrapolatePosition(player, localNowMs);
+  if (target.kind === "idle") {
+    return player.paused ? { type: "none" } : { type: "pause", reason: "nothing loaded" };
+  }
+  if (target.kind === "paused") {
+    if (!player.paused) return { type: "pause", reason: "room is paused" };
+    if (Math.abs(here - target.positionSec) > cfg.deadbandSec) {
+      return { type: "seek", toSec: target.positionSec, reason: "aligning while paused" };
+    }
+    if (player.rate !== 1) return { type: "setRate", rate: 1, driftSec: 0 };
+    return { type: "none" };
+  }
+  if (serverNowMs < target.atServerMs) {
+    if (!player.paused) return { type: "pause", reason: "waiting for scheduled start" };
+    if (Math.abs(here - target.positionSec) > cfg.deadbandSec) {
+      return { type: "seek", toSec: target.positionSec, reason: "pre-positioning for scheduled start" };
+    }
+    return { type: "none" };
+  }
+  const expected = positionAt(target, serverNowMs);
+  const drift = here - expected;
+  if (Math.abs(drift) > cfg.seekThresholdSec) {
+    return { type: "seek", toSec: expected + cfg.seekLeadSec, reason: `drift ${drift.toFixed(2)}s exceeds seek threshold` };
+  }
+  if (player.paused) return { type: "play", reason: "room is playing" };
+  if (Math.abs(drift) <= cfg.deadbandSec) {
+    return player.rate === 1 ? { type: "none" } : { type: "setRate", rate: 1, driftSec: drift };
+  }
+  const raw = 1 - drift / cfg.correctionHorizonSec;
+  const rate = Math.min(1 + cfg.maxRateDeviation, Math.max(1 - cfg.maxRateDeviation, raw));
+  if (Math.abs(rate - player.rate) < 2e-3) return { type: "none" };
+  return { type: "setRate", rate, driftSec: drift };
+}
+class RoomClient extends EventEmitter {
+  constructor(o) {
+    super();
+    this.o = o;
+  }
+  o;
+  clock = new ClockSync();
+  ws = null;
+  target = { kind: "idle" };
+  rate = 1;
+  busy = false;
+  timers = [];
+  lastAction = { type: "none" };
+  members = [];
+  memberId = "";
+  async connect() {
+    const ws = new WebSocket(this.o.url);
+    this.ws = ws;
+    await new Promise((resolve, reject) => {
+      ws.once("open", resolve);
+      ws.once("error", reject);
+    });
+    ws.on("message", (raw) => this.onMessage(String(raw)));
+    this.send({ t: "hello", room: this.o.room, name: this.o.name });
+    for (let i = 0; i < 8; i++) {
+      this.ping();
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    await this.waitForClock();
+    const pingMs = this.o.pingIntervalMs ?? 2e3;
+    this.timers.push(setInterval(() => this.ping(), pingMs));
+    const tickMs = 1e3 / (this.o.tickHz ?? 20);
+    this.timers.push(setInterval(() => {
+      void this.runTick();
+    }, tickMs));
+  }
+  async waitForClock(timeoutMs = 5e3) {
+    const deadline = Date.now() + timeoutMs;
+    while (!this.clock.ready) {
+      if (Date.now() > deadline) throw new Error("no clock samples from server");
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+  ping() {
+    this.send({ t: "time.ping", c1: Date.now() });
+  }
+  onMessage(raw) {
+    const msg = decodeServer(raw);
+    switch (msg.t) {
+      case "time.pong":
+        this.clock.addExchange(msg.c1, msg.s1, msg.s2, Date.now());
+        break;
+      case "welcome":
+        this.memberId = msg.memberId;
+        break;
+      case "room.state":
+        this.members = msg.members;
+        this.emit("members", msg.members);
+        break;
+      case "playback.schedule":
+        this.target = msg.state;
+        this.emit("schedule", msg.state);
+        void this.runTick();
+        break;
+      case "error":
+        this.emit("server-error", msg.message);
+        break;
+    }
+  }
+  async runTick() {
+    if (this.busy || !this.clock.ready) return;
+    const localNowMs = Date.now();
+    const action = tick({
+      target: this.target,
+      serverNowMs: this.clock.serverNow(localNowMs),
+      localNowMs,
+      player: {
+        positionSec: this.o.player.position(),
+        observedAtMs: this.o.player.positionObservedAt(),
+        paused: this.o.player.isPaused(),
+        rate: this.rate
+      },
+      config: this.o.syncConfig ?? DEFAULT_SYNC_CONFIG
+    });
+    if (action.type === "none") return;
+    this.busy = true;
+    try {
+      switch (action.type) {
+        case "seek":
+          await this.o.player.seek(action.toSec);
+          break;
+        case "play":
+          await this.o.player.play();
+          break;
+        case "pause":
+          await this.o.player.pause();
+          break;
+        case "setRate":
+          await this.o.player.setRate(action.rate);
+          this.rate = action.rate;
+          break;
+      }
+      this.lastAction = action;
+      this.emit("action", action);
+    } catch (err) {
+      this.emit("action-error", err);
+    } finally {
+      this.busy = false;
+    }
+  }
+  /** Where the room says the film should be, right now, in seconds. */
+  expectedPosition(localNowMs = Date.now()) {
+    const s = this.target;
+    if (s.kind === "idle") return null;
+    if (s.kind === "paused") return s.positionSec;
+    const serverNow = this.clock.serverNow(localNowMs);
+    if (serverNow < s.atServerMs) return s.positionSec;
+    return s.positionSec + (serverNow - s.atServerMs) / 1e3;
+  }
+  /** Where this client's film actually is, extrapolated past a stale reading. */
+  actualPosition(localNowMs = Date.now()) {
+    return extrapolatePosition({
+      positionSec: this.o.player.position(),
+      observedAtMs: this.o.player.positionObservedAt(),
+      paused: this.o.player.isPaused(),
+      rate: this.rate
+    }, localNowMs);
+  }
+  currentRate() {
+    return this.rate;
+  }
+  lastSyncAction() {
+    return this.lastAction;
+  }
+  announceMedia(name, durationSec) {
+    this.send({ t: "media.announce", name, durationSec });
+  }
+  requestPlay(positionSec) {
+    this.send({ t: "playback.request", intent: "play", positionSec });
+  }
+  requestPause(positionSec) {
+    this.send({ t: "playback.request", intent: "pause", positionSec });
+  }
+  requestSeek(positionSec) {
+    this.send({ t: "playback.request", intent: "seek", positionSec });
+  }
+  send(m) {
+    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(encode(m));
+  }
+  async close() {
+    for (const t of this.timers) clearInterval(t);
+    this.timers = [];
+    this.ws?.close();
+  }
+}
+class MpvIpc extends EventEmitter {
+  constructor(args, binary = "mpv") {
+    super();
+    this.args = args;
+    this.binary = binary;
+    const id = randomBytes(6).toString("hex");
+    this.ipcPath = process.platform === "win32" ? `\\\\.\\pipe\\cocine-mpv-${id}` : join(tmpdir(), `cocine-mpv-${id}.sock`);
+  }
+  args;
+  binary;
+  proc = null;
+  sock = null;
+  buf = "";
+  nextId = 1;
+  pending = /* @__PURE__ */ new Map();
+  ipcPath;
+  closed = false;
+  async start(timeoutMs = 1e4) {
+    this.proc = spawn(this.binary, [`--input-ipc-server=${this.ipcPath}`, ...this.args], {
+      stdio: ["ignore", "ignore", "pipe"]
+    });
+    let stderr = "";
+    this.proc.stderr?.on("data", (d) => {
+      stderr += String(d);
+    });
+    this.proc.on("exit", (code) => {
+      if (!this.closed) this.emit("exit", code, stderr);
+    });
+    const deadline = Date.now() + timeoutMs;
+    for (; ; ) {
+      try {
+        this.sock = await this.tryConnect();
+        break;
+      } catch (err) {
+        if (this.proc.exitCode !== null) {
+          throw new Error(`mpv exited (${this.proc.exitCode}) before accepting IPC: ${stderr.trim()}`);
+        }
+        if (Date.now() > deadline) throw new Error(`mpv IPC socket never appeared: ${String(err)}`);
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+    this.sock.setNoDelay(true);
+    this.sock.on("data", (chunk) => this.onData(String(chunk)));
+    this.sock.on("error", (err) => {
+      if (!this.closed) this.emit("error", err);
+    });
+  }
+  tryConnect() {
+    return new Promise((resolve, reject) => {
+      const s = connect(this.ipcPath);
+      s.once("connect", () => {
+        s.removeAllListeners("error");
+        resolve(s);
+      });
+      s.once("error", (err) => {
+        s.destroy();
+        reject(err);
+      });
+    });
+  }
+  onData(chunk) {
+    this.buf += chunk;
+    let nl;
+    while ((nl = this.buf.indexOf("\n")) >= 0) {
+      const line = this.buf.slice(0, nl).trim();
+      this.buf = this.buf.slice(nl + 1);
+      if (!line) continue;
+      let msg;
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (typeof msg.request_id === "number") {
+        const p = this.pending.get(msg.request_id);
+        if (p) {
+          this.pending.delete(msg.request_id);
+          if (msg.error === "success") p.resolve(msg.data);
+          else p.reject(new Error(String(msg.error)));
+        }
+        continue;
+      }
+      if (typeof msg.event === "string") this.emit("mpv-event", msg);
+    }
+  }
+  command(...parts) {
+    if (!this.sock || this.closed) return Promise.reject(new Error("mpv IPC not connected"));
+    const request_id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(request_id, { resolve, reject });
+      this.sock.write(`${JSON.stringify({ command: parts, request_id })}
+`, (err) => {
+        if (err) {
+          this.pending.delete(request_id);
+          reject(err);
+        }
+      });
+    });
+  }
+  setProperty(name, value) {
+    return this.command("set_property", name, value);
+  }
+  getProperty(name) {
+    return this.command("get_property", name);
+  }
+  observeProperty(id, name) {
+    return this.command("observe_property", id, name);
+  }
+  /** Immediate, synchronous teardown for process exit. */
+  kill() {
+    this.closed = true;
+    try {
+      this.sock?.destroy();
+    } catch {
+    }
+    try {
+      this.proc?.kill("SIGKILL");
+    } catch {
+    }
+  }
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    for (const p of this.pending.values()) p.reject(new Error("mpv IPC closing"));
+    this.pending.clear();
+    try {
+      await this.command("quit");
+    } catch {
+    }
+    this.sock?.destroy();
+    await new Promise((res) => {
+      if (!this.proc || this.proc.exitCode !== null) return res();
+      const t = setTimeout(() => {
+        this.proc?.kill("SIGKILL");
+        res();
+      }, 2e3);
+      this.proc.once("exit", () => {
+        clearTimeout(t);
+        res();
+      });
+    });
+    if (process.platform !== "win32") {
+      try {
+        rmSync(this.ipcPath, { force: true });
+      } catch {
+      }
+    }
+  }
+}
+const OBS_TIME = 1;
+const OBS_PAUSE = 2;
+const OBS_DURATION = 3;
+class ExternalMpv {
+  ipc;
+  events = new EventEmitter();
+  pos = 0;
+  posAt = 0;
+  paused = true;
+  dur = null;
+  constructor(opts = {}) {
+    const args = [
+      "--idle=yes",
+      "--no-terminal",
+      "--keep-open=yes",
+      "--pause=yes",
+      // Exact seeking is not optional at a 100 ms budget. Without this mpv may
+      // seek to the nearest keyframe, which on a typical film is seconds away.
+      "--hr-seek=yes",
+      "--msg-level=all=no",
+      // We draw the interface. mpv must not paint controls over its own window
+      // or swallow keystrokes meant for the application.
+      "--osc=no",
+      "--osd-level=0",
+      "--input-default-bindings=no",
+      "--input-vo-keyboard=no"
+    ];
+    if (!opts.useUserConfig) args.push("--no-config");
+    if (opts.wid) {
+      args.push(`--wid=${opts.wid}`, "--force-window=yes");
+    } else if (opts.headless) {
+      args.push("--vo=null", "--ao=null");
+    }
+    if (opts.extraArgs) args.push(...opts.extraArgs);
+    this.ipc = new MpvIpc(args, opts.binary ?? "mpv");
+    this.ipc.setMaxListeners(64);
+    this.ipc.on("mpv-event", (e) => this.onEvent(e));
+    this.ipc.on("exit", (code, stderr) => this.events.emit("exit", code, stderr));
+  }
+  async start() {
+    await this.ipc.start();
+    await this.ipc.observeProperty(OBS_TIME, "time-pos");
+    await this.ipc.observeProperty(OBS_PAUSE, "pause");
+    await this.ipc.observeProperty(OBS_DURATION, "duration");
+  }
+  onEvent(e) {
+    if (e.event === "property-change") {
+      if (e.id === OBS_TIME && typeof e.data === "number") {
+        this.pos = e.data;
+        this.posAt = Date.now();
+        this.events.emit("position", this.pos, this.posAt);
+      } else if (e.id === OBS_PAUSE && typeof e.data === "boolean") {
+        this.paused = e.data;
+        this.events.emit("pause", this.paused);
+      } else if (e.id === OBS_DURATION && typeof e.data === "number") {
+        this.dur = e.data;
+      }
+    } else if (e.event === "eof-reached" || e.event === "end-file") {
+      this.events.emit("eof");
+    }
+  }
+  async load(path) {
+    const loaded = new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(`mpv never loaded ${path}`)), 3e4);
+      const onEvent = (e) => {
+        if (e.event === "file-loaded") {
+          cleanup();
+          resolve();
+        }
+        if (e.event === "end-file" && e.reason === "error") {
+          cleanup();
+          reject(new Error(`mpv failed to load ${path}`));
+        }
+      };
+      const cleanup = () => {
+        clearTimeout(t);
+        this.ipc.off("mpv-event", onEvent);
+      };
+      this.ipc.on("mpv-event", onEvent);
+    });
+    try {
+      await this.ipc.command("loadfile", path, "replace");
+    } catch (err) {
+      loaded.catch(() => {
+      });
+      throw err;
+    }
+    await loaded;
+    await this.ipc.setProperty("pause", true);
+  }
+  async play() {
+    await this.ipc.setProperty("pause", false);
+  }
+  async pause() {
+    await this.ipc.setProperty("pause", true);
+  }
+  /**
+   * mpv acknowledges a seek command immediately but performs it asynchronously,
+   * so time-pos stays stale for a moment afterwards. Waiting for
+   * playback-restart is what makes a seek observable -- without it the sync
+   * engine reads the pre-seek position and corrects against a phantom drift.
+   */
+  async seek(seconds) {
+    const landed = this.waitFor("playback-restart", 3e3);
+    try {
+      await this.ipc.command("seek", seconds, "absolute", "exact");
+    } catch (err) {
+      throw err;
+    }
+    if (!await landed) this.events.emit("warning", `seek to ${seconds.toFixed(2)}s: no playback-restart`);
+  }
+  /**
+   * Resolves true if the event arrived, false if it timed out. Deliberately
+   * never rejects: a missed event means the sync engine corrects on its next
+   * tick, whereas a throw from a player primitive takes the whole client down.
+   */
+  waitFor(eventName, timeoutMs) {
+    return new Promise((resolve) => {
+      const done = (ok) => {
+        clearTimeout(t);
+        this.ipc.off("mpv-event", onEvent);
+        resolve(ok);
+      };
+      const t = setTimeout(() => done(false), timeoutMs);
+      const onEvent = (e) => {
+        if (e.event === eventName) done(true);
+      };
+      this.ipc.on("mpv-event", onEvent);
+    });
+  }
+  async setRate(rate) {
+    await this.ipc.setProperty("speed", rate);
+  }
+  position() {
+    return this.pos;
+  }
+  positionObservedAt() {
+    return this.posAt;
+  }
+  isPaused() {
+    return this.paused;
+  }
+  duration() {
+    return this.dur;
+  }
+  /** Authoritative position, at the cost of a round trip. Use sparingly --
+   *  the observed value is what the tick loop should read. */
+  async positionExact() {
+    const v = await this.ipc.getProperty("time-pos");
+    return typeof v === "number" ? v : this.pos;
+  }
+  on(event, fn) {
+    this.events.on(event, fn);
+  }
+  async close() {
+    await this.ipc.close();
+  }
+  /**
+   * Transient text drawn by mpv over the video. This is the one thing that can
+   * appear above the picture without an overlay window, so it carries feedback
+   * in fullscreen where no controls are visible.
+   */
+  async showText(text, durationMs = 2e3) {
+    await this.ipc.command("show-text", text, durationMs);
+  }
+  /** Kill mpv immediately, without waiting on IPC. For process teardown. */
+  kill() {
+    this.ipc.kill();
+  }
+}
+function nativeHandleToWid(handle) {
+  if (handle.length >= 8) return handle.readBigUInt64LE(0).toString();
+  if (handle.length >= 4) return String(handle.readUInt32LE(0));
+  throw new Error(`unexpected native window handle of ${handle.length} bytes`);
+}
+class EmbeddedMpv extends ExternalMpv {
+  constructor(handle, opts = {}) {
+    super({ ...opts, wid: nativeHandleToWid(handle) });
+  }
+}
+class VideoWindow {
+  constructor(parent) {
+    this.parent = parent;
+  }
+  parent;
+  win = null;
+  player = null;
+  slot = null;
+  async start() {
+    if (process.env.COCINE_HEADLESS) {
+      const player2 = new ExternalMpv({ headless: true });
+      await player2.start();
+      this.player = player2;
+      return player2;
+    }
+    this.win = new BrowserWindow({
+      parent: this.parent,
+      frame: false,
+      show: false,
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      skipTaskbar: true,
+      // Keyboard belongs to the main window; this surface is pixels only.
+      focusable: false,
+      backgroundColor: "#000000",
+      title: "coCine video",
+      webPreferences: { nodeIntegration: false, contextIsolation: true }
+    });
+    await this.win.loadURL('data:text/html,<body style="margin:0;background:#000"></body>');
+    const player = new EmbeddedMpv(this.win.getNativeWindowHandle());
+    await player.start();
+    this.player = player;
+    const follow = () => this.reposition();
+    this.parent.on("move", follow);
+    this.parent.on("resize", follow);
+    this.parent.on("maximize", follow);
+    this.parent.on("unmaximize", follow);
+    this.parent.on("enter-full-screen", follow);
+    this.parent.on("leave-full-screen", follow);
+    this.parent.on("minimize", () => this.win?.hide());
+    this.parent.on("restore", () => {
+      if (this.slot) this.win?.show();
+    });
+    this.parent.on("closed", () => {
+      void this.close();
+    });
+    return player;
+  }
+  /** Called from the renderer whenever the video slot moves or resizes. */
+  setSlot(slot) {
+    this.slot = slot;
+    if (this.win) this.reposition();
+  }
+  reposition() {
+    if (!this.win || !this.slot || this.win.isDestroyed() || this.parent.isDestroyed()) return;
+    const content = this.parent.getContentBounds();
+    const scale = screen.getDisplayMatching(content).scaleFactor || 1;
+    const bounds = {
+      x: Math.round(content.x + this.slot.x * scale),
+      y: Math.round(content.y + this.slot.y * scale),
+      width: Math.max(1, Math.round(this.slot.width * scale)),
+      height: Math.max(1, Math.round(this.slot.height * scale))
+    };
+    this.win.setBounds(bounds);
+    if (process.env.COCINE_DEBUG) {
+      const got = this.win.getBounds();
+      console.log(`[video] slot=${this.slot.width}x${this.slot.height}@${this.slot.x},${this.slot.y} content=${content.width}x${content.height}@${content.x},${content.y} scale=${scale} asked=${bounds.width}x${bounds.height}@${bounds.x},${bounds.y} got=${got.width}x${got.height}@${got.x},${got.y}`);
+    }
+    if (!this.win.isVisible()) this.win.showInactive();
+  }
+  /**
+   * Native child windows sit above their parent and are not affected by the
+   * parent's modal dialogs, so an open-file dialog can appear *behind* the
+   * video surface. Hiding it for the duration is the only reliable fix.
+   */
+  suspend() {
+    if (this.win && !this.win.isDestroyed()) this.win.hide();
+  }
+  resume() {
+    if (this.win && !this.win.isDestroyed() && this.slot) {
+      this.reposition();
+      this.win.showInactive();
+    }
+  }
+  bounds() {
+    return this.win && !this.win.isDestroyed() ? this.win.getBounds() : null;
+  }
+  /** Synchronous, for process exit where promises will never settle. */
+  killNow() {
+    this.player?.kill();
+    this.player = null;
+    if (this.win && !this.win.isDestroyed()) this.win.destroy();
+    this.win = null;
+  }
+  async close() {
+    try {
+      await this.player?.close();
+    } catch {
+    }
+    this.player = null;
+    if (this.win && !this.win.isDestroyed()) this.win.destroy();
+    this.win = null;
+  }
+}
+function formatClock(seconds) {
+  const t = Math.max(0, Math.floor(seconds));
+  return [Math.floor(t / 3600), Math.floor(t / 60) % 60, t % 60].map((n) => String(n).padStart(2, "0")).join(":");
+}
+const VIDEO_EXTENSIONS = ["mkv", "mp4", "avi", "mov", "webm", "m4v", "ts", "mpg", "mpeg", "wmv", "flv", "ogv"];
+function createHandlers(deps) {
+  const log = deps.log ?? (() => {
+  });
+  const announce = async (text) => {
+    if (!deps.isFullScreen()) return;
+    await deps.getVideo()?.player?.showText(text, 1200).catch(() => {
+    });
+  };
+  const loadInto = async (path) => {
+    const video2 = deps.getVideo();
+    if (!video2?.player) throw new Error("player not ready");
+    try {
+      await video2.player.load(path);
+    } catch (err) {
+      log(`[film] failed to load: ${String(err)}`);
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+    deps.setMediaPath(path);
+    const durationSec = video2.player.duration();
+    log(`[film] loaded ${basename(path)} · duration ${durationSec ?? "unknown"}`);
+    deps.getRoom()?.announceMedia(basename(path), durationSec ?? 0);
+    return { path, name: basename(path), durationSec };
+  };
+  return {
+    "video:slot": (slot) => {
+      const video2 = deps.getVideo();
+      video2?.setSlot(slot);
+      return video2?.bounds() ?? null;
+    },
+    "file:open": async () => {
+      log("[film] open requested — showing dialog");
+      const win = deps.getWindow();
+      if (!win) throw new Error("no window");
+      const video2 = deps.getVideo();
+      video2?.suspend();
+      try {
+        const r = await deps.showOpenDialog(win, {
+          title: "Choose a film",
+          properties: ["openFile"],
+          filters: [
+            { name: "Video", extensions: VIDEO_EXTENSIONS },
+            { name: "All files", extensions: ["*"] }
+          ]
+        });
+        if (r.canceled || !r.filePaths[0]) {
+          log("[film] dialog dismissed without a selection");
+          return null;
+        }
+        log(`[film] loading ${r.filePaths[0]}`);
+        return await loadInto(r.filePaths[0]);
+      } finally {
+        video2?.resume();
+      }
+    },
+    "file:openPath": async (path) => {
+      log(`[film] loading (dropped) ${path}`);
+      return await loadInto(path);
+    },
+    "room:connect": async (o) => {
+      const player = deps.getVideo()?.player;
+      if (!player) throw new Error("player not ready");
+      await deps.getRoom()?.close();
+      const room2 = await deps.createRoom({ ...o, player });
+      deps.setRoom(room2);
+      const mediaPath2 = deps.getMediaPath();
+      if (mediaPath2) room2.announceMedia(basename(mediaPath2), player.duration() ?? 0);
+      return { memberId: room2.memberId };
+    },
+    "room:disconnect": async () => {
+      await deps.getRoom()?.close();
+      deps.setRoom(null);
+    },
+    // Outside a room these drive the player directly. Awaited rather than fired
+    // and forgotten, so a failure reaches the interface instead of vanishing.
+    "playback:play": async () => {
+      const room2 = deps.getRoom();
+      if (room2) room2.requestPlay();
+      else await deps.getVideo()?.player?.play();
+      await announce("Play");
+    },
+    "playback:pause": async () => {
+      const room2 = deps.getRoom();
+      if (room2) room2.requestPause();
+      else await deps.getVideo()?.player?.pause();
+      await announce("Paused");
+    },
+    "playback:seek": async (sec) => {
+      const room2 = deps.getRoom();
+      if (room2) room2.requestSeek(sec);
+      else await deps.getVideo()?.player?.seek(sec);
+      await announce(`→ ${formatClock(sec)}`);
+    },
+    "window:fullscreen": async (on) => {
+      const next = on ?? !deps.isFullScreen();
+      deps.setFullScreen(next);
+      if (next) {
+        await deps.getVideo()?.player?.showText("Space play · ← → seek · Esc exit", 2600).catch(() => {
+        });
+      }
+      return next;
+    }
+  };
+}
+const __dirname$1 = dirname(fileURLToPath(import.meta.url));
+if (process.platform === "linux") {
+  app.commandLine.appendSwitch("ozone-platform", "x11");
+}
+let mainWin = null;
+let video = null;
+let room = null;
+let mediaPath = null;
+let statusTimer = null;
+const state = () => {
+  const player = video?.player;
+  const now = Date.now();
+  const expected = room?.expectedPosition(now) ?? null;
+  const actual = player ? room?.actualPosition(now) ?? player.position() : 0;
+  return {
+    ready: !!player,
+    connected: !!room,
+    members: room?.members ?? [],
+    mediaName: mediaPath ? basename(mediaPath) : null,
+    durationSec: player?.duration() ?? null,
+    positionSec: actual,
+    expectedSec: expected,
+    driftMs: expected === null ? null : (actual - expected) * 1e3,
+    paused: player?.isPaused() ?? true,
+    rate: room?.currentRate() ?? 1,
+    clockOffsetMs: room?.clock.offsetMs() ?? null,
+    rttMs: room?.clock.rttMs() ?? null,
+    lastAction: room?.lastSyncAction()?.type ?? null,
+    fullscreen: mainWin?.isFullScreen() ?? false
+  };
+};
+function createWindow() {
+  mainWin = new BrowserWindow({
+    width: 1180,
+    height: 720,
+    minWidth: 900,
+    minHeight: 560,
+    backgroundColor: "#0d1117",
+    title: "coCine",
+    show: false,
+    webPreferences: {
+      preload: join(__dirname$1, "../preload/index.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  });
+  mainWin.webContents.on("console-message", (e) => {
+    const level = e.level === "error" ? "error" : "log";
+    console[level](`[renderer] ${e.message}`);
+  });
+  mainWin.webContents.on("render-process-gone", (_e, d) => console.error("[renderer] gone:", d.reason));
+  mainWin.on("ready-to-show", () => {
+    if (!process.env.COCINE_HEADLESS) mainWin?.show();
+  });
+  const pushState = () => {
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("state", state());
+  };
+  mainWin.on("enter-full-screen", pushState);
+  mainWin.on("leave-full-screen", pushState);
+  mainWin.on("closed", () => {
+    mainWin = null;
+  });
+  const devUrl = process.env.ELECTRON_RENDERER_URL;
+  if (devUrl) void mainWin.loadURL(devUrl);
+  else void mainWin.loadFile(join(__dirname$1, "../renderer/index.html"));
+  video = new VideoWindow(mainWin);
+  void video.start().then(async () => {
+    const arg = process.argv.find((a) => a.startsWith("--film="));
+    if (arg) {
+      mediaPath = arg.slice("--film=".length);
+      try {
+        await video?.player?.load(mediaPath);
+      } catch (e) {
+        console.error("could not load film:", e);
+      }
+    }
+    statusTimer = setInterval(() => {
+      if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send("state", state());
+    }, 100);
+  });
+}
+const handlers = createHandlers({
+  showOpenDialog: (parent, options) => dialog.showOpenDialog(parent, options),
+  getWindow: () => mainWin,
+  getVideo: () => video,
+  getRoom: () => room,
+  setRoom: (r) => {
+    room = r;
+  },
+  createRoom: async (o) => {
+    const client = new RoomClient({ url: o.url, room: o.roomCode, name: o.name, player: o.player });
+    await client.connect();
+    return client;
+  },
+  getMediaPath: () => mediaPath,
+  setMediaPath: (p) => {
+    mediaPath = p;
+  },
+  setFullScreen: (on) => mainWin?.setFullScreen(on),
+  isFullScreen: () => mainWin?.isFullScreen() ?? false,
+  log: (m) => console.log(m)
+});
+for (const [channel, fn] of Object.entries(handlers)) {
+  ipcMain.handle(channel, (_e, ...args) => fn(...args));
+}
+app.whenReady().then(createWindow);
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});
+let shuttingDown = false;
+app.on("before-quit", (event) => {
+  if (shuttingDown) return;
+  event.preventDefault();
+  shuttingDown = true;
+  void (async () => {
+    if (statusTimer) {
+      clearInterval(statusTimer);
+      statusTimer = null;
+    }
+    try {
+      await room?.close();
+    } catch {
+    }
+    try {
+      await video?.close();
+    } catch {
+    }
+    app.quit();
+  })();
+});
+process.on("exit", () => {
+  try {
+    video?.killNow();
+  } catch {
+  }
+});

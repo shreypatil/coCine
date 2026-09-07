@@ -1,0 +1,13 @@
+{
+  "name": "freeloader",
+  "note": "Sam has a healthy downlink but almost no upload — a phone hotspot. Under tit-for-tat Sam has nothing to trade, so BitTorrent's choker should starve them while the others swap freely. This is the textbook case for removing reciprocity, and the scenario most likely to justify a custom policy. If planned does not win here, it probably does not win anywhere.",
+  "fileMB": 60,
+  "runtimeSec": 120,
+  "sharer": { "name": "rohan", "up": 25 },
+  "peers": [
+    { "name": "anjali", "up": 30, "down": 100 },
+    { "name": "dev",    "up": 30, "down": 100 },
+    { "name": "priya",  "up": 30, "down": 100 },
+    { "name": "sam",    "up": 1,  "down": 100 }
+  ]
+}
