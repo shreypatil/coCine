@@ -106,7 +106,7 @@ which `time-pos` reads stale and the engine corrects against a phantom drift.
 | 00 | Player control spike | **done** — 25 Hz position events, sub-5 ms command RTT, 30 ms seek accuracy |
 | 01 | Sync engine | **done** — 5 clients, 20 events, 40 ms ± 15 ms link, 37 s server clock skew: **p99 drift 35 ms**, 0 of 2598 samples over budget, every event re-converged in 0.3 s |
 | 02 | Single-window shell | **done** — Electron with mpv reparented via `--wid`; see caveat below |
-| 03 | Rooms, roles, chat | |
+| 03 | Rooms, roles, chat | **done** — invite codes, chat, host controls; 105 tests |
 | 04 | Transfer | |
 | 05 | Voice | |
 | 06 | NAT hardening | |
@@ -153,12 +153,44 @@ npm run desktop -- --film=/path/to/film.mkv      # 3: second viewer
 ```
 
 Open a film by dragging it onto the window, or with the **Open film** button.
-In both windows: set the same room code, press **Join room**, then press
-**Play** in either one. Both should start together. The **Sync** panel shows
-live drift, the estimated clock offset and the last corrective action the engine
-took, which is the quickest way to see whether it is working.
+In the first window press **Create a room**; it shows a code like `4HTC-4M56` in
+the title bar, which copies on click. Paste that into the second window and
+press **Join**. Then press **Play** in either — both start together, and the
+badge beside the code shows how far apart the two screens are.
 
 `--film=` is optional and just skips the file dialog.
+
+### Who you are
+
+Your name, server address and last room code are remembered between launches in
+`identity.json` under Electron's user-data directory, alongside a locally
+generated id. The join panel comes back filled in rather than asking the same
+three questions every time.
+
+Deliberately local: nothing is sent to an identity provider, and the id has not
+reached the wire protocol yet. That covers the visible benefit of an account
+without needing OAuth, which only becomes necessary when this has to follow you
+to a second machine. Details are only written once a connection succeeds, so a
+typo in the server address is not what greets you next launch.
+
+Tests launch the real application, so `COCINE_HEADLESS` also redirects
+user-data to a throwaway directory rather than writing into your own config.
+
+### Rooms
+
+A room code is the only credential: eight characters from an alphabet with the
+confusable ones removed, so it survives being read aloud. No code creates a
+room; a code joins one. Rooms are held in memory and collected ten minutes after
+the last person leaves.
+
+The first person in is the host. Hosts can take playback control from anyone and
+hand hosting over, from the hover controls on each row of the member list. **The
+server enforces both** — an interface check is only a suggestion, since anyone
+can send the message directly.
+
+Chat doubles as the room's log: joining, leaving and "anjali put on dune.mkv"
+appear in the same column as conversation, so there is one place to look when
+you wonder what just happened. New arrivals get the backlog.
 
 ## What the drift numbers do and do not cover
 

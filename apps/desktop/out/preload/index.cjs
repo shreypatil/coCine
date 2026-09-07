@@ -2,6 +2,7 @@
 const electron = require("electron");
 const api = {
   setVideoSlot: (slot) => electron.ipcRenderer.invoke("video:slot", slot),
+  getIdentity: () => electron.ipcRenderer.invoke("identity:get"),
   openFile: () => electron.ipcRenderer.invoke("file:open"),
   openPath: (path) => electron.ipcRenderer.invoke("file:openPath", path),
   /** Electron removed File.path; this is the supported way to recover a real
@@ -14,6 +15,9 @@ const api = {
     }
   },
   connect: (o) => electron.ipcRenderer.invoke("room:connect", o),
+  sendChat: (text) => electron.ipcRenderer.invoke("chat:send", text),
+  setControl: (memberId, mayControl) => electron.ipcRenderer.invoke("member:setControl", memberId, mayControl),
+  transferHost: (memberId) => electron.ipcRenderer.invoke("member:transferHost", memberId),
   disconnect: () => electron.ipcRenderer.invoke("room:disconnect"),
   play: () => electron.ipcRenderer.invoke("playback:play"),
   pause: () => electron.ipcRenderer.invoke("playback:pause"),

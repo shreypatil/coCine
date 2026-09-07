@@ -27,7 +27,8 @@ const STATE = {
   mediaName: 'dune.mkv', durationSec: 7200,
   positionSec: 12, expectedSec: 12, driftMs: 4,
   paused: true, rate: 1, clockOffsetMs: 3, rttMs: 20, lastAction: 'none',
-  fullscreen: false
+  fullscreen: false,
+  code: 'BCDFGHJK', messages: [] as unknown[], isHost: true, mayControl: true
 }
 
 beforeAll(async () => {
@@ -55,7 +56,7 @@ afterAll(async () => {
 })
 
 async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
-  page = await browser.newPage({ viewport })
+  page = await browser.newPage({ viewport, permissions: ['clipboard-read', 'clipboard-write'] })
   // Stand in for the preload bridge. Calls are recorded on window.__calls so a
   // click can be asserted end to end without Electron.
   await page.addInitScript(() => {
@@ -70,12 +71,16 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
       openFile: rec('openFile'),
       openPath: rec('openPath'),
       pathForFile: () => '/films/stub.mkv',
+      getIdentity: () => Promise.resolve({ id: 'local-1', name: 'anjali', server: 'ws://box:9000', lastCode: 'BCDFGHJK' }),
       connect: rec('connect'),
       disconnect: rec('disconnect'),
       play: rec('play'),
       pause: rec('pause'),
       seek: rec('seek'),
       setFullScreen: rec('setFullScreen'),
+      sendChat: rec('sendChat'),
+      setControl: rec('setControl'),
+      transferHost: rec('transferHost'),
       onState: (cb: (s: unknown) => void) => { w.__push = cb; return () => {} }
     }
   })
@@ -239,11 +244,175 @@ describe('keyboard', () => {
   it('ignores shortcuts while typing in a field', async () => {
     await open()
     await push({ connected: false })
-    await page.click('.join input')
+    await page.click('[data-testid="name"]')
     await page.keyboard.press('Space')
     await page.keyboard.press('f')
     expect(await calls('play')).toHaveLength(0)
     expect(await calls('setFullScreen')).toHaveLength(0)
+    await page.close()
+  })
+})
+
+const MSGS = [
+  { id: '1', kind: 'joined', memberId: 'a', name: 'anjali', text: 'joined the room', atServerMs: 1_700_000_000_000 },
+  { id: '2', kind: 'said', memberId: 'a', name: 'anjali', text: 'starting in five', atServerMs: 1_700_000_060_000 },
+  { id: '3', kind: 'system', memberId: 'a', name: 'anjali', text: 'put on dune.mkv', atServerMs: 1_700_000_120_000 }
+]
+
+describe('remembered identity', () => {
+  it('fills the join panel from what was stored, instead of asking again', async () => {
+    await open()
+    await push({ connected: false })
+    await expect.poll(async () => await page.inputValue('[data-testid="name"]')).toBe('anjali')
+    expect(await page.inputValue('[data-testid="server"]')).toBe('ws://box:9000')
+    expect(await page.inputValue('[data-testid="joincode"]')).toBe('BCDFGHJK')
+    await page.close()
+  })
+
+  it('refuses to join with a blank name', async () => {
+    await open()
+    await push({ connected: false })
+    await expect.poll(async () => await page.inputValue('[data-testid="name"]')).toBe('anjali')
+    await page.fill('[data-testid="name"]', '   ')
+    expect(await page.isDisabled('[data-testid="create"]')).toBe(true)
+    expect(await page.isDisabled('[data-testid="join"]')).toBe(true)
+    await page.close()
+  })
+})
+
+describe('chat', () => {
+  it('renders conversation and room events in the same column', async () => {
+    await open()
+    await push({ messages: MSGS })
+    expect(await page.locator('[data-testid="msg"]').count()).toBe(3)
+    expect(await page.textContent('[data-testid="chat"]')).toContain('starting in five')
+    expect(await page.textContent('[data-testid="chat"]')).toContain('put on dune.mkv')
+    // Conversation gets an avatar; room events do not.
+    expect(await page.locator('.msg .av').count()).toBe(1)
+    await page.close()
+  })
+
+  it('sends on Enter and clears the field', async () => {
+    await open()
+    await push()
+    await page.fill('[data-testid="chatinput"]', 'this bit is great')
+    await page.press('[data-testid="chatinput"]', 'Enter')
+    expect((await calls('sendChat'))[0]).toEqual(['this bit is great'])
+    expect(await page.inputValue('[data-testid="chatinput"]')).toBe('')
+    await page.close()
+  })
+
+  it('refuses to send whitespace', async () => {
+    await open()
+    await push()
+    await page.fill('[data-testid="chatinput"]', '   ')
+    await page.press('[data-testid="chatinput"]', 'Enter')
+    expect(await calls('sendChat')).toHaveLength(0)
+    await page.close()
+  })
+
+  it('follows new messages, including a backlog present on first render', async () => {
+    await open()
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      id: `m${i}`, kind: 'said', memberId: 'a', name: 'anjali', text: `line ${i}`, atServerMs: 1_700_000_000_000 + i
+    }))
+    await push({ messages: many })
+    await page.waitForTimeout(120)
+    // And keeps following as more arrive.
+    await push({ messages: [...many, { id: 'x', kind: 'said', memberId: 'a', name: 'dev', text: 'one more', atServerMs: 1 }] })
+    await page.waitForTimeout(120)
+    const atBottom = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="chat"]')!
+      return el.scrollHeight - el.scrollTop - el.clientHeight
+    })
+    expect(atBottom).toBeLessThan(90)
+    await page.close()
+  })
+})
+
+describe('chat scrolling', () => {
+  it('stays put when someone has scrolled up to read back', async () => {
+    await open()
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      id: `m${i}`, kind: 'said', memberId: 'a', name: 'anjali', text: `line ${i}`, atServerMs: 1_700_000_000_000 + i
+    }))
+    await push({ messages: many })
+    await page.waitForTimeout(120)
+    await page.evaluate(() => { document.querySelector('[data-testid="chat"]')!.scrollTop = 0 })
+    await page.waitForTimeout(60)
+    await push({ messages: [...many, { id: 'x', kind: 'said', memberId: 'a', name: 'dev', text: 'new line', atServerMs: 2 }] })
+    await page.waitForTimeout(120)
+    expect(await page.evaluate(() => document.querySelector('[data-testid="chat"]')!.scrollTop)).toBe(0)
+    await page.close()
+  })
+})
+
+describe('room code', () => {
+  it('shows the code in a readable grouped form', async () => {
+    await open()
+    await push({ code: 'BCDFGHJK' })
+    expect(await page.textContent('[data-testid="code"]')).toContain('BCDF-GHJK')
+    await page.close()
+  })
+
+  it('copies it to the clipboard and says so', async () => {
+    await open()
+    await push({ code: 'BCDFGHJK' })
+    await page.click('[data-testid="code"]')
+    await expect.poll(async () => await page.textContent('[data-testid="code"]')).toContain('copied')
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('BCDF-GHJK')
+    await page.close()
+  })
+})
+
+describe('roles', () => {
+  const members = [
+    { id: 'a', name: 'anjali', isHost: true, mayControl: true },
+    { id: 'b', name: 'dev', isHost: false, mayControl: true }
+  ]
+
+  it('offers role actions to the host only', async () => {
+    await open()
+    await push({ members, isHost: true })
+    await page.hover('[data-testid="member"][data-name="dev"]')
+    expect(await page.locator('[data-testid="togglecontrol"]').count()).toBe(1)
+    await push({ members, isHost: false })
+    expect(await page.locator('[data-testid="togglecontrol"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('toggles playback control to the opposite of what it is', async () => {
+    await open()
+    await push({ members, isHost: true })
+    await page.hover('[data-testid="member"][data-name="dev"]')
+    await page.click('[data-testid="member"][data-name="dev"] [data-testid="togglecontrol"]')
+    expect((await calls('setControl'))[0]).toEqual(['b', false])
+    await page.close()
+  })
+
+  it('hands hosting over', async () => {
+    await open()
+    await push({ members, isHost: true })
+    await page.hover('[data-testid="member"][data-name="dev"]')
+    await page.click('[data-testid="member"][data-name="dev"] [data-testid="makehost"]')
+    expect((await calls('transferHost'))[0]).toEqual(['b'])
+    await page.close()
+  })
+
+  it('marks someone who cannot control playback', async () => {
+    await open()
+    await push({ members: [members[0], { ...members[1], mayControl: false }], isHost: false })
+    expect(await page.textContent('[data-testid="member"][data-name="dev"]')).toContain('no control')
+    await page.close()
+  })
+
+  it('disables the transport when the host has withheld control', async () => {
+    await open()
+    await push({ connected: true, mayControl: false })
+    expect(await page.isDisabled('[data-testid="playpause"]')).toBe(true)
+    expect(await page.isDisabled('.scrub')).toBe(true)
+    await push({ connected: true, mayControl: true })
+    expect(await page.isDisabled('[data-testid="playpause"]')).toBe(false)
     await page.close()
   })
 })

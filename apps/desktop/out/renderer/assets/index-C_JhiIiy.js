@@ -12454,6 +12454,8 @@ const clock = (s) => {
   const t = Math.max(0, Math.floor(s));
   return [Math.floor(t / 3600), Math.floor(t / 60) % 60, t % 60].map((n) => String(n).padStart(2, "0")).join(":");
 };
+const hhmm = (ms) => new Date(ms).toLocaleTimeString(void 0, { hour: "2-digit", minute: "2-digit" });
+const pretty = (code) => code.length > 4 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
 const initials = (name) => name.trim().slice(0, 1).toUpperCase() || "?";
 const tint = (name) => {
   let h = 0;
@@ -12462,14 +12464,31 @@ const tint = (name) => {
 };
 function App() {
   const [s, setS] = reactExports.useState(null);
-  const [url, setUrl] = reactExports.useState("ws://127.0.0.1:8787");
-  const [roomCode, setRoomCode] = reactExports.useState("lounge");
-  const [name, setName] = reactExports.useState("me");
+  const [url, setUrl] = reactExports.useState("");
+  const [joinCode, setJoinCode] = reactExports.useState("");
+  const [name, setName] = reactExports.useState("");
+  const [identityLoaded, setIdentityLoaded] = reactExports.useState(false);
+  const [draft, setDraft] = reactExports.useState("");
+  const [copied, setCopied] = reactExports.useState(false);
   const [busy, setBusy] = reactExports.useState(false);
   const [error, setError] = reactExports.useState(null);
   const [dropping, setDropping] = reactExports.useState(false);
   const slotRef = reactExports.useRef(null);
+  const chatRef = reactExports.useRef(null);
   reactExports.useEffect(() => window.cocine.onState(setS), []);
+  reactExports.useEffect(() => {
+    let live = true;
+    void window.cocine.getIdentity().then((id) => {
+      if (!live) return;
+      setName(id.name);
+      setUrl(id.server);
+      setJoinCode(id.lastCode ?? "");
+      setIdentityLoaded(true);
+    }).catch(() => setIdentityLoaded(true));
+    return () => {
+      live = false;
+    };
+  }, []);
   reactExports.useEffect(() => {
     const el = slotRef.current;
     if (!el) return;
@@ -12491,6 +12510,16 @@ function App() {
       window.removeEventListener("resize", push);
     };
   }, []);
+  const count = s?.messages.length ?? 0;
+  const stick = reactExports.useRef(true);
+  const onChatScroll = () => {
+    const el = chatRef.current;
+    if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 90;
+  };
+  reactExports.useLayoutEffect(() => {
+    const el = chatRef.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [count]);
   const guard = reactExports.useCallback(async (fn) => {
     setBusy(true);
     setError(null);
@@ -12541,6 +12570,19 @@ function App() {
     }
     void guard(() => window.cocine.openPath(path));
   };
+  const send = () => {
+    const text = draft.trim();
+    if (!text) return;
+    setDraft("");
+    void guard(() => window.cocine.sendChat(text));
+  };
+  const copyCode = () => {
+    if (!s?.code) return;
+    void navigator.clipboard.writeText(pretty(s.code)).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    }).catch(() => setError("Could not copy to the clipboard"));
+  };
   const duration = s?.durationSec ?? 0;
   const drift = s?.driftMs;
   const driftClass = drift == null ? "" : Math.abs(drift) <= 100 ? "ok" : Math.abs(drift) <= 250 ? "warn" : "bad";
@@ -12561,13 +12603,20 @@ function App() {
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "mark" }),
             "coCine"
           ] }),
-          s?.connected && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "pill", children: [
+          s?.connected && s.code && /* @__PURE__ */ jsxRuntimeExports.jsxs("button", { className: "pill code", "data-testid": "code", onClick: copyCode, title: "Copy the room code", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "live" }),
-            roomCode,
-            " · ",
-            s.members.length,
-            " watching"
+            pretty(s.code),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "copy", children: copied ? "copied" : "copy" })
           ] }),
+          s?.connected && /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "span",
+            {
+              className: `pill sync ${driftClass}`,
+              "data-testid": "drift",
+              title: "How far this screen is from the rest of the room",
+              children: drift == null ? "—" : `${Math.abs(drift).toFixed(0)} ms`
+            }
+          ),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "grow" }),
           /* @__PURE__ */ jsxRuntimeExports.jsx(
             "button",
@@ -12582,7 +12631,16 @@ function App() {
               children: "Open film"
             }
           ),
-          s?.connected && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "btn", disabled: busy, onClick: () => void guard(() => window.cocine.disconnect()), children: "Leave" })
+          s?.connected && /* @__PURE__ */ jsxRuntimeExports.jsx(
+            "button",
+            {
+              className: "btn",
+              "data-testid": "leave",
+              disabled: busy,
+              onClick: () => void guard(() => window.cocine.disconnect()),
+              children: "Leave"
+            }
+          )
         ] }),
         error && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "banner", role: "alert", "data-testid": "banner", children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: error }),
@@ -12592,60 +12650,110 @@ function App() {
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "stage", ref: slotRef, "data-testid": "stage" }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("aside", { className: "sidebar", children: [
             !s?.connected ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect join", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "Join a room" }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { children: [
-                "Server",
-                /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: url, onChange: (e) => setUrl(e.target.value), spellCheck: false })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { children: [
-                "Room",
-                /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: roomCode, onChange: (e) => setRoomCode(e.target.value), spellCheck: false })
-              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "Watch together" }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { children: [
                 "Your name",
-                /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: name, onChange: (e) => setName(e.target.value), spellCheck: false })
+                /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: name, onChange: (e) => setName(e.target.value), spellCheck: false, "data-testid": "name" })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { children: [
+                "Server",
+                /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: url, onChange: (e) => setUrl(e.target.value), spellCheck: false, "data-testid": "server" })
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsx(
                 "button",
                 {
                   className: "btn primary wide",
-                  disabled: busy || !s?.ready,
-                  onClick: () => void guard(() => window.cocine.connect({ url, roomCode, name })),
-                  children: "Join room"
+                  "data-testid": "create",
+                  disabled: busy || !s?.ready || !identityLoaded || !name.trim(),
+                  onClick: () => void guard(() => window.cocine.connect({ url, code: null, name })),
+                  children: "Create a room"
                 }
-              )
+              ),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "or", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "or join one" }) }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "joinrow", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: joinCode, onChange: (e) => setJoinCode(e.target.value), placeholder: "CODE", spellCheck: false, "data-testid": "joincode" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    className: "btn",
+                    "data-testid": "join",
+                    disabled: busy || !s?.ready || !identityLoaded || !name.trim() || !joinCode.trim(),
+                    onClick: () => void guard(() => window.cocine.connect({ url, code: joinCode.trim(), name })),
+                    children: "Join"
+                  }
+                )
+              ] })
             ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "Watching" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "people", children: s.members.map((m) => /* @__PURE__ */ jsxRuntimeExports.jsxs("li", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("h4", { children: [
+                  "Watching · ",
+                  s.members.length
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "people", children: s.members.map((m) => /* @__PURE__ */ jsxRuntimeExports.jsxs("li", { "data-testid": "member", "data-name": m.name, children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `av t${tint(m.name)}`, children: initials(m.name) }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "nm", children: m.name }),
-                  m.isHost && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "tag", children: "host" })
+                  m.isHost && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "tag", children: "host" }),
+                  !m.mayControl && !m.isHost && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "tag muted", title: "Cannot control playback", children: "no control" }),
+                  s.isHost && !m.isHost && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "rowacts", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        className: "mini",
+                        "data-testid": "togglecontrol",
+                        title: m.mayControl ? "Take playback control" : "Give playback control",
+                        onClick: () => void guard(() => window.cocine.setControl(m.id, !m.mayControl)),
+                        children: m.mayControl ? "take" : "give"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        className: "mini",
+                        "data-testid": "makehost",
+                        title: "Make host",
+                        onClick: () => void guard(() => window.cocine.transferHost(m.id)),
+                        children: "host"
+                      }
+                    )
+                  ] })
                 ] }, m.id)) })
               ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "In sync" }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "syncline", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: `big ${driftClass}`, children: [
-                    drift == null ? "—" : Math.abs(drift).toFixed(0),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("i", { children: "ms" })
-                  ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "sub", children: [
-                    "drift · ",
-                    s.rate.toFixed(3),
-                    "×"
-                  ] })
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "chatwrap", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "Chat" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "chat", ref: chatRef, onScroll: onChatScroll, "data-testid": "chat", children: [
+                  s.messages.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "soon", children: "Nothing said yet." }),
+                  s.messages.map((m) => m.kind === "said" ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "msg", "data-testid": "msg", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `av sm t${tint(m.name)}`, children: initials(m.name) }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "txt", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("b", { children: [
+                        m.name,
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("i", { children: hhmm(m.atServerMs) })
+                      ] }),
+                      m.text
+                    ] })
+                  ] }, m.id) : /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "sys", "data-testid": "msg", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: m.name }),
+                    " ",
+                    m.text
+                  ] }, m.id))
                 ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("dl", { className: "stats", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("dt", { children: "clock offset" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("dd", { children: s.clockOffsetMs == null ? "—" : `${s.clockOffsetMs.toFixed(0)} ms` }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("dt", { children: "round trip" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("dd", { children: s.rttMs == null ? "—" : `${s.rttMs.toFixed(1)} ms` }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("dt", { children: "room says" }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("dd", { children: clock(s.expectedSec) })
-                ] })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "chat", children: /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "soon", children: "Chat arrives in phase 3." }) })
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "composer", children: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "input",
+                  {
+                    value: draft,
+                    onChange: (e) => setDraft(e.target.value),
+                    onKeyDown: (e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        send();
+                      }
+                    },
+                    placeholder: "Message the room…",
+                    maxLength: 800,
+                    "data-testid": "chatinput"
+                  }
+                ) })
+              ] })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect film", children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "Film" }),
@@ -12660,9 +12768,10 @@ function App() {
             {
               className: "play",
               "data-testid": "playpause",
-              disabled: busy || !s?.mediaName,
+              disabled: busy || !s?.mediaName || s.connected && !s.mayControl,
               onClick: togglePlay,
               "aria-label": s?.paused ? "Play" : "Pause",
+              title: s?.connected && !s.mayControl ? "The host has not given you playback control" : void 0,
               children: s?.paused ? /* @__PURE__ */ jsxRuntimeExports.jsx("svg", { viewBox: "0 0 16 16", "aria-hidden": "true", children: /* @__PURE__ */ jsxRuntimeExports.jsx("path", { d: "M4 2.5v11l9-5.5z" }) }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("svg", { viewBox: "0 0 16 16", "aria-hidden": "true", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("rect", { x: "3.5", y: "2.5", width: "3.4", height: "11", rx: "1" }),
                 /* @__PURE__ */ jsxRuntimeExports.jsx("rect", { x: "9.1", y: "2.5", width: "3.4", height: "11", rx: "1" })
@@ -12680,7 +12789,7 @@ function App() {
               step: 0.5,
               value: Math.min(s?.positionSec ?? 0, duration),
               onChange: (e) => void guard(() => window.cocine.seek(Number(e.target.value))),
-              disabled: !s?.mediaName,
+              disabled: !s?.mediaName || !!s?.connected && !s.mayControl,
               "aria-label": "Seek"
             }
           ) }),

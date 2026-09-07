@@ -1,14 +1,14 @@
 import { BrowserWindow, screen, app, ipcMain, dialog } from "electron";
 import { fileURLToPath } from "node:url";
 import { join, basename, dirname } from "node:path";
+import { rmSync, readFileSync, mkdirSync, writeFileSync, renameSync, mkdtempSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import WebSocket from "ws";
 import { EventEmitter } from "node:events";
 import { z } from "zod";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
-import { randomBytes } from "node:crypto";
-import { tmpdir } from "node:os";
-import { rmSync } from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
 import __cjs_mod__ from "node:module";
 const __filename = import.meta.filename;
 const __dirname = import.meta.dirname;
@@ -68,23 +68,44 @@ const Member = z.object({
   isHost: z.boolean(),
   mayControl: z.boolean()
 });
+const ChatMessage = z.object({
+  id: z.string(),
+  kind: z.enum(["said", "joined", "left", "system"]),
+  memberId: z.string().nullable(),
+  name: z.string(),
+  text: z.string(),
+  atServerMs: z.number()
+});
+const MAX_CHAT_LENGTH = 800;
 z.discriminatedUnion("t", [
-  z.object({ t: z.literal("hello"), room: z.string(), name: z.string() }),
+  /** No code creates a room and returns one; a code joins an existing room. */
+  z.object({ t: z.literal("hello"), code: z.string().nullable(), name: z.string().min(1).max(40) }),
   z.object({ t: z.literal("time.ping"), c1: z.number() }),
   z.object({ t: z.literal("media.announce"), name: z.string(), durationSec: z.number() }),
   z.object({
     t: z.literal("playback.request"),
     intent: z.enum(["play", "pause", "seek"]),
     positionSec: z.number().optional()
-  })
+  }),
+  z.object({ t: z.literal("chat.send"), text: z.string().min(1).max(MAX_CHAT_LENGTH) }),
+  z.object({ t: z.literal("member.setControl"), memberId: z.string(), mayControl: z.boolean() }),
+  z.object({ t: z.literal("member.transferHost"), memberId: z.string() })
 ]);
 const ServerMessage = z.discriminatedUnion("t", [
-  z.object({ t: z.literal("welcome"), memberId: z.string(), serverMs: z.number() }),
+  z.object({ t: z.literal("welcome"), memberId: z.string(), code: z.string(), serverMs: z.number() }),
   /** c1 echoed back, plus the server's receive and send stamps. Four timestamps
    *  are what let a client separate clock offset from network delay. */
   z.object({ t: z.literal("time.pong"), c1: z.number(), s1: z.number(), s2: z.number() }),
-  z.object({ t: z.literal("room.state"), members: z.array(Member), media: z.object({ name: z.string(), durationSec: z.number() }).nullable() }),
+  z.object({
+    t: z.literal("room.state"),
+    code: z.string(),
+    members: z.array(Member),
+    media: z.object({ name: z.string(), durationSec: z.number() }).nullable()
+  }),
   z.object({ t: z.literal("playback.schedule"), state: PlaybackState, seq: z.number() }),
+  z.object({ t: z.literal("chat.message"), message: ChatMessage }),
+  /** Sent once on join so a latecomer sees what was already said. */
+  z.object({ t: z.literal("chat.history"), messages: z.array(ChatMessage) }),
   z.object({ t: z.literal("error"), message: z.string() })
 ]);
 const encode = (m) => JSON.stringify(m);
@@ -157,6 +178,10 @@ class RoomClient extends EventEmitter {
   lastAction = { type: "none" };
   members = [];
   memberId = "";
+  code = "";
+  /** Bounded locally as well as on the server, so a long session cannot grow
+   *  the renderer's state without limit. */
+  messages = [];
   async connect() {
     const ws = new WebSocket(this.o.url);
     this.ws = ws;
@@ -165,7 +190,7 @@ class RoomClient extends EventEmitter {
       ws.once("error", reject);
     });
     ws.on("message", (raw) => this.onMessage(String(raw)));
-    this.send({ t: "hello", room: this.o.room, name: this.o.name });
+    this.send({ t: "hello", code: this.o.code, name: this.o.name });
     for (let i = 0; i < 8; i++) {
       this.ping();
       await new Promise((r) => setTimeout(r, 25));
@@ -196,10 +221,21 @@ class RoomClient extends EventEmitter {
         break;
       case "welcome":
         this.memberId = msg.memberId;
+        this.code = msg.code;
+        this.emit("welcome", msg.code);
         break;
       case "room.state":
         this.members = msg.members;
+        this.code = msg.code;
         this.emit("members", msg.members);
+        break;
+      case "chat.history":
+        this.messages = msg.messages.slice(-200);
+        this.emit("chat", this.messages);
+        break;
+      case "chat.message":
+        this.messages = [...this.messages, msg.message].slice(-200);
+        this.emit("chat", this.messages);
         break;
       case "playback.schedule":
         this.target = msg.state;
@@ -278,6 +314,20 @@ class RoomClient extends EventEmitter {
   }
   announceMedia(name, durationSec) {
     this.send({ t: "media.announce", name, durationSec });
+  }
+  sendChat(text) {
+    const t = text.trim();
+    if (t) this.send({ t: "chat.send", text: t.slice(0, 800) });
+  }
+  setControl(memberId, mayControl) {
+    this.send({ t: "member.setControl", memberId, mayControl });
+  }
+  transferHost(memberId) {
+    this.send({ t: "member.transferHost", memberId });
+  }
+  /** This client's own membership, once the room state has arrived. */
+  me() {
+    return this.members.find((m) => m.id === this.memberId);
   }
   requestPlay(positionSec) {
     this.send({ t: "playback.request", intent: "play", positionSec });
@@ -796,15 +846,35 @@ function createHandlers(deps) {
       log(`[film] loading (dropped) ${path}`);
       return await loadInto(path);
     },
+    "identity:get": () => deps.getIdentity(),
+    /** A null code creates a room; a code joins one. */
     "room:connect": async (o) => {
       const player = deps.getVideo()?.player;
       if (!player) throw new Error("player not ready");
       await deps.getRoom()?.close();
       const room2 = await deps.createRoom({ ...o, player });
       deps.setRoom(room2);
+      deps.saveIdentity({ name: o.name, server: o.url, lastCode: room2.code });
       const mediaPath2 = deps.getMediaPath();
       if (mediaPath2) room2.announceMedia(basename(mediaPath2), player.duration() ?? 0);
-      return { memberId: room2.memberId };
+      return { memberId: room2.memberId, code: room2.code };
+    },
+    "chat:send": (text) => {
+      const room2 = deps.getRoom();
+      if (!room2) throw new Error("not in a room");
+      room2.sendChat(text);
+    },
+    "member:setControl": (memberId, mayControl) => {
+      const room2 = deps.getRoom();
+      if (!room2) throw new Error("not in a room");
+      if (!room2.me()?.isHost) throw new Error("only the host can change playback control");
+      room2.setControl(memberId, mayControl);
+    },
+    "member:transferHost": (memberId) => {
+      const room2 = deps.getRoom();
+      if (!room2) throw new Error("not in a room");
+      if (!room2.me()?.isHost) throw new Error("only the host can hand over hosting");
+      room2.transferHost(memberId);
     },
     "room:disconnect": async () => {
       await deps.getRoom()?.close();
@@ -841,15 +911,67 @@ function createHandlers(deps) {
     }
   };
 }
+const DEFAULT_SERVER = "ws://127.0.0.1:8787";
+function suggestedName() {
+  try {
+    const u = userInfo().username?.trim();
+    if (u) return u.slice(0, 40);
+  } catch {
+  }
+  return "me";
+}
+function blankIdentity() {
+  return { id: randomUUID(), name: suggestedName(), server: DEFAULT_SERVER, lastCode: null };
+}
+class IdentityStore {
+  constructor(path) {
+    this.path = path;
+  }
+  path;
+  cached = null;
+  get() {
+    if (this.cached) return this.cached;
+    try {
+      const raw = JSON.parse(readFileSync(this.path, "utf8"));
+      this.cached = {
+        id: typeof raw.id === "string" && raw.id ? raw.id : randomUUID(),
+        name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim().slice(0, 40) : suggestedName(),
+        server: typeof raw.server === "string" && raw.server ? raw.server : DEFAULT_SERVER,
+        lastCode: typeof raw.lastCode === "string" && raw.lastCode ? raw.lastCode : null
+      };
+    } catch {
+      this.cached = blankIdentity();
+    }
+    return this.cached;
+  }
+  save(patch) {
+    const next = { ...this.get(), ...patch };
+    if (patch.name !== void 0) next.name = patch.name.trim().slice(0, 40) || this.get().name;
+    this.cached = next;
+    try {
+      mkdirSync(dirname(this.path), { recursive: true });
+      const tmp = `${this.path}.tmp`;
+      writeFileSync(tmp, JSON.stringify(next, null, 2));
+      renameSync(tmp, this.path);
+    } catch {
+    }
+    return next;
+  }
+}
+const identityPathFor = (userDataDir) => join(userDataDir, "identity.json");
 const __dirname$1 = dirname(fileURLToPath(import.meta.url));
 if (process.platform === "linux") {
   app.commandLine.appendSwitch("ozone-platform", "x11");
+}
+if (process.env.COCINE_HEADLESS) {
+  app.setPath("userData", mkdtempSync(join(tmpdir(), "cocine-test-")));
 }
 let mainWin = null;
 let video = null;
 let room = null;
 let mediaPath = null;
 let statusTimer = null;
+const identity = new IdentityStore(identityPathFor(app.getPath("userData")));
 const state = () => {
   const player = video?.player;
   const now = Date.now();
@@ -859,6 +981,10 @@ const state = () => {
     ready: !!player,
     connected: !!room,
     members: room?.members ?? [],
+    code: room?.code ?? null,
+    messages: room?.messages ?? [],
+    isHost: room?.me()?.isHost ?? false,
+    mayControl: room?.me()?.mayControl ?? false,
     mediaName: mediaPath ? basename(mediaPath) : null,
     durationSec: player?.duration() ?? null,
     positionSec: actual,
@@ -932,7 +1058,7 @@ const handlers = createHandlers({
     room = r;
   },
   createRoom: async (o) => {
-    const client = new RoomClient({ url: o.url, room: o.roomCode, name: o.name, player: o.player });
+    const client = new RoomClient({ url: o.url, code: o.code, name: o.name, player: o.player });
     await client.connect();
     return client;
   },
@@ -942,6 +1068,8 @@ const handlers = createHandlers({
   },
   setFullScreen: (on) => mainWin?.setFullScreen(on),
   isFullScreen: () => mainWin?.isFullScreen() ?? false,
+  getIdentity: () => identity.get(),
+  saveIdentity: (patch) => identity.save(patch),
   log: (m) => console.log(m)
 });
 for (const [channel, fn] of Object.entries(handlers)) {

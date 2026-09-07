@@ -42,6 +42,7 @@ function build (over: Partial<HandlerDeps> = {}): {
   let mediaPath: string | null = null
   let currentRoom: RoomLike | null = null
   let fullscreen = false
+  let identity = { id: 'local-1', name: 'me', server: 'ws://127.0.0.1:8787', lastCode: null as string | null }
   const deps: HandlerDeps = {
     showOpenDialog: vi.fn(async () => ({ canceled: false, filePaths: ['/films/dune.mkv'] })),
     getWindow: () => win,
@@ -53,6 +54,8 @@ function build (over: Partial<HandlerDeps> = {}): {
     setMediaPath: p => { mediaPath = p },
     setFullScreen: on => { fullscreen = on },
     isFullScreen: () => fullscreen,
+    getIdentity: () => identity,
+    saveIdentity: patch => { identity = { ...identity, ...patch }; return identity },
     ...over
   }
   return { h: createHandlers(deps), deps, win }
@@ -159,6 +162,31 @@ describe('playback', () => {
     const { h } = build({ getVideo: () => video(p) })
     await call(h, 'playback:pause')
     expect(p.pause).toHaveBeenCalledOnce()
+  })
+})
+
+describe('identity', () => {
+  it('hands back what was stored', async () => {
+    const { h } = build()
+    expect(await call(h, 'identity:get')).toMatchObject({ name: 'me', server: 'ws://127.0.0.1:8787' })
+  })
+
+  it('remembers name, server and room only after connecting succeeds', async () => {
+    const r = room()
+    const { h, deps } = build({ getVideo: () => video(), createRoom: vi.fn(async () => ({ ...r, code: 'BCDFGHJK' })) })
+    await call(h, 'room:connect', { url: 'ws://box:9000', code: null, name: 'anjali' })
+    expect(deps.getIdentity()).toMatchObject({ name: 'anjali', server: 'ws://box:9000', lastCode: 'BCDFGHJK' })
+  })
+
+  it('does not remember a server address that failed to connect', async () => {
+    // Otherwise a typo becomes what greets you on every future launch.
+    const { h, deps } = build({
+      getVideo: () => video(),
+      createRoom: vi.fn(async () => { throw new Error('ECONNREFUSED') })
+    })
+    await expect(call(h, 'room:connect', { url: 'ws://typo:9000', code: null, name: 'anjali' })).rejects.toThrow()
+    expect(deps.getIdentity().server).toBe('ws://127.0.0.1:8787')
+    expect(deps.getIdentity().name).toBe('me')
   })
 })
 

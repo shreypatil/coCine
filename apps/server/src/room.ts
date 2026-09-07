@@ -1,4 +1,9 @@
-import { positionAt, type Member, type PlaybackState } from '@cocine/protocol'
+import { randomUUID } from 'node:crypto'
+import { positionAt, type ChatMessage, type Member, type PlaybackState } from '@cocine/protocol'
+
+/** Enough backlog that a latecomer sees the conversation, not so much that a
+ *  long session grows without bound. */
+const CHAT_HISTORY = 200
 
 /**
  * Playback state lives here, not in the host's client.
@@ -13,12 +18,15 @@ export class Room {
   state: PlaybackState = { kind: 'idle' }
   media: { name: string; durationSec: number } | null = null
   seq = 0
+  readonly chat: ChatMessage[] = []
+  lastEmptyAtMs: number | null = Date.now()
 
   constructor (readonly code: string, private readonly startLeadMs = 300) {}
 
   add (id: string, name: string): Member {
     const member: Member = { id, name, isHost: this.members.size === 0, mayControl: true }
     this.members.set(id, member)
+    this.lastEmptyAtMs = null
     return member
   }
 
@@ -30,6 +38,45 @@ export class Room {
       const next = this.members.values().next().value
       if (next) next.isHost = true
     }
+    if (this.members.size === 0) this.lastEmptyAtMs = Date.now()
+  }
+
+  host (): Member | undefined {
+    for (const m of this.members.values()) if (m.isHost) return m
+    return undefined
+  }
+
+  /**
+   * Permission changes are the host's alone. Enforced here rather than in the
+   * interface, because an interface check is a suggestion -- anyone can send
+   * the message directly.
+   */
+  setControl (actorId: string, targetId: string, mayControl: boolean): Member {
+    const actor = this.members.get(actorId)
+    if (!actor?.isHost) throw new Error('only the host can change who may control playback')
+    const target = this.members.get(targetId)
+    if (!target) throw new Error('no such member')
+    if (target.isHost) throw new Error('the host always keeps control')
+    target.mayControl = mayControl
+    return target
+  }
+
+  transferHost (actorId: string, targetId: string): Member {
+    const actor = this.members.get(actorId)
+    if (!actor?.isHost) throw new Error('only the host can hand over hosting')
+    const target = this.members.get(targetId)
+    if (!target) throw new Error('no such member')
+    actor.isHost = false
+    target.isHost = true
+    target.mayControl = true
+    return target
+  }
+
+  addChat (kind: ChatMessage['kind'], name: string, text: string, memberId: string | null, nowMs: number): ChatMessage {
+    const message: ChatMessage = { id: randomUUID(), kind, memberId, name, text, atServerMs: nowMs }
+    this.chat.push(message)
+    if (this.chat.length > CHAT_HISTORY) this.chat.splice(0, this.chat.length - CHAT_HISTORY)
+    return message
   }
 
   /**

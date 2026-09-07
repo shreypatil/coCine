@@ -8,6 +8,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 const api = {
   setVideoSlot: (slot: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.invoke('video:slot', slot),
+  getIdentity: () => ipcRenderer.invoke('identity:get'),
   openFile: () => ipcRenderer.invoke('file:open'),
   openPath: (path: string) => ipcRenderer.invoke('file:openPath', path),
   /** Electron removed File.path; this is the supported way to recover a real
@@ -15,7 +16,10 @@ const api = {
   pathForFile: (f: File): string | null => {
     try { return webUtils.getPathForFile(f) } catch { return null }
   },
-  connect: (o: { url: string; roomCode: string; name: string }) => ipcRenderer.invoke('room:connect', o),
+  connect: (o: { url: string; code: string | null; name: string }) => ipcRenderer.invoke('room:connect', o),
+  sendChat: (text: string) => ipcRenderer.invoke('chat:send', text),
+  setControl: (memberId: string, mayControl: boolean) => ipcRenderer.invoke('member:setControl', memberId, mayControl),
+  transferHost: (memberId: string) => ipcRenderer.invoke('member:transferHost', memberId),
   disconnect: () => ipcRenderer.invoke('room:disconnect'),
   play: () => ipcRenderer.invoke('playback:play'),
   pause: () => ipcRenderer.invoke('playback:pause'),

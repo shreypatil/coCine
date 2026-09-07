@@ -2,9 +2,12 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron'
 import type { BrowserWindow as BW } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, basename } from 'node:path'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { RoomClient } from '@cocine/client'
 import { VideoWindow } from './video-window.js'
 import { createHandlers, type RoomLike } from './handlers.js'
+import { IdentityStore, identityPathFor } from './identity.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -15,11 +18,19 @@ if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform', 'x11')
 }
 
+// Tests launch the real application, and without this they would write a real
+// identity file into the user's own config directory. Must happen before
+// anything reads userData.
+if (process.env.COCINE_HEADLESS) {
+  app.setPath('userData', mkdtempSync(join(tmpdir(), 'cocine-test-')))
+}
+
 let mainWin: BrowserWindow | null = null
 let video: VideoWindow | null = null
 let room: RoomClient | null = null
 let mediaPath: string | null = null
 let statusTimer: NodeJS.Timeout | null = null
+const identity = new IdentityStore(identityPathFor(app.getPath('userData')))
 
 const state = (): Record<string, unknown> => {
   const player = video?.player
@@ -30,6 +41,10 @@ const state = (): Record<string, unknown> => {
     ready: !!player,
     connected: !!room,
     members: room?.members ?? [],
+    code: room?.code ?? null,
+    messages: room?.messages ?? [],
+    isHost: room?.me()?.isHost ?? false,
+    mayControl: room?.me()?.mayControl ?? false,
     mediaName: mediaPath ? basename(mediaPath) : null,
     durationSec: player?.duration() ?? null,
     positionSec: actual,
@@ -105,7 +120,7 @@ const handlers = createHandlers({
   getRoom: () => room,
   setRoom: r => { room = r as RoomClient | null },
   createRoom: async o => {
-    const client = new RoomClient({ url: o.url, room: o.roomCode, name: o.name, player: o.player as never })
+    const client = new RoomClient({ url: o.url, code: o.code, name: o.name, player: o.player as never })
     await client.connect()
     return client as unknown as RoomLike
   },
@@ -113,6 +128,8 @@ const handlers = createHandlers({
   setMediaPath: p => { mediaPath = p },
   setFullScreen: on => mainWin?.setFullScreen(on),
   isFullScreen: () => mainWin?.isFullScreen() ?? false,
+  getIdentity: () => identity.get(),
+  saveIdentity: patch => identity.save(patch),
   log: m => console.log(m)
 })
 for (const [channel, fn] of Object.entries(handlers)) {

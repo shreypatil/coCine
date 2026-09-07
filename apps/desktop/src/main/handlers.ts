@@ -1,4 +1,6 @@
 import { basename } from 'node:path'
+import type { ChatMessage, Member } from '@cocine/protocol'
+import type { Identity } from './identity.js'
 
 /**
  * Every IPC handler, as plain functions over injected dependencies.
@@ -31,8 +33,15 @@ export interface RoomLike {
   requestPlay: (positionSec?: number) => void
   requestPause: (positionSec?: number) => void
   requestSeek: (positionSec: number) => void
+  sendChat: (text: string) => void
+  setControl: (memberId: string, mayControl: boolean) => void
+  transferHost: (memberId: string) => void
+  me: () => Member | undefined
   close: () => Promise<void>
   memberId: string
+  code: string
+  members: Member[]
+  messages: ChatMessage[]
 }
 
 export interface Rect { x: number; y: number; width: number; height: number }
@@ -45,11 +54,13 @@ export interface HandlerDeps {
   getVideo: () => VideoLike | null
   getRoom: () => RoomLike | null
   setRoom: (room: RoomLike | null) => void
-  createRoom: (o: { url: string; roomCode: string; name: string; player: PlayerLike }) => Promise<RoomLike>
+  createRoom: (o: { url: string; code: string | null; name: string; player: PlayerLike }) => Promise<RoomLike>
   getMediaPath: () => string | null
   setMediaPath: (path: string | null) => void
   setFullScreen: (on: boolean) => void
   isFullScreen: () => boolean
+  getIdentity: () => Identity
+  saveIdentity: (patch: Partial<Omit<Identity, 'id'>>) => Identity
   log?: (message: string) => void
 }
 
@@ -133,15 +144,43 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       return await loadInto(path)
     },
 
-    'room:connect': async (o: { url: string; roomCode: string; name: string }) => {
+    'identity:get': () => deps.getIdentity(),
+
+    /** A null code creates a room; a code joins one. */
+    'room:connect': async (o: { url: string; code: string | null; name: string }) => {
       const player = deps.getVideo()?.player
       if (!player) throw new Error('player not ready')
       await deps.getRoom()?.close()
       const room = await deps.createRoom({ ...o, player })
       deps.setRoom(room)
+      // Only remembered once the connection succeeded, so a typo in the server
+      // address is not what greets you next launch.
+      deps.saveIdentity({ name: o.name, server: o.url, lastCode: room.code })
       const mediaPath = deps.getMediaPath()
       if (mediaPath) room.announceMedia(basename(mediaPath), player.duration() ?? 0)
-      return { memberId: room.memberId }
+      return { memberId: room.memberId, code: room.code }
+    },
+
+    'chat:send': (text: string) => {
+      const room = deps.getRoom()
+      if (!room) throw new Error('not in a room')
+      room.sendChat(text)
+    },
+
+    'member:setControl': (memberId: string, mayControl: boolean) => {
+      const room = deps.getRoom()
+      if (!room) throw new Error('not in a room')
+      // The server enforces this too; refusing here just avoids a pointless
+      // round trip and a confusing error banner.
+      if (!room.me()?.isHost) throw new Error('only the host can change playback control')
+      room.setControl(memberId, mayControl)
+    },
+
+    'member:transferHost': (memberId: string) => {
+      const room = deps.getRoom()
+      if (!room) throw new Error('not in a room')
+      if (!room.me()?.isHost) throw new Error('only the host can hand over hosting')
+      room.transferHost(memberId)
     },
 
     'room:disconnect': async () => {

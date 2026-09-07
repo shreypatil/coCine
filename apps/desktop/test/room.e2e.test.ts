@@ -1,0 +1,104 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
+import { ensureTestVideo, ExternalMpv } from '@cocine/player'
+import { RoomClient } from '@cocine/client'
+import { SignallingServer } from '../../server/src/server.js'
+
+/**
+ * Phase 3's exit criterion, end to end: the real application in a real room
+ * with a second participant, chatting, with the host handing over control.
+ *
+ * The second participant is a headless RoomClient rather than a second Electron
+ * instance -- it exercises the same protocol and keeps the test to one window.
+ */
+
+let server: SignallingServer
+let app: ElectronApplication
+let page: Page
+let guest: RoomClient
+let guestPlayer: ExternalMpv
+let code = ''
+
+beforeAll(async () => {
+  const film = ensureTestVideo(30, join(process.cwd(), '.fixtures'))
+  execFileSync('npx', ['electron-vite', 'build'], { cwd: join(process.cwd(), 'apps/desktop'), stdio: 'ignore' })
+  server = new SignallingServer({ startLeadMs: 200 })
+  const port = await server.listen()
+
+  app = await electron.launch({
+    args: [join(process.cwd(), 'apps/desktop')],
+    env: { ...process.env, COCINE_HEADLESS: '1' }
+  })
+  page = await app.firstWindow()
+  await page.waitForSelector('[data-testid="stage"]', { timeout: 20_000 })
+
+  await app.evaluate(async ({ dialog }, chosen) => {
+    ;(dialog as unknown as { showOpenDialog: unknown }).showOpenDialog = async () => ({ canceled: false, filePaths: [chosen] })
+  }, film)
+  await page.click('[data-testid="open"]')
+  await page.waitForFunction(() => !!document.querySelector('.fname')?.textContent?.includes('.mp4'), null, { timeout: 20_000 })
+
+  await page.fill('[data-testid="server"]', `ws://127.0.0.1:${port}`)
+  await page.fill('[data-testid="name"]', 'anjali')
+  await page.click('[data-testid="create"]')
+  await page.waitForSelector('[data-testid="code"]', { timeout: 20_000 })
+  code = (await page.textContent('[data-testid="code"]'))!.replace(/[^A-Z0-9]/g, '').replace(/COPY|COPIED/, '')
+
+  guestPlayer = new ExternalMpv({ headless: true })
+  await guestPlayer.start(); await guestPlayer.load(film)
+  guest = new RoomClient({ url: `ws://127.0.0.1:${port}`, code, name: 'dev', player: guestPlayer })
+  await guest.connect()
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="member"]').length === 2, null, { timeout: 20_000 })
+}, 240_000)
+
+afterAll(async () => {
+  await Promise.race([app?.close(), new Promise(r => setTimeout(r, 15_000))])
+  await guest?.close(); await guestPlayer?.close(); await server?.close()
+}, 40_000)
+
+describe('a room with two people', () => {
+  it('created a room and the guest joined it by code', () => {
+    expect(code).toMatch(/^[A-Z0-9]{8}$/)
+    expect(guest.members.map(m => m.name).sort()).toEqual(['anjali', 'dev'])
+  })
+
+  it('shows the guest arriving in the room log', async () => {
+    await expect.poll(async () => await page.textContent('[data-testid="chat"]'), { timeout: 15_000 })
+      .toContain('dev')
+  })
+
+  it('carries chat from the guest into the application', async () => {
+    guest.sendChat('this bit is great')
+    await expect.poll(async () => await page.textContent('[data-testid="chat"]'), { timeout: 15_000 })
+      .toContain('this bit is great')
+  })
+
+  it('carries chat from the application out to the guest', async () => {
+    await page.fill('[data-testid="chatinput"]', 'rewinding ten seconds')
+    await page.press('[data-testid="chatinput"]', 'Enter')
+    await expect.poll(() => guest.messages.map(m => m.text), { timeout: 15_000 })
+      .toContain('rewinding ten seconds')
+  })
+
+  it('lets the host take playback control away, and the server refuses the guest', async () => {
+    await page.hover('[data-testid="member"][data-name="dev"]')
+    await page.click('[data-testid="member"][data-name="dev"] [data-testid="togglecontrol"]')
+    await expect.poll(() => guest.me()?.mayControl, { timeout: 15_000 }).toBe(false)
+
+    const refused = new Promise<string>(res => guest.once('server-error', res))
+    guest.requestPlay()
+    expect(await refused).toMatch(/playback control/)
+  })
+
+  it('hands hosting over mid-session, and control moves with it', async () => {
+    await page.hover('[data-testid="member"][data-name="dev"]')
+    await page.click('[data-testid="member"][data-name="dev"] [data-testid="makehost"]')
+    await expect.poll(() => guest.me()?.isHost, { timeout: 15_000 }).toBe(true)
+    // The new host always has control, even though it was just revoked.
+    expect(guest.me()?.mayControl).toBe(true)
+    // And the application, no longer host, loses the role controls.
+    await expect.poll(async () => await page.locator('[data-testid="makehost"]').count(), { timeout: 15_000 }).toBe(0)
+  })
+})

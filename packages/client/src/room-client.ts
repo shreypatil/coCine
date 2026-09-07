@@ -1,12 +1,13 @@
 import WebSocket from 'ws'
 import { EventEmitter } from 'node:events'
 import { ClockSync, tick, extrapolatePosition, DEFAULT_SYNC_CONFIG, type SyncConfig, type SyncAction } from '@cocine/sync'
-import { decodeServer, encode, type ClientMessage, type Member, type PlaybackState } from '@cocine/protocol'
+import { decodeServer, encode, type ChatMessage, type ClientMessage, type Member, type PlaybackState } from '@cocine/protocol'
 import type { PlayerController } from '@cocine/player'
 
 export interface RoomClientOptions {
   url: string
-  room: string
+  /** null creates a new room; a code joins an existing one. */
+  code: string | null
   name: string
   player: PlayerController
   syncConfig?: SyncConfig
@@ -33,6 +34,10 @@ export class RoomClient extends EventEmitter {
   private lastAction: SyncAction = { type: 'none' }
   members: Member[] = []
   memberId = ''
+  code = ''
+  /** Bounded locally as well as on the server, so a long session cannot grow
+   *  the renderer's state without limit. */
+  messages: ChatMessage[] = []
 
   constructor (private readonly o: RoomClientOptions) { super() }
 
@@ -44,7 +49,7 @@ export class RoomClient extends EventEmitter {
       ws.once('error', reject)
     })
     ws.on('message', raw => this.onMessage(String(raw)))
-    this.send({ t: 'hello', room: this.o.room, name: this.o.name })
+    this.send({ t: 'hello', code: this.o.code, name: this.o.name })
 
     // Burst a few pings so the first estimate is usable immediately, then settle.
     for (let i = 0; i < 8; i++) { this.ping(); await new Promise(r => setTimeout(r, 25)) }
@@ -74,10 +79,21 @@ export class RoomClient extends EventEmitter {
         break
       case 'welcome':
         this.memberId = msg.memberId
+        this.code = msg.code
+        this.emit('welcome', msg.code)
         break
       case 'room.state':
         this.members = msg.members
+        this.code = msg.code
         this.emit('members', msg.members)
+        break
+      case 'chat.history':
+        this.messages = msg.messages.slice(-200)
+        this.emit('chat', this.messages)
+        break
+      case 'chat.message':
+        this.messages = [...this.messages, msg.message].slice(-200)
+        this.emit('chat', this.messages)
         break
       case 'playback.schedule':
         this.target = msg.state
@@ -150,6 +166,19 @@ export class RoomClient extends EventEmitter {
   lastSyncAction (): SyncAction { return this.lastAction }
 
   announceMedia (name: string, durationSec: number): void { this.send({ t: 'media.announce', name, durationSec }) }
+  sendChat (text: string): void {
+    const t = text.trim()
+    if (t) this.send({ t: 'chat.send', text: t.slice(0, 800) })
+  }
+
+  setControl (memberId: string, mayControl: boolean): void {
+    this.send({ t: 'member.setControl', memberId, mayControl })
+  }
+
+  transferHost (memberId: string): void { this.send({ t: 'member.transferHost', memberId }) }
+
+  /** This client's own membership, once the room state has arrived. */
+  me (): Member | undefined { return this.members.find(m => m.id === this.memberId) }
   requestPlay (positionSec?: number): void { this.send({ t: 'playback.request', intent: 'play', positionSec }) }
   requestPause (positionSec?: number): void { this.send({ t: 'playback.request', intent: 'pause', positionSec }) }
   requestSeek (positionSec: number): void { this.send({ t: 'playback.request', intent: 'seek', positionSec }) }

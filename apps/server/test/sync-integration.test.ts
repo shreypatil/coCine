@@ -25,7 +25,7 @@ describe('synchronised playback', () => {
       await player.start()
       await player.load(film)
       cleanups.push(() => player.close())
-      const client = new RoomClient({ url: `ws://127.0.0.1:${port}`, room: 'r', name, player })
+      const client = new RoomClient({ url: `ws://127.0.0.1:${port}`, code: clients[0]?.code ?? null, name, player })
       await client.connect()
       cleanups.push(() => client.close())
       clients.push(client)

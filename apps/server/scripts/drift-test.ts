@@ -78,9 +78,10 @@ const main = async (): Promise<void> => {
     await player.start()
     await player.load(film)
     players.push(player)
+    // The first client creates the room; everyone else joins it by code.
     const client = new RoomClient({
       url: `ws://127.0.0.1:${port}`,
-      room: 'drift-test',
+      code: clients[0]?.code ?? null,
       name: names[i % names.length]!,
       player
     })
