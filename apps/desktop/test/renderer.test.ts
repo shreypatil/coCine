@@ -31,7 +31,8 @@ const STATE = {
   code: 'BCDFGHJK', messages: [] as unknown[], isHost: true, mayControl: true,
   transfers: [] as unknown[], receiving: null as unknown,
   phase: 'playing', waitForLatecomers: true, transferStatus: null as unknown,
-  memberId: 'me'
+    memberId: 'me',
+    mode: 'p2p', originAvailable: false, voiceIce: [] as unknown[]
 }
 
 beforeAll(async () => {
@@ -82,6 +83,7 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
       removeFilm: rec('removeFilm'),
       startAnyway: rec('startAnyway'),
       setWaitForLatecomers: rec('setWaitForLatecomers'),
+        setMode: rec('setMode'),
       sendSignal: rec('sendSignal'),
       setVoiceState: rec('setVoiceState'),
       moderateVoice: rec('moderateVoice'),
@@ -725,6 +727,50 @@ describe('renderer behaviour', () => {
     await expect.poll(async () => await page.textContent('[data-testid="banner"]')).toContain('unsupported codec')
     await page.click('[data-testid="banner"] button')
     expect(await page.locator('[data-testid="banner"]').count()).toBe(0)
+    await page.close()
+  })
+})
+
+describe('choosing how the film is shared', () => {
+  it('offers the host a choice of transport only when the server has storage', async () => {
+    await open()
+    await push({ isHost: true, originAvailable: false })
+    // A toggle that fails when pressed is worse than no toggle at all.
+    expect(await page.locator('[data-testid="sharemode"]').count()).toBe(0)
+
+    await push({ isHost: true, originAvailable: true })
+    expect(await page.locator('[data-testid="sharemode"]').count()).toBe(1)
+    await page.close()
+  })
+
+  it('does not offer the transport choice to anyone but the host', async () => {
+    await open()
+    await push({ isHost: false, originAvailable: true })
+    expect(await page.locator('[data-testid="sharemode"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('asks the server to switch transport, and follows the room rather than itself', async () => {
+    await open()
+    await push({ isHost: true, originAvailable: true, mode: 'p2p' })
+    expect(await page.inputValue('[data-testid="modeselect"]')).toBe('p2p')
+
+    await page.selectOption('[data-testid="modeselect"]', 'origin')
+    expect((await calls('setMode'))[0]).toEqual(['origin'])
+
+    // The room's mode is server state: the control shows what the room says, not
+    // what was clicked, so a rejected change cannot leave the interface claiming
+    // something untrue.
+    expect(await page.inputValue('[data-testid="modeselect"]')).toBe('p2p')
+    await push({ isHost: true, originAvailable: true, mode: 'origin' })
+    expect(await page.inputValue('[data-testid="modeselect"]')).toBe('origin')
+    await page.close()
+  })
+
+  it('tells a guest when the film is coming through the server', async () => {
+    await open()
+    await push({ isHost: false, mode: 'origin' })
+    expect(await page.textContent('[data-testid="modenote"]')).toContain('through the server')
     await page.close()
   })
 })

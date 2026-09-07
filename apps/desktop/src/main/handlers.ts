@@ -2,7 +2,7 @@ import { basename } from 'node:path'
 import type { ChatMessage, Member } from '@cocine/protocol'
 import type { Identity } from './identity.js'
 import type { StoredFilm, TransferProgress } from '@cocine/client'
-import type { TorrentInfo } from '@cocine/protocol'
+import { sourceId, type MediaSource, type RoomMode } from '@cocine/protocol'
 
 /**
  * Every IPC handler, as plain functions over injected dependencies.
@@ -32,8 +32,8 @@ export interface VideoLike {
 }
 
 export interface TransferLike {
-  share: (filePath: string) => Promise<TorrentInfo>
-  receive: (info: TorrentInfo) => Promise<{ path: string }>
+  share: (filePath: string) => Promise<MediaSource>
+  receive: (source: MediaSource) => Promise<{ path: string }>
   progress: () => TransferProgress[]
 }
 
@@ -45,7 +45,10 @@ export interface FilmStoreLike {
 }
 
 export interface RoomLike {
-  announceMedia: (name: string, durationSec: number, torrent?: TorrentInfo | null) => void
+  announceMedia: (name: string, durationSec: number, source?: MediaSource | null) => void
+  setMode: (mode: RoomMode) => void
+  mode: RoomMode
+  originAvailable: boolean
   requestPlay: (positionSec?: number) => void
   requestPause: (positionSec?: number) => void
   requestSeek: (positionSec: number) => void
@@ -152,19 +155,19 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     // in chunks and measured at roughly 780 MB/s, so it does not need a worker
     // -- but it is still seconds on a large film, and a failure to share must
     // not stop the person who opened it from watching.
-    let torrent: TorrentInfo | null = null
+    let source: MediaSource | null = null
     const transfer = deps.getTransfer()
     if (transfer) {
       try {
-        torrent = await transfer.share(path)
-        deps.setSharedInfoHash?.(torrent.infoHash)
-        log(`[film] sharing as ${torrent.infoHash}`)
+        source = await transfer.share(path)
+        deps.setSharedInfoHash?.(sourceId(source)!)
+        log(`[film] sharing as ${sourceId(source)}`)
       } catch (err) {
         log(`[film] could not share: ${String(err)}`)
       }
     }
-    deps.getRoom()?.announceMedia(basename(path), durationSec ?? 0, torrent)
-    return { path, name: basename(path), durationSec, infoHash: torrent?.infoHash ?? null }
+    deps.getRoom()?.announceMedia(basename(path), durationSec ?? 0, source)
+    return { path, name: basename(path), durationSec, infoHash: sourceId(source) }
   }
 
   return {
@@ -230,11 +233,11 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     },
 
     /** Fetch a film the room is sharing that this machine does not have. */
-    'film:receive': async (info: TorrentInfo) => {
+    'film:receive': async (source: MediaSource) => {
       const transfer = deps.getTransfer()
       if (!transfer) throw new Error('transfer not ready')
-      log(`[film] receiving ${info.infoHash} (${(info.bytes / 1024 ** 3).toFixed(2)} GB)`)
-      const { path } = await transfer.receive(info)
+      log(`[film] receiving ${sourceId(source)} (${(source.bytes / 1024 ** 3).toFixed(2)} GB)`)
+      const { path } = await transfer.receive(source)
       return { path }
     },
 
@@ -314,6 +317,22 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       const player = deps.getVideo()?.player
       if (!player) return
       await player.setVolume?.(ducked ? 35 : 100)
+    },
+
+    /**
+     * Peer-to-peer or relay. The host chooses, and the choice clears the
+     * room's film -- the bytes live where only the previous transport can
+     * reach them, so it has to be shared again.
+     */
+    'room:setMode': (mode: RoomMode) => {
+      const room = deps.getRoom()
+      if (!room) throw new Error('not in a room')
+      if (!room.me()?.isHost) throw new Error('only the host can change how the film is shared')
+      if (mode === 'origin' && !room.originAvailable) {
+        throw new Error('this server has no relay storage configured')
+      }
+      room.setMode(mode)
+      return { ok: true }
     },
 
     /** Whether the room pauses when someone arrives mid-film. */

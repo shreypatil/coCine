@@ -260,7 +260,7 @@ describe('the readiness gate over the wire', () => {
     const b = await Peer.connect()
     b.send({ t: 'hello', code, name: 'dev' })
     const bId = (await b.next('welcome')).memberId
-    a.send({ t: 'media.announce', name: 'dune.mkv', durationSec: 7200, torrent })
+    a.send({ t: 'media.announce', name: 'dune.mkv', durationSec: 7200, source: { kind: 'p2p' as const, ...torrent } })
     await a.next('room.state')
     return { a, b, bId }
   }
@@ -339,7 +339,7 @@ describe('the readiness gate over the wire', () => {
     a.send({ t: 'room.startAnyway' })
     await a.next('room.state')
 
-    a.send({ t: 'media.announce', name: 'arrival.mkv', durationSec: 6000, torrent: { ...torrent, infoHash: 'd'.repeat(40) } })
+    a.send({ t: 'media.announce', name: 'arrival.mkv', durationSec: 6000, source: { kind: 'p2p' as const, ...torrent, infoHash: 'd'.repeat(40) } })
     const after = await a.nextWhere('room.state', m => m.media?.name === 'arrival.mkv')
     expect(after.phase).toBe('preparing')
   }, 20_000)

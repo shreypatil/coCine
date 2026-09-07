@@ -25,6 +25,7 @@ const api = {
   transferHost: (memberId: string) => ipcRenderer.invoke('member:transferHost', memberId),
   startAnyway: () => ipcRenderer.invoke('room:startAnyway'),
   setWaitForLatecomers: (wait: boolean) => ipcRenderer.invoke('room:setWaitForLatecomers', wait),
+  setMode: (mode: 'p2p' | 'origin') => ipcRenderer.invoke('room:setMode', mode),
   sendSignal: (to: string, payload: unknown) => ipcRenderer.invoke('voice:signal', to, payload),
   setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => ipcRenderer.invoke('voice:state', v),
   moderateVoice: (memberId: string, action: 'mute' | 'unmute') => ipcRenderer.invoke('voice:moderate', memberId, action),

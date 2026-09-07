@@ -58,11 +58,31 @@ Open UDP/TCP 3478, TCP 443, and UDP 49160-49200 to the relay. The 443 listener
 matters more than it looks: it is what gets through networks that block UDP and
 non-standard ports, which is most corporate ones.
 
-**The relay carries voice only.** Bulk film transfer is never given these
+**The TURN relay carries voice only.** Bulk film transfer is never given these
 credentials, by design — a relayed film crosses the server twice, in and out,
 for every viewer who needs it. Someone on a hopeless connection will hear
 everyone and still fail to receive the film. That is the intended trade, not a
-bug: relaying films would put the whole cost of the app on whoever runs it.
+bug: relaying films through TURN would put the whole cost of the app on whoever
+runs it.
+
+### Relay mode, for the room the swarm cannot serve
+
+Separate mechanism, separate decision. If a pairing turns out to have no workable
+peer connection, the host can switch the room to relay mode from the Film panel:
+the sharer uploads the film once to object storage and everyone fetches from
+there. It needs storage configured on the server:
+
+```bash
+COCINE_R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com \
+COCINE_R2_BUCKET=cocine COCINE_R2_KEY_ID=... COCINE_R2_SECRET=... \
+  npm run server
+```
+
+Without it the host sees no toggle at all. **This is the case worth testing
+deliberately** once you find a pairing that cannot connect: switch to relay mode
+and confirm the film arrives and plays in sync. Switching clears the current
+film — it has to be shared again, because its bytes live where only the other
+transport can reach them.
 
 Keep the terminal running `npm run desktop` visible on both machines. It carries
 the main-process log, which is where the useful detail is.

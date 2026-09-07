@@ -344,3 +344,17 @@ body {
 .icon svg { width: 15px; height: 15px; fill: currentColor; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* Host's choice of transport. Sits in the Film panel because it is a property
+   of the film being shared, not of the room. */
+.share-mode { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.share-mode .sel {
+  background: var(--panel-2, #1c1f2b);
+  color: inherit;
+  border: 1px solid var(--line, #2c3040);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font: inherit;
+}
+.share-mode .sel:focus-visible { outline: 2px solid var(--accent, #7c6cff); outline-offset: 1px; }
+.quiet.small { font-size: 11px; line-height: 1.45; margin: 0; }

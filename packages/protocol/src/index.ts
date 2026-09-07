@@ -68,12 +68,57 @@ export const TorrentInfo = z.object({
 })
 export type TorrentInfo = z.infer<typeof TorrentInfo>
 
+/**
+ * Where a film can be got from. Two transports, one shape.
+ *
+ * `p2p` is the swarm: everyone who has bytes serves them, and the sharer's
+ * upload is divided among the room. `origin` is relay mode: the sharer uploads
+ * once to object storage and everyone fetches from there. The second exists for
+ * the room where the first cannot work at all -- no two peers able to connect,
+ * or a sharer whose uplink cannot feed even one viewer.
+ *
+ * An origin source names only a key. The URL to reach it is minted by the server
+ * on request and expires, so a client can neither hold a durable link nor name a
+ * key of its own choosing.
+ */
+export const P2PSource = TorrentInfo.extend({ kind: z.literal('p2p') })
+export type P2PSource = z.infer<typeof P2PSource>
+
+export const OriginSource = z.object({
+  kind: z.literal('origin'),
+  key: z.string().min(1),
+  bytes: z.number().int().positive()
+})
+export type OriginSource = z.infer<typeof OriginSource>
+
+export const MediaSource = z.discriminatedUnion('kind', [P2PSource, OriginSource])
+export type MediaSource = z.infer<typeof MediaSource>
+
+/**
+ * A stable identity for a source, used to notice that the room's film changed.
+ * The two transports identify content differently -- a swarm by info hash, an
+ * origin by object key -- and comparing the wrong field silently means "the film
+ * never changes", so every caller goes through here.
+ */
+export function sourceId (source: MediaSource | null | undefined): string | null {
+  if (!source) return null
+  return source.kind === 'p2p' ? source.infoHash.toLowerCase() : source.key
+}
+
 export const Media = z.object({
   name: z.string(),
   durationSec: z.number(),
-  torrent: TorrentInfo.nullable()
+  source: MediaSource.nullable()
 })
 export type Media = z.infer<typeof Media>
+
+/**
+ * How the room distributes the film. The host chooses; it is not automatic,
+ * because switching means re-uploading and only a person can judge whether that
+ * is worth it.
+ */
+export const RoomMode = z.enum(['p2p', 'origin'])
+export type RoomMode = z.infer<typeof RoomMode>
 
 /** What each client tells the room about itself, once a second. */
 export const PeerReport = z.object({
@@ -117,8 +162,24 @@ export const ClientMessage = z.discriminatedUnion('t', [
     t: z.literal('media.announce'),
     name: z.string(),
     durationSec: z.number(),
-    torrent: TorrentInfo.nullable().default(null)
+      source: MediaSource.nullable().default(null)
   }),
+    /** Host only. Switching mode clears the current film: the bytes live
+     *  somewhere the other transport cannot reach. */
+    z.object({ t: z.literal('room.setMode'), mode: RoomMode }),
+    /**
+     * Ask for a signed URL. The key is never supplied by the client -- for an
+     * upload the server derives it, and for a download it comes from the room's
+     * own media -- so no client can address another room's objects.
+     */
+    z.object({
+      t: z.literal('origin.request'),
+      purpose: z.enum(['upload', 'download']),
+      /** Upload only: identifies the content so re-sharing does not re-upload. */
+      contentId: z.string().min(1).max(64).optional(),
+      name: z.string().optional(),
+      bytes: z.number().int().positive().optional()
+    }),
   z.object({
     t: z.literal('playback.request'),
     intent: z.enum(['play', 'pause', 'seek']),
@@ -178,7 +239,11 @@ export const ServerMessage = z.discriminatedUnion('t', [
     /** Where to announce, so clients do not have to guess the tracker URL. */
     trackerUrl: z.string(),
     phase: RoomPhase,
-    waitForLatecomers: z.boolean()
+      waitForLatecomers: z.boolean(),
+      mode: RoomMode,
+      /** Whether the server has origin storage configured at all. Without it the
+       *  host is offered no toggle, rather than a toggle that fails. */
+      originAvailable: z.boolean()
   }),
   z.object({
     t: z.literal('transfer.status'),
@@ -195,6 +260,14 @@ export const ServerMessage = z.discriminatedUnion('t', [
     safeForSharerToLeave: z.boolean()
   }),
   z.object({ t: z.literal('playback.schedule'), state: PlaybackState, seq: z.number() }),
+    /** A signed URL, good for one method on one key until it expires. */
+    z.object({
+      t: z.literal('origin.url'),
+      purpose: z.enum(['upload', 'download']),
+      url: z.string(),
+      key: z.string(),
+      expiresAtMs: z.number()
+    }),
   z.object({ t: z.literal('chat.message'), message: ChatMessage }),
   /** Sent once on join so a latecomer sees what was already said. */
   z.object({ t: z.literal('chat.history'), messages: z.array(ChatMessage) }),

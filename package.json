@@ -17,7 +17,8 @@
     "desktop:dev": "npm run dev --workspace @cocine/desktop",
     "phase1:heavy": "tsx apps/server/scripts/drift-test.ts --peers=5 --film=300 --duration=150 --events=10 --latency=40 --jitter=15 --skew=37000 --res=1080",
     "test:app": "vitest run --config vitest.e2e.config.ts",
-    "phase4": "tsx apps/server/scripts/transfer-test.ts"
+    "phase4": "tsx apps/server/scripts/transfer-test.ts",
+    "phase7": "tsx apps/server/scripts/relay-cost.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

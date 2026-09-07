@@ -6,6 +6,7 @@ import { ClientMessage, encode, normaliseCode, type ServerMessage } from '@cocin
 import type { Room } from './room.js'
 import { InMemoryRoomStore, type RoomStore } from './store.js'
 import { iceServersFor, type TurnConfig } from './turn.js'
+import { presign, objectKeyFor, DEFAULT_EXPIRY_SECONDS, type OriginConfig } from './origin.js'
 
 interface Conn { ws: WebSocket; memberId: string; room: Room }
 
@@ -19,6 +20,9 @@ export interface SignallingServerOptions {
   /** Relay for voice only. Absent means public STUN alone, which is enough on
    *  most networks and leaves the rest unable to hold a call. */
   turn?: TurnConfig
+  /** Object storage for relay mode. Absent means the host is offered no toggle,
+   *  rather than a toggle that fails when pressed. */
+  origin?: OriginConfig
   /** How long an empty room is kept before it is collected. */
   roomTtlMs?: number
   /** Test affordance: delay every outbound message, with jitter, to stand in
@@ -164,14 +168,61 @@ export class SignallingServer {
 
     switch (msg.t) {
       case 'media.announce': {
-        conn.room.setMedia({ name: msg.name, durationSec: msg.durationSec, torrent: msg.torrent }, me.id)
+        conn.room.setMedia({ name: msg.name, durationSec: msg.durationSec, source: msg.source }, me.id)
         // Only info hashes a room has announced are answerable, so this cannot
         // be used as a public tracker for arbitrary torrents.
-        if (msg.torrent) this.tracker.allow(msg.torrent.infoHash)
+        if (msg.source?.kind === 'p2p') this.tracker.allow(msg.source.infoHash)
         this.emitChat(conn.room, 'system', me.name, `put on ${msg.name}`, me.id)
         this.broadcastState(conn.room)
         this.broadcast(conn.room, { t: 'playback.schedule', state: conn.room.state, seq: conn.room.seq })
         return
+      }
+
+      case 'room.setMode': {
+        if (!me.isHost) return this.send(ws, { t: 'error', message: 'Only the host can change how the film is shared' })
+        if (msg.mode === 'origin' && !this.opts.origin) {
+          return this.send(ws, { t: 'error', message: 'This server has no relay storage configured' })
+        }
+        if (conn.room.mode === msg.mode) return
+        conn.room.mode = msg.mode
+        // The film cannot follow: its bytes live where only the old transport
+        // can reach them. Clearing it is honest -- leaving it would show a film
+        // nobody could fetch.
+        conn.room.setMedia({ name: '', durationSec: 0, source: null }, me.id)
+        conn.room.media = null
+        this.emitChat(conn.room, 'system', me.name,
+          msg.mode === 'origin'
+            ? 'switched to relay mode; the film needs sharing again'
+            : 'switched to peer-to-peer; the film needs sharing again', me.id)
+        this.broadcastState(conn.room)
+        return
+      }
+
+      case 'origin.request': {
+        const cfg = this.opts.origin
+        if (!cfg) return this.send(ws, { t: 'error', message: 'This server has no relay storage configured' })
+        const expiresAtMs = Date.now() + DEFAULT_EXPIRY_SECONDS * 1000
+
+        if (msg.purpose === 'upload') {
+          if (!me.mayControl) return this.send(ws, { t: 'error', message: 'You do not have permission to share a film' })
+          if (!msg.contentId || !msg.name) return this.send(ws, { t: 'error', message: 'malformed upload request' })
+          // The key is built here, from the room's own code. A client that could
+          // name its own key could write over another room's film.
+          const key = objectKeyFor(conn.room.code, msg.contentId, msg.name)
+          return this.send(ws, {
+            t: 'origin.url', purpose: 'upload', key, expiresAtMs,
+            url: presign(cfg, { method: 'PUT', key })
+          })
+        }
+
+        const source = conn.room.media?.source
+        if (source?.kind !== 'origin') {
+          return this.send(ws, { t: 'error', message: 'the room is not sharing a film through the relay' })
+        }
+        return this.send(ws, {
+          t: 'origin.url', purpose: 'download', key: source.key, expiresAtMs,
+          url: presign(cfg, { method: 'GET', key: source.key })
+        })
       }
 
       case 'playback.request': {
@@ -278,7 +329,7 @@ export class SignallingServer {
         this.broadcastState(c.room)
       }
 
-      if (!c.room.media?.torrent) continue
+      if (!c.room.media?.source) continue
       this.broadcast(c.room, { t: 'transfer.status', ...c.room.transferStatus() })
     }
   }
@@ -292,7 +343,9 @@ export class SignallingServer {
       media: room.media,
       trackerUrl: this.trackerUrl,
       phase: room.phase(),
-      waitForLatecomers: room.waitForLatecomers
+      waitForLatecomers: room.waitForLatecomers,
+      mode: room.mode,
+      originAvailable: !!this.opts.origin
     })
   }
 

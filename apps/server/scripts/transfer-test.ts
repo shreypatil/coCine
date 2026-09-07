@@ -77,7 +77,7 @@ const main = async (): Promise<void> => {
     const client: RoomClient = new RoomClient({
       url: `ws://127.0.0.1:${port}`, code, name, player,
       getReport: () => {
-        const t = client.media?.torrent
+        const t = client.media?.source?.kind === 'p2p' ? client.media.source : null
         if (!t) return null
         if (t.infoHash === shared) {
           return { havePct: 1, bufferEndSec: client.media?.durationSec ?? 0, downBps: 0, upBps: 0, peers: 0 }
@@ -90,7 +90,7 @@ const main = async (): Promise<void> => {
     if (!isSharer) {
       client.on('media', () => {
         void (async () => {
-          const t = client.media?.torrent
+          const t = client.media?.source?.kind === 'p2p' ? client.media.source : null
           if (!t || t.infoHash === shared) return
           console.log(`  [${name}] receiving ${t.infoHash.slice(0, 8)}…`)
           await transfer.receive(t)
@@ -106,6 +106,7 @@ const main = async (): Promise<void> => {
     if (isSharer) {
       await player.load(film)
       const info = await transfer.share(film)
+        if (info.kind !== 'p2p') throw new Error('expected a swarm source')
       shared = info.infoHash
       client.announceMedia('film', FILM_SEC, info)
     }

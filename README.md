@@ -2,11 +2,12 @@
 
 Watch a film with friends, in sync, over a peer-to-peer connection.
 
-Phases 0 through 6 of the [build plan](#status) are implemented: mpv is driven
+Phases 0 through 7 of the [build plan](#status) are implemented: mpv is driven
 over JSON IPC inside an Electron shell, a room of clients holds synchronised
 playback inside a 100 ms budget, the film is distributed peer to peer over
-BitTorrent while it plays, voice runs as a WebRTC mesh, and voice falls back to a
-TURN relay where a direct connection is impossible.
+BitTorrent while it plays, voice runs as a WebRTC mesh, voice falls back to a
+TURN relay where a direct connection is impossible, and a room that cannot use
+the swarm at all can fall back to fetching the film from object storage.
 
 What remains is in [docs/TODO.md](docs/TODO.md). The largest item is not code:
 everything so far has been verified on one machine, and the peer-to-peer parts
@@ -42,6 +43,7 @@ npm test          # unit tests + a short synchronised-playback integration test
 npm run phase0    # mpv control: event rate, command latency, seek accuracy
 npm run phase1    # five clients, drift measured against a 100 ms budget
 npm run phase4    # a swarm fetching a film: readiness gate, sync during transfer
+npm run phase7    # relay mode carrying a film, and what a session actually costs
 ```
 
 The phase scripts are pass/fail against the plan's exit criteria and exit
@@ -238,7 +240,7 @@ only ask, and a modified client could decline. The request is recorded in the
 room log so it is visible that it happened. Real enforcement needs the SFU,
 where the server is in the media path and can simply stop forwarding.
 
-## The relay, and why films never use it
+## The voice relay, and why films never use it
 
 Roughly one pairing in ten on home connections cannot establish a direct peer
 connection; behind carrier-grade NAT, as on most mobile networks, it is most of
@@ -253,7 +255,8 @@ relaying; films are not.
 
 The visible consequence is worth stating plainly, because it will look like a
 bug: someone on a hopeless connection will hear everyone perfectly and still fail
-to receive the film.
+to receive the film. [Relay mode](#relay-mode) is the answer for that room — a
+different mechanism entirely, and one the host has to choose.
 
 Credentials are minted per connection as an HMAC over an expiry timestamp, so no
 account list exists and nothing needs provisioning. A relay left open, or one with
@@ -272,6 +275,62 @@ firewall ports are in [docs/multi-machine-testing.md](docs/multi-machine-testing
 
 Without a relay configured the server says so at startup rather than failing
 quietly, and voice simply requires a direct connection.
+
+## Relay mode
+
+Peer to peer is the product, and it fails for some rooms. Nobody able to connect
+directly, or a sharer whose uplink cannot feed even one viewer, and the swarm has
+nothing to offer. Relay mode is the honest answer: the sharer uploads once to
+object storage and everyone fetches from there, so nobody depends on anybody else
+being reachable.
+
+The host chooses it, per room, from the Film panel — it is never automatic,
+because switching means re-uploading the film and only a person can judge whether
+that is worth it. Changing mode clears the room's film for the same reason: its
+bytes live where only the other transport can reach them.
+
+Everything above the transport stays the same. Both are implementations of one
+`MediaTransport` interface, so the readiness gate, the progress display, resume
+after a crash, and playing before the download finishes all work identically. The
+origin path fetches byte ranges where the swarm fetches pieces, ahead of the
+playhead first and backfilling afterwards, so a late joiner still gets the part
+being watched rather than the opening titles.
+
+### Credentials never leave the server
+
+Clients hold no bucket credentials. The server signs a URL scoped to one method,
+one key and a few hours, and hands that over — the same shape as the TURN
+credentials, for the same reason. A client never names a key either: for an
+upload the server derives it from the room's own code, and for a download it
+comes from the room's media, so one room cannot address another's objects.
+
+Signature Version 4 is implemented directly rather than by pulling in the AWS
+SDK. It is checked against MinIO in the tests, which is the only authority worth
+having — a signature that agrees with another copy of the same arithmetic proves
+nothing.
+
+### What it costs
+
+Cloudflare R2 is the intended target because its egress is free, and that is the
+entire difference. Measured by `npm run phase7` and extrapolated to a 4 GB film
+with three viewers:
+
+| | R2 | S3 |
+|---|---|---|
+| One movie night | **$0.02** | $1.11 |
+
+Twelve gigabytes of downloads costs $1.08 on S3 and nothing on R2. Storage is the
+only recurring part on R2, at roughly $0.06 per film per month if a film is kept
+that long.
+
+```bash
+COCINE_R2_ENDPOINT=https://<account>.r2.cloudflarestorage.com \
+COCINE_R2_BUCKET=cocine COCINE_R2_KEY_ID=... COCINE_R2_SECRET=... \
+  npm run server
+```
+
+Without these the server says so at startup and the host is offered no toggle at
+all, rather than one that fails when pressed.
 
 ## Keyboard
 
@@ -346,7 +405,7 @@ which `time-pos` reads stale and the engine corrects against a phantom drift.
 | 04 | Transfer | **done on this machine** — one part needs a second machine, see below |
 | 05 | Voice | **done** — mesh, push-to-talk, mute/deafen, advisory host mute |
 | 06 | NAT hardening | **done on this machine** — TURN credentials, plane split, forced-relay test; success rate needs real networks |
-| 07 | Relay mode | not started — an origin to fetch from when peer-to-peer cannot deliver |
+| 07 | Relay mode | **done on this machine** — host toggle, signed URLs, film delivered with no peer connection; measured $0.02 a session on R2 |
 | 08 | Packaging | not started — installers, signing, updates |
 | 09 | Interface overhaul | not started — **blocked on your list of issues from manual testing** |
 
@@ -356,11 +415,13 @@ Deferred work, and the two things that need a second machine, are listed in
 ## Testing
 
 Three layers. The first two run on every commit and put nothing on screen; the
-third needs a display and is opt-in.
+third needs a display, or Docker, and is opt-in. The tests that stand a real
+coturn and a real MinIO up in containers live in that third layer, and skip
+themselves where Docker is absent.
 
 ```bash
-npm test          # layers 1 and 2 — 253 tests, ~37s
-npm run test:app  # layer 3 — real Electron, 13 tests, ~34s
+npm test          # layers 1 and 2 — 290 tests, ~40s
+npm run test:app  # layer 3 — real Electron and Docker, 21 tests, ~60s
 ```
 
 | Layer | What it covers | How |

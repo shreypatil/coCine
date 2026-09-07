@@ -3,7 +3,7 @@
 A running list of what is deferred, blocked, or waiting on something only you can
 do. Everything here was a deliberate decision to postpone, not an oversight.
 
-Last updated after phase 6 (NAT hardening).
+Last updated after phase 7 (relay mode).
 
 ---
 
@@ -45,6 +45,43 @@ Needs measuring across at least:
 Worth recording per pairing: whether voice connected, whether it needed the
 relay, and whether the film transferred.
 
+### Relay mode against a real Cloudflare R2
+
+Relay mode is built and proven against MinIO, which speaks the same S3 API, but
+has never touched R2 itself. Before relying on it:
+
+- Create an R2 bucket and an API token, and set `COCINE_R2_ENDPOINT`,
+  `COCINE_R2_BUCKET`, `COCINE_R2_KEY_ID` and `COCINE_R2_SECRET`
+- Share a film through the relay and confirm the signed URLs are accepted
+- Check the bill after a session against what `npm run phase7` predicted
+
+R2 has no free-egress equivalent to guess at, so the measured figures should hold,
+but they are measured against MinIO's behaviour and R2's own request accounting
+may differ.
+
+---
+
+## Decisions waiting on you
+
+### How long films stay in the bucket
+
+Nothing currently deletes an uploaded film, so storage accrues for every film
+ever shared through the relay — roughly $0.06 per 4 GB film per month on R2, for
+as long as it sits there. That is small per film and unbounded over time.
+
+The obvious options, none of them chosen:
+
+- **A bucket lifecycle rule** deleting objects after some days. Simplest, costs
+  nothing to run, and means a rewatch next month re-uploads.
+- **Delete when the room ends.** Cheapest, but a room that reconvenes the next
+  evening pays the upload again.
+- **Keep them and accept the bill.** Fine at friends-and-family scale; the cost
+  is real but tiny.
+
+My recommendation is a lifecycle rule at seven days: it matches how people
+actually rewatch, needs no code, and bounds the bill. But it is a standing cost
+decision rather than a technical one, so it is yours.
+
 ---
 
 ## Deferred by decision
@@ -82,12 +119,6 @@ mpv cannot reparent into a Wayland surface — there is no embedding path at all
 so the app forces `--ozone-platform=x11` and runs under XWayland on a Wayland
 desktop. The cost is native fractional scaling. A real fix needs either a
 different embedding strategy or rendering frames through the app itself.
-
-### Phase 7 — relay/server mode
-
-The fallback for when peer-to-peer cannot deliver a film at all: an origin the
-film can be fetched from, currently planned as Cloudflare R2. This is the answer
-for the peers phase 6 measurement finds cannot connect.
 
 ### Phase 8 — packaging and release
 
@@ -133,6 +164,22 @@ pass-through into `RTCPeerConnection` is type-checked. But the renderer test lay
 does not assert the servers actually arrive at the constructor. This is precisely
 the shape of bug that existed until phase 6 — credentials minted correctly and
 then dropped on the floor — so it is worth closing properly.
+
+### Relay mode has no cost ceiling or quota
+
+Any host in a room on a server with storage configured can upload a film, as
+often as they like, and the person running the server pays. There is no per-room
+quota, no size cap beyond what the bucket allows, and no accounting per user.
+At friends-and-family scale this is fine and deliberately unbuilt; it would need
+addressing before anyone outside that circle could use the server.
+
+### The origin transport assumes a constant bitrate
+
+Readiness in relay mode converts held bytes into seconds of film by dividing by
+the average, which is wrong for any real encode — a high-motion scene occupies
+more bytes per second than a static one. It decides when playback may start, so
+being approximate costs a slightly early or late gate rather than a wrong
+picture. The swarm path has the same approximation.
 
 ### Piece scheduler measured no better than stock WebTorrent
 

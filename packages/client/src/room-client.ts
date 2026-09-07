@@ -1,7 +1,7 @@
 import WebSocket from 'ws'
 import { EventEmitter } from 'node:events'
 import { ClockSync, tick, extrapolatePosition, DEFAULT_SYNC_CONFIG, type SyncConfig, type SyncAction } from '@cocine/sync'
-import { decodeServer, encode, type ChatMessage, type ClientMessage, type Media, type Member, type PeerReport, type PeerStatus, type PlaybackState, type RoomPhase, type TorrentInfo, type IceServer } from '@cocine/protocol'
+import { decodeServer, encode, sourceId, type ChatMessage, type ClientMessage, type Media, type Member, type PeerReport, type PeerStatus, type PlaybackState, type RoomPhase, type TorrentInfo, type MediaSource, type RoomMode, type IceServer } from '@cocine/protocol'
 import type { PlayerController } from '@cocine/player'
 
 export interface RoomClientOptions {
@@ -37,9 +37,16 @@ export class RoomClient extends EventEmitter {
   members: Member[] = []
   memberId = ''
   code = ''
+  private pendingOriginUrl = new Map<'upload' | 'download',
+    { resolve: (v: { url: string; key: string; expiresAtMs: number }) => void; reject: (e: Error) => void }>()
   media: Media | null = null
   phase: RoomPhase = 'lobby'
   waitForLatecomers = true
+  /** How the room distributes the film; the host chooses. */
+  mode: RoomMode = 'p2p'
+  /** Whether the server has relay storage at all. Without it the host is
+   *  shown no toggle rather than one that fails when pressed. */
+  originAvailable = false
   transfer: {
     perPeer: PeerStatus[]
     etaSec: number | null
@@ -110,6 +117,13 @@ export class RoomClient extends EventEmitter {
       case 'time.pong':
         this.clock.addExchange(msg.c1, msg.s1, msg.s2, Date.now())
         break
+        case 'origin.url': {
+          // Signed URLs are requested one at a time per purpose, so a single
+          // pending resolver each is enough and nothing can be mismatched.
+          const pending = this.pendingOriginUrl.get(msg.purpose)
+          if (pending) { this.pendingOriginUrl.delete(msg.purpose); pending.resolve(msg) }
+          break
+        }
       case 'welcome':
         this.memberId = msg.memberId
         this.code = msg.code
@@ -122,7 +136,9 @@ export class RoomClient extends EventEmitter {
         this.trackerUrl = msg.trackerUrl
         this.phase = msg.phase
         this.waitForLatecomers = msg.waitForLatecomers
-        if (msg.media?.torrent?.infoHash !== this.media?.torrent?.infoHash) {
+        this.mode = msg.mode
+        this.originAvailable = msg.originAvailable
+        if (sourceId(msg.media?.source) !== sourceId(this.media?.source)) {
           this.media = msg.media
           this.emit('media', msg.media)
         } else {
@@ -226,8 +242,45 @@ export class RoomClient extends EventEmitter {
   lastSyncAction (): SyncAction { return this.lastAction }
 
   /** A null torrent means "everyone is expected to already have this file". */
-  announceMedia (name: string, durationSec: number, torrent: TorrentInfo | null = null): void {
-    this.send({ t: 'media.announce', name, durationSec, torrent })
+  /** Host only. Changing this clears the room's film: the bytes live where
+   *  only the previous transport can reach them. */
+  setMode (mode: RoomMode): void { this.send({ t: 'room.setMode', mode }) }
+
+  /**
+   * Ask the server for a signed URL. The client never holds the storage
+   * credentials and never names a key for a download -- the server derives
+   * both from the room, so one room cannot reach another's objects.
+   */
+  private originUrl (
+    purpose: 'upload' | 'download',
+    extra: { contentId?: string; name?: string; bytes?: number } = {},
+    timeoutMs = 15_000
+  ): Promise<{ url: string; key: string; expiresAtMs: number }> {
+    const existing = this.pendingOriginUrl.get(purpose)
+    if (existing) existing.reject(new Error('superseded by a newer request'))
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingOriginUrl.delete(purpose)
+        reject(new Error(`the server did not supply a ${purpose} URL within ${timeoutMs / 1000}s`))
+      }, timeoutMs)
+      this.pendingOriginUrl.set(purpose, {
+        resolve: v => { clearTimeout(timer); resolve(v) },
+        reject: e => { clearTimeout(timer); reject(e) }
+      })
+      this.send({ t: 'origin.request', purpose, ...extra })
+    })
+  }
+
+  requestUploadUrl (contentId: string, name: string, bytes: number): Promise<{ url: string; key: string }> {
+    return this.originUrl('upload', { contentId, name, bytes })
+  }
+
+  requestDownloadUrl (): Promise<string> {
+    return this.originUrl('download').then(r => r.url)
+  }
+
+  announceMedia (name: string, durationSec: number, source: MediaSource | null = null): void {
+    this.send({ t: 'media.announce', name, durationSec, source })
   }
   sendChat (text: string): void {
     const t = text.trim()

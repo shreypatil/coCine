@@ -45,6 +45,8 @@ interface State {
   paused: boolean; rate: number
   clockOffsetMs: number | null; rttMs: number | null; lastAction: string | null
   voiceIce: RTCIceServer[]
+  mode: 'p2p' | 'origin'
+  originAvailable: boolean
   fullscreen: boolean
   transfers: TransferProgress[]
   receiving: { name: string; infoHash: string } | null
@@ -70,6 +72,7 @@ declare global {
       transferHost: (memberId: string) => Promise<void>
       startAnyway: () => Promise<void>
       setWaitForLatecomers: (wait: boolean) => Promise<void>
+      setMode: (mode: 'p2p' | 'origin') => Promise<unknown>
       play: () => Promise<void>
       pause: () => Promise<void>
       seek: (sec: number) => Promise<void>
@@ -516,6 +519,25 @@ export function App (): ReactElement {
           {view === 'room' && (
             <div className="sect film">
               <h4>Film</h4>
+                {s?.connected && s.isHost && s.originAvailable && (
+                  <div className="share-mode" data-testid="sharemode">
+                    <label className="quiet" htmlFor="modesel">How the film is shared</label>
+                    <select id="modesel" className="sel" value={s.mode} data-testid="modeselect"
+                      onChange={e => void guard(() => window.cocine.setMode(e.target.value as 'p2p' | 'origin'))}>
+                      <option value="p2p">Between us (peer to peer)</option>
+                      <option value="origin">Through the server (relay)</option>
+                    </select>
+                    <p className="quiet small">
+                      {s.mode === 'p2p'
+                        ? 'Everyone shares with everyone. Free, and faster with more people — but it needs peers who can reach each other.'
+                        : 'You upload once and everyone downloads from the server. Works when peer to peer cannot, and costs whoever runs the server.'}
+                    </p>
+                    <p className="quiet small">Changing this clears the film — it has to be shared again.</p>
+                  </div>
+                )}
+                {s?.connected && !s.isHost && s.mode === 'origin' && (
+                  <p className="quiet small" data-testid="modenote">Shared through the server, not between us.</p>
+                )}
               {s?.receiving ? (
                 <>
                   <p className="fname">{s.receiving.name}</p>

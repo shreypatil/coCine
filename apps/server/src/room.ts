@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { positionAt, type ChatMessage, type Media, type Member, type PeerReport, type PeerStatus, type PlaybackState, type RoomPhase } from '@cocine/protocol'
+import { positionAt, type ChatMessage, type Media, type Member, type PeerReport, type PeerStatus, type PlaybackState, type RoomMode, type RoomPhase } from '@cocine/protocol'
 import { bottleneck, durability, etaSeconds, isReady, phaseFor, tMinSeconds, DEFAULT_READINESS, type ReadinessConfig } from './readiness.js'
 
 /** Enough backlog that a latecomer sees the conversation, not so much that a
@@ -27,6 +27,15 @@ export class Room {
   startOverridden = false
   /** Host preference: does the room pause when someone arrives mid-film? */
   waitForLatecomers = true
+
+  /**
+   * How the film is distributed. `p2p` is the default and the product; `origin`
+   * is relay mode, for the room where the swarm cannot deliver at all. The host
+   * chooses, and the choice is per room rather than per person -- a room cannot
+   * be half in one mode and half in the other, because the two transports do not
+   * share bytes.
+   */
+  mode: RoomMode = 'p2p'
   /** Whoever announced the film, so their upload can be identified. */
   sharerId: string | null = null
   /** The phase last sent to clients, so a change can be noticed and pushed. */
@@ -97,7 +106,7 @@ export class Room {
     safeForSharerToLeave: boolean
   } {
     const perPeer = this.peerStatuses()
-    const bytes = this.media?.torrent?.bytes ?? 0
+    const bytes = this.media?.source?.bytes ?? 0
     const sharer = perPeer.find(p => p.memberId === this.sharerId)
     const leechers = perPeer.filter(p => p.memberId !== this.sharerId)
     return {

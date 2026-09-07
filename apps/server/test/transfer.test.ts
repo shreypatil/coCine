@@ -1,3 +1,4 @@
+import type { MediaSource, P2PSource } from '@cocine/protocol'
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { FilmStore, TransferManager, OutOfSpaceError } from '@cocine/client'
 import { SignallingServer } from '../src/server.js'
@@ -5,6 +6,13 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
+
+/** share() returns the shared MediaSource union; these tests are all about the
+ *  swarm, so narrowing once here keeps the assertions about the behaviour. */
+const p2p = (s: MediaSource): P2PSource => {
+  if (s.kind !== 'p2p') throw new Error('expected a swarm source')
+  return s
+}
 
 /**
  * Sharing a film and receiving it, against a real tracker, over WebRTC only.
@@ -49,7 +57,7 @@ describe('sharing', () => {
     writeFileSync(file, randomBytes(2 * 1024 * 1024))
     const before = sha(file)
 
-    const info = await tm.share(file)
+    const info = p2p(await tm.share(file))
     expect(info.infoHash).toMatch(/^[0-9a-f]{40}$/)
     expect(info.bytes).toBe(2 * 1024 * 1024)
     expect(info.pieceLength).toBeGreaterThan(0)
@@ -68,7 +76,7 @@ describe('receiving', () => {
     const want = sha(file)
 
     const { tm: sharer } = manager('sharer-b')
-    const info = await sharer.share(file)
+    const info = p2p(await sharer.share(file))
     server.tracker.allow(info.infoHash)
 
     const { tm: receiver, store } = manager('receiver-b')
@@ -91,6 +99,7 @@ describe('receiving', () => {
     const { tm, store } = manager('receiver-c')
     const free = await store.freeBytes()
     await expect(tm.receive({
+      kind: 'p2p' as const,
       infoHash: 'a'.repeat(40),
       magnet: 'magnet:?xt=urn:btih:' + 'a'.repeat(40),
       bytes: free * 2,
@@ -107,7 +116,7 @@ describe('receiving', () => {
     writeFileSync(file, randomBytes(1024 * 1024))
 
     const { tm: sharer } = manager('sharer-d')
-    const info = await sharer.share(file)
+    const info = p2p(await sharer.share(file))
     server.tracker.allow(info.infoHash)
 
     const { tm: receiver } = manager('receiver-d')
@@ -125,7 +134,7 @@ describe('progress reporting', () => {
     const file = join(mine, 'stalker.mkv')
     writeFileSync(file, randomBytes(1024 * 1024))
     const { tm } = manager('sharer-e')
-    const info = await tm.share(file)
+    const info = p2p(await tm.share(file))
     const [p] = tm.progress()
     expect(p!.infoHash).toBe(info.infoHash)
     expect(p!.name).toBe('stalker.mkv')
@@ -143,7 +152,7 @@ describe('piece selection', () => {
     writeFileSync(file, randomBytes(4 * 1024 * 1024))
 
     const { tm: sharer } = manager('sharer-f')
-    const info = await sharer.share(file)
+    const info = p2p(await sharer.share(file))
     server.tracker.allow(info.infoHash)
 
     const { tm: receiver } = manager('receiver-f')

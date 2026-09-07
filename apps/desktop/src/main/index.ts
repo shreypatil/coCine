@@ -8,7 +8,8 @@ import { RoomClient } from '@cocine/client'
 import { VideoWindow } from './video-window.js'
 import { createHandlers, type RoomLike } from './handlers.js'
 import { IdentityStore, identityPathFor } from './identity.js'
-import { FilmStore, TransferManager } from '@cocine/client'
+import { FilmStore, TransferManager, OriginTransfer, type MediaTransport } from '@cocine/client'
+import { sourceId, type Media } from '@cocine/protocol'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -36,17 +37,45 @@ const identity = new IdentityStore(identityPathFor(app.getPath('userData')))
 // temporary directory. The store owns listing and deletion, because retaining
 // gigabytes without a way to see them fills a drive silently.
 const films = new FilmStore(join(app.getPath('userData'), 'films'))
-let transfer: TransferManager | null = null
-let sharedInfoHash: string | null = null
+let transfer: MediaTransport | null = null
+/** Which transport `transfer` currently is, so a mode change rebuilds it. */
+let transferMode: 'p2p' | 'origin' | null = null
+let sharedId: string | null = null
 let receiving: { name: string; infoHash: string } | null = null
 
-/** Created once the room tells us where to announce; the URL is never guessed. */
-function ensureTransfer (trackerUrl: string): TransferManager {
-  if (transfer) return transfer
-  // Bulk gets the server's bulk list, which is STUN only by design -- a film
-  // pushed through a relay costs whoever runs it the whole file twice per peer.
-  transfer = new TransferManager({ store: films, trackerUrl, iceServers: room?.ice.bulk ?? [] })
-  transfer.on('error', err => console.error('[transfer]', err))
+/**
+ * The transport for the room's current mode.
+ *
+ * Rebuilt when the mode changes, because the two carry different bytes from
+ * different places and nothing is shared between them. Created only once the
+ * room has told us the tracker URL -- it is never guessed.
+ */
+function ensureTransfer (): MediaTransport | null {
+  const mode = room?.mode ?? 'p2p'
+  if (transfer && transferMode === mode) return transfer
+
+  const previous = transfer
+  transfer = null
+  transferMode = null
+  if (previous) void previous.destroy().catch(() => { /* replaced */ })
+
+  if (mode === 'origin') {
+    if (!room) return null
+    const client = room
+    transfer = new OriginTransfer({
+      store: films,
+      getUploadUrl: (contentId, name, bytes) => client.requestUploadUrl(contentId, name, bytes),
+      getDownloadUrl: () => client.requestDownloadUrl()
+    })
+  } else {
+    if (!room?.trackerUrl) return null
+    // Bulk gets the server's bulk list, which is STUN only by design -- a film
+    // pushed through a relay costs whoever runs it the whole file twice per peer.
+    transfer = new TransferManager({ store: films, trackerUrl: room.trackerUrl, iceServers: room.ice.bulk })
+  }
+  transferMode = mode
+  ;(transfer as unknown as { on: (e: string, f: (x: unknown) => void) => void })
+    .on('error', err => console.error('[transfer]', err))
   return transfer
 }
 
@@ -81,7 +110,9 @@ const state = (): Record<string, unknown> => {
     waitForLatecomers: room?.waitForLatecomers ?? true,
     transferStatus: room?.transfer ?? null,
     receiving,
-    roomTorrent: room?.media?.torrent ?? null
+    roomTorrent: room?.media?.source?.kind === 'p2p' ? room.media.source : null,
+    mode: room?.mode ?? 'p2p',
+    originAvailable: room?.originAvailable ?? false
   }
 }
 
@@ -137,10 +168,10 @@ function createWindow (): void {
       // Keep the fetch windows on the playhead. Uses the room's position rather
       // than the local player's, because while a film is still arriving the
       // local player may not have opened it yet.
-      const t = room?.media?.torrent
-      if (t && transfer) {
+      const id = sourceId(room?.media?.source)
+      if (id && transfer) {
         const at = room?.expectedPosition() ?? 0
-        transfer.updatePlayhead(t.infoHash, at, room?.media?.durationSec ?? 0)
+        transfer.updatePlayhead(id, at, room?.media?.durationSec ?? 0)
       }
       if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('state', state())
     }, 100)
@@ -163,13 +194,13 @@ const handlers = createHandlers({
       player: o.player as never,
       // What this machine can honestly say about the film it is fetching.
       getReport: (): { havePct: number; bufferEndSec: number; downBps: number; upBps: number; peers: number } | null => {
-        const t = client.media?.torrent
-        if (!t || !transfer) return null
+        const id = sourceId(client.media?.source)
+        if (!id || !transfer) return null
         // The sharer, and anyone who already had the file, hold all of it.
-        if (t.infoHash === sharedInfoHash) {
+        if (id === sharedId) {
           return { havePct: 1, bufferEndSec: client.media?.durationSec ?? 0, downBps: 0, upBps: 0, peers: 0 }
         }
-        return transfer.reportFor(t.infoHash, client.expectedPosition() ?? 0, client.media?.durationSec ?? 0)
+        return transfer.reportFor(id, client.expectedPosition() ?? 0, client.media?.durationSec ?? 0)
       }
     })
     // Attached before connect: room.state arrives while connecting, so a
@@ -184,20 +215,22 @@ const handlers = createHandlers({
       mainWin?.webContents.send('voice:moderated', by, action)
     })
 
-    client.on('media', (media: { name: string; torrent: { infoHash: string; bytes: number } | null } | null) => {
+      client.on('media', (media: Media | null) => {
       void (async () => {
-        const t = media?.torrent
-        if (!t || t.infoHash === sharedInfoHash) return
+        const source = media?.source
+        const id = sourceId(source)
+          if (!source || !id || id === sharedId) return
         try {
-          const tm = ensureTransfer(client.trackerUrl)
+          const tm = ensureTransfer()
+            if (!tm) throw new Error('no transport for this room yet')
           console.log(`[film] room is sharing ${media?.name}; fetching`)
-          receiving = { name: media?.name ?? '', infoHash: t.infoHash }
-          const { path } = await tm.receive(t as never)
+          receiving = { name: media?.name ?? '', infoHash: id }
+          const { path } = await tm.receive(source)
           // Open it through the streaming server rather than off disk. The
           // file is written sparsely, so reading it directly would give zeros
           // wherever a piece has not arrived; the stream blocks instead, which
           // is what makes watching before the download finishes possible.
-          const url = tm.streamUrl(t.infoHash) ?? path
+          const url = tm.streamUrl(id) ?? path
           await video?.player?.load(url)
           mediaPath = path
           receiving = null
@@ -211,7 +244,7 @@ const handlers = createHandlers({
     await client.connect()
     // The tracker URL arrives with room state, so the transfer manager cannot
     // exist before this point.
-    if (client.trackerUrl) ensureTransfer(client.trackerUrl)
+    ensureTransfer()
     return client as unknown as RoomLike
   },
   getMediaPath: () => mediaPath,
@@ -222,7 +255,7 @@ const handlers = createHandlers({
   saveIdentity: patch => identity.save(patch),
   getTransfer: () => transfer,
   getFilmStore: () => films,
-  setSharedInfoHash: h => { sharedInfoHash = h },
+  setSharedInfoHash: h => { sharedId = h },
   log: m => console.log(m)
 })
 for (const [channel, fn] of Object.entries(handlers)) {

@@ -1,6 +1,7 @@
 /** Standalone signalling server for manual testing. `npm run server` */
 import { SignallingServer } from '../src/server.js'
 import type { TurnConfig } from '../src/turn.js'
+import type { OriginConfig } from '../src/origin.js'
 
 const port = Number(process.env.PORT ?? 8787)
 
@@ -26,8 +27,41 @@ function turnFromEnv (): TurnConfig | undefined {
   return { secret, urls, ...(Number.isFinite(ttl) && ttl > 0 ? { ttlSeconds: ttl } : {}) }
 }
 
+/**
+ * Object storage for relay mode. Optional: without it the host is offered no
+ * P2P-or-relay toggle at all, rather than one that fails when pressed.
+ *
+ * COCINE_R2_ENDPOINT   https://<account>.r2.cloudflarestorage.com
+ * COCINE_R2_BUCKET     bucket name
+ * COCINE_R2_KEY_ID / COCINE_R2_SECRET   an R2 API token's credentials
+ *
+ * R2 is the intended target because its egress is free; the same variables work
+ * against MinIO or S3, which speak the same API.
+ */
+function originFromEnv (): OriginConfig | undefined {
+  const endpoint = process.env.COCINE_R2_ENDPOINT ?? ''
+  const bucket = process.env.COCINE_R2_BUCKET ?? ''
+  const accessKeyId = process.env.COCINE_R2_KEY_ID ?? ''
+  const secretAccessKey = process.env.COCINE_R2_SECRET ?? ''
+  const given = [endpoint, bucket, accessKeyId, secretAccessKey].filter(Boolean).length
+  if (given === 0) return undefined
+  if (given < 4) {
+    console.error('\n  COCINE_R2_ENDPOINT, _BUCKET, _KEY_ID and _SECRET must all be set; starting without relay storage.\n')
+    return undefined
+  }
+  return {
+    endpoint: endpoint.replace(/\/$/, ''), bucket, accessKeyId, secretAccessKey,
+    region: process.env.COCINE_R2_REGION ?? 'auto'
+  }
+}
+
 const turn = turnFromEnv()
-const server = new SignallingServer({ port, log: m => console.log(`  ${m}`), ...(turn ? { turn } : {}) })
+const origin = originFromEnv()
+const server = new SignallingServer({
+  port, log: m => console.log(`  ${m}`),
+  ...(turn ? { turn } : {}),
+  ...(origin ? { origin } : {})
+})
 try {
   await server.listen()
 } catch (err) {
@@ -49,6 +83,9 @@ console.log(`\n  coCine signalling on ws://127.0.0.1:${port}`)
 console.log(turn
   ? `  voice relay: ${turn.urls.join(', ')} (bulk transfer is never relayed)`
   : '  voice relay: none -- peers behind strict NAT will fail to connect')
+console.log(origin
+  ? `  relay storage: ${origin.bucket} at ${origin.endpoint} (the host can switch a room to it)`
+  : '  relay storage: none -- rooms are peer-to-peer only')
 console.log('  press ctrl-c to stop\n')
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {

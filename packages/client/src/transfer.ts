@@ -3,7 +3,8 @@ import { EventEmitter } from 'node:events'
 import { basename, dirname } from 'node:path'
 import type { Server } from 'node:http'
 import { stat } from 'node:fs/promises'
-import type { TorrentInfo } from '@cocine/protocol'
+import type { MediaSource, TorrentInfo } from '@cocine/protocol'
+import type { MediaTransport, TransferReport } from './transport.js'
 import { installWebRtc, DEFAULT_ICE_SERVERS } from './webrtc.js'
 import { FilmStore } from './storage.js'
 import { PieceScheduler, contiguousSecondsFrom, type WindowConfig } from './pieces.js'
@@ -49,7 +50,7 @@ export interface TransferProgress {
  * in one blocking pass. That was checked before this class was written, since
  * it would otherwise have dictated the whole process model.
  */
-export class TransferManager extends EventEmitter {
+export class TransferManager extends EventEmitter implements MediaTransport {
   private client: WebTorrent | null = null
   private torrents = new Map<string, Torrent>()
   private schedulers = new Map<string, PieceScheduler>()
@@ -80,7 +81,7 @@ export class TransferManager extends EventEmitter {
   }
 
   /** Seed a film already on this machine. The file is not copied or moved. */
-  async share (filePath: string): Promise<TorrentInfo> {
+  async share (filePath: string): Promise<MediaSource> {
     const size = (await stat(filePath)).size
     const torrent = await new Promise<Torrent>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`timed out hashing ${basename(filePath)}`)), 15 * 60_000)
@@ -92,6 +93,7 @@ export class TransferManager extends EventEmitter {
     })
     this.track(torrent)
     return {
+        kind: 'p2p',
       infoHash: torrent.infoHash,
       magnet: torrent.magnetURI,
       bytes: size,
@@ -104,7 +106,9 @@ export class TransferManager extends EventEmitter {
    * ready and the file has a path -- not when it has finished, because the
    * whole point is watching before it finishes.
    */
-  async receive (info: TorrentInfo): Promise<{ path: string; torrent: Torrent }> {
+  async receive (source: MediaSource): Promise<{ path: string; torrent: Torrent }> {
+    if (source.kind !== 'p2p') throw new Error('the swarm transport was given an origin source')
+    const info: TorrentInfo = source
     const existing = this.torrents.get(info.infoHash.toLowerCase())
     if (existing) return { path: existing.files[0]?.path ?? '', torrent: existing }
 
