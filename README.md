@@ -186,6 +186,36 @@ To try it yourself, run the server somewhere both machines can reach, then on
 each machine set that address in the join panel. One person opens a film, the
 other joins with the code.
 
+## Voice
+
+A full mesh of peer connections, one per other person, with no media passing
+through any server. That stops scaling somewhere around eight people, where
+everyone is encoding a separate stream for everyone else and the cost is CPU
+rather than bandwidth. An SFU is a later phase.
+
+Negotiation is relayed by the signalling server, which never reads the payload
+and never joins the call. Only one side of each pair offers — whoever has the
+lexicographically smaller member id — because both offering at once collapses
+the negotiation.
+
+### Why push-to-talk is the default
+
+**Chromium's echo canceller cannot hear the film.** It removes audio Chromium
+itself played, and mpv plays through an entirely separate path, so on speakers
+every microphone picks the film up and sends it back to the room. No WebRTC
+setting fixes this.
+
+Headphones fix it. Push-to-talk and ducking the film while anyone speaks make it
+survivable without. Both are on by default and both are visible in the
+interface, so nobody has to discover the problem the hard way.
+
+### Host mute is advisory, and says so
+
+In a mesh the server carries no audio, so it cannot stop anyone talking — it can
+only ask, and a modified client could decline. The request is recorded in the
+room log so it is visible that it happened. Real enforcement needs the SFU,
+where the server is in the media path and can simply stop forwarding.
+
 ## Keyboard
 
 | Key | |
@@ -194,6 +224,7 @@ other joins with the code.
 | `←` `→` | seek ten seconds |
 | `F` | toggle fullscreen |
 | `Esc` | leave fullscreen |
+| `V` (hold) | talk, while push-to-talk is on |
 
 Shortcuts are ignored while a text field has focus.
 
@@ -256,7 +287,7 @@ which `time-pos` reads stale and the engine corrects against a phantom drift.
 | 02 | Single-window shell | **done** — Electron with mpv reparented via `--wid`; see caveat below |
 | 03 | Rooms, roles, chat | **done** — invite codes, chat, host controls; 105 tests |
 | 04 | Transfer | **done on this machine** — one part needs a second machine, see below |
-| 05 | Voice | |
+| 05 | Voice | **done** — mesh, push-to-talk, mute/deafen, advisory host mute |
 | 06 | NAT hardening | |
 | 07 | Relay mode | |
 | 08 | Packaging | |

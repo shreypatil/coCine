@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createHandlers, type HandlerDeps, type PlayerLike, type RoomLike, type VideoLike, type TransferLike, type FilmStoreLike } from '../src/main/handlers.js'
+import { createHandlers, explainConnectError, type HandlerDeps, type PlayerLike, type RoomLike, type VideoLike, type TransferLike, type FilmStoreLike } from '../src/main/handlers.js'
 
 /**
  * Every case below reproduces a bug that actually shipped. None of them needs
@@ -259,6 +259,49 @@ describe('playback', () => {
     const { h } = build({ getVideo: () => video(p) })
     await call(h, 'playback:pause')
     expect(p.pause).toHaveBeenCalledOnce()
+  })
+})
+
+describe('explaining why a connection failed', () => {
+  const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:40689'), { code: 'ECONNREFUSED' })
+
+  it('says what to do about a dead address, not what errno it was', async () => {
+    // The address usually came from a setting saved on a previous run, which
+    // the person has never seen. "ECONNREFUSED" tells them nothing.
+    const e = explainConnectError(refused, 'ws://127.0.0.1:40689')
+    expect(e.message).toContain('ws://127.0.0.1:40689')
+    expect(e.message).toMatch(/Is the server running/)
+    expect(e.message).not.toMatch(/ECONNREFUSED|errno/)
+  })
+
+  it('distinguishes a name it cannot resolve from one that refused', () => {
+    const notFound = Object.assign(new Error('getaddrinfo ENOTFOUND nope'), { code: 'ENOTFOUND' })
+    expect(explainConnectError(notFound, 'ws://nope:8787').message).toMatch(/Could not find a server/)
+    const timeout = Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })
+    expect(explainConnectError(timeout, 'ws://x:8787').message).toMatch(/unreachable/)
+  })
+
+  it('catches an address that is not an address at all', () => {
+    expect(explainConnectError(new Error('Invalid URL'), 'not-a-url').message)
+      .toMatch(/should look like ws:\/\/host:8787/)
+  })
+
+  it('reaches the interface instead of a raw socket error', async () => {
+    const { h } = build({
+      getVideo: () => video(),
+      createRoom: vi.fn(async () => { throw refused })
+    })
+    await expect(call(h, 'room:connect', { url: 'ws://127.0.0.1:40689', code: null, name: 'shreya' }))
+      .rejects.toThrow(/Is the server running/)
+  })
+
+  it('does not remember an address that could not be reached', async () => {
+    const { h, deps } = build({
+      getVideo: () => video(),
+      createRoom: vi.fn(async () => { throw refused })
+    })
+    await expect(call(h, 'room:connect', { url: 'ws://127.0.0.1:40689', code: null, name: 'shreya' })).rejects.toThrow()
+    expect(deps.getIdentity().server).toBe('ws://127.0.0.1:8787')
   })
 })
 

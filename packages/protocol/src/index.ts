@@ -27,7 +27,11 @@ export const Member = z.object({
   id: z.string(),
   name: z.string(),
   isHost: z.boolean(),
-  mayControl: z.boolean()
+  mayControl: z.boolean(),
+  /** In the voice call at all. Someone can be in the room without it. */
+  inVoice: z.boolean().default(false),
+  muted: z.boolean().default(false),
+  deafened: z.boolean().default(false)
 })
 export type Member = z.infer<typeof Member>
 
@@ -124,6 +128,19 @@ export const ClientMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('member.setControl'), memberId: z.string(), mayControl: z.boolean() }),
   z.object({ t: z.literal('member.transferHost'), memberId: z.string() }),
   z.object({ t: z.literal('peer.report'), report: PeerReport }),
+  /** Opaque WebRTC negotiation, relayed to one other member and nobody else. */
+  z.object({ t: z.literal('rtc.signal'), to: z.string(), payload: z.unknown() }),
+  z.object({
+    t: z.literal('voice.state'),
+    inVoice: z.boolean(),
+    muted: z.boolean(),
+    deafened: z.boolean()
+  }),
+  /**
+   * Host only. Advisory in a mesh: the server has no media to stop, so it can
+   * only ask. Enforcement needs the SFU, which is a later phase.
+   */
+  z.object({ t: z.literal('voice.moderate'), memberId: z.string(), action: z.enum(['mute', 'unmute']) }),
   /** Host only: start even though somebody is not ready. */
   z.object({ t: z.literal('room.startAnyway') }),
   /** Host only: whether the room pauses when someone arrives mid-film. */
@@ -164,6 +181,9 @@ export const ServerMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('chat.message'), message: ChatMessage }),
   /** Sent once on join so a latecomer sees what was already said. */
   z.object({ t: z.literal('chat.history'), messages: z.array(ChatMessage) }),
+  z.object({ t: z.literal('rtc.signal'), from: z.string(), payload: z.unknown() }),
+  /** Sent to the person being asked, so their own client can comply. */
+  z.object({ t: z.literal('voice.moderated'), by: z.string(), action: z.enum(['mute', 'unmute']) }),
   z.object({ t: z.literal('error'), message: z.string() })
 ])
 export type ServerMessage = z.infer<typeof ServerMessage>

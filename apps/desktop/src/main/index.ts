@@ -57,6 +57,7 @@ const state = (): Record<string, unknown> => {
     ready: !!player,
     connected: !!room,
     members: room?.members ?? [],
+    memberId: room?.memberId ?? '',
     code: room?.code ?? null,
     messages: room?.messages ?? [],
     isHost: room?.me()?.isHost ?? false,
@@ -171,6 +172,15 @@ const handlers = createHandlers({
     // Attached before connect: room.state arrives while connecting, so a
     // listener added afterwards misses a film that was already on when we
     // joined -- which is the common case for anyone but the first person in.
+    // Voice lives in the renderer, where Chromium supplies WebRTC and a
+    // microphone. Main only carries the negotiation between the two.
+    client.on('rtc-signal', (from: string, payload: unknown) => {
+      mainWin?.webContents.send('voice:signal', from, payload)
+    })
+    client.on('voice-moderated', (by: string, action: string) => {
+      mainWin?.webContents.send('voice:moderated', by, action)
+    })
+
     client.on('media', (media: { name: string; torrent: { infoHash: string; bytes: number } | null } | null) => {
       void (async () => {
         const t = media?.torrent

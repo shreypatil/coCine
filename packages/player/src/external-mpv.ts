@@ -143,6 +143,11 @@ export class ExternalMpv implements PlayerController {
   }
   async setRate (rate: number): Promise<void> { await this.ipc.setProperty('speed', rate) }
 
+  /** 0 to 100. Used to duck the film while someone is speaking. */
+  async setVolume (percent: number): Promise<void> {
+    await this.ipc.setProperty('volume', Math.max(0, Math.min(130, percent)))
+  }
+
   position (): number { return this.pos }
   positionObservedAt (): number { return this.posAt }
   isPaused (): boolean { return this.paused }

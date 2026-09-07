@@ -160,6 +160,34 @@ export class SignallingServer {
         return
       }
 
+      case 'rtc.signal': {
+        // Relayed verbatim to exactly one member. The server does not read the
+        // payload and never joins the call -- voice is peer to peer.
+        const target = [...this.conns.values()].find(c => c.room === conn.room && c.memberId === msg.to)
+        if (!target) return
+        this.send(target.ws, { t: 'rtc.signal', from: me.id, payload: msg.payload })
+        return
+      }
+
+      case 'voice.state': {
+        conn.room.setVoice(me.id, msg)
+        this.broadcastState(conn.room)
+        return
+      }
+
+      case 'voice.moderate': {
+        if (!me.isHost) return this.send(ws, { t: 'error', message: 'Only the host can mute other people' })
+        const target = [...this.conns.values()].find(c => c.room === conn.room && c.memberId === msg.memberId)
+        const member = conn.room.members.get(msg.memberId)
+        if (!target || !member) return this.send(ws, { t: 'error', message: 'no such member' })
+        // Advisory: in a mesh the server carries no audio, so all it can do is
+        // ask, and a modified client could decline. Said plainly in the
+        // interface rather than pretended otherwise.
+        this.send(target.ws, { t: 'voice.moderated', by: me.name, action: msg.action })
+        this.emitChat(conn.room, 'system', me.name, `${msg.action}d ${member.name}`, me.id)
+        return
+      }
+
       case 'peer.report': {
         conn.room.report(me.id, msg.report)
         return

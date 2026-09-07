@@ -150,6 +150,7 @@ body {
   text-transform: none; letter-spacing: 0;
 }
 .join input:focus { border-color: var(--a); }
+.mini.reset { margin-top: 6px; }
 
 .people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .people li { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
@@ -239,6 +240,18 @@ body {
 .gate-acts .btn { font-size: 11.5px; padding: 6px 11px; }
 .toggle { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--tx2); cursor: pointer; }
 .toggle input { accent-color: var(--a); margin: 0; }
+
+/* ---------------------------------------------------------------- voice */
+.voice .btn.wide { margin-bottom: 8px; }
+.vbar { display: flex; gap: 6px; margin-bottom: 10px; }
+.mini.on { background: rgba(245, 104, 127, .16); border-color: var(--bad); color: var(--bad); }
+.quiet.talking { color: var(--ok); }
+.quiet.vwarn { color: var(--warn); margin-top: 8px; }
+.vdot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
+  box-shadow: 0 0 7px var(--ok); flex: 0 0 auto;
+}
+.vdot.off { background: var(--tx3); box-shadow: none; }
 
 /* ---------------------------------------------------------------- chat */
 .chatwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 14px 0 0; border-bottom: 1px solid var(--line-soft); }

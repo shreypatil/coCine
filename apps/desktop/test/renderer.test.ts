@@ -23,14 +23,15 @@ let origin: string
 const STATE = {
   ready: true,
   connected: true,
-  members: [{ id: '1', name: 'anjali', isHost: true, mayControl: true }],
+  members: [{ id: '1', name: 'anjali', isHost: true, mayControl: true, inVoice: false, muted: false, deafened: false }],
   mediaName: 'dune.mkv', durationSec: 7200,
   positionSec: 12, expectedSec: 12, driftMs: 4,
   paused: true, rate: 1, clockOffsetMs: 3, rttMs: 20, lastAction: 'none',
   fullscreen: false,
   code: 'BCDFGHJK', messages: [] as unknown[], isHost: true, mayControl: true,
   transfers: [] as unknown[], receiving: null as unknown,
-  phase: 'playing', waitForLatecomers: true, transferStatus: null as unknown
+  phase: 'playing', waitForLatecomers: true, transferStatus: null as unknown,
+  memberId: 'me'
 }
 
 beforeAll(async () => {
@@ -81,6 +82,12 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
       removeFilm: rec('removeFilm'),
       startAnyway: rec('startAnyway'),
       setWaitForLatecomers: rec('setWaitForLatecomers'),
+      sendSignal: rec('sendSignal'),
+      setVoiceState: rec('setVoiceState'),
+      moderateVoice: rec('moderateVoice'),
+      duckFilm: rec('duckFilm'),
+      onSignal: () => () => {},
+      onModerated: (cb: (by: string, action: string) => void) => { w.__moderated = cb; return () => {} },
       connect: rec('connect'),
       disconnect: rec('disconnect'),
       play: rec('play'),
@@ -268,6 +275,67 @@ const MSGS = [
   { id: '3', kind: 'system', memberId: 'a', name: 'anjali', text: 'put on dune.mkv', atServerMs: 1_700_000_120_000 }
 ]
 
+describe('voice', () => {
+  const inVoice = [
+    { id: 'me', name: 'anjali', isHost: true, mayControl: true, inVoice: true, muted: false, deafened: false },
+    { id: 'b', name: 'dev', isHost: false, mayControl: true, inVoice: true, muted: true, deafened: false }
+  ]
+
+  it('offers to join, and says how to talk before you do', async () => {
+    await open()
+    await push()
+    await page.waitForSelector('[data-testid="joinvoice"]')
+    const text = await page.textContent('[data-testid="voice"]')
+    expect(text).toContain('Hold')
+    expect(text).toContain('Headphones')
+    await page.close()
+  })
+
+  it('marks who is in voice and who is muted', async () => {
+    await open()
+    await push({ members: inVoice })
+    expect(await page.locator('[data-testid="vdot"]').count()).toBe(2)
+    expect(await page.locator('[data-testid="vdot"].off').count()).toBe(1)
+    await page.close()
+  })
+
+  it('shows a deafened person as unable to hear the room', async () => {
+    await open()
+    await push({ members: [inVoice[0], { ...inVoice[1], deafened: true }] })
+    expect(await page.textContent('[data-testid="member"][data-name="dev"]')).toContain('deafened')
+    await page.close()
+  })
+
+  it('lets the host ask someone in voice to mute', async () => {
+    await open()
+    await push({ members: inVoice, isHost: true })
+    await page.hover('[data-testid="member"][data-name="dev"]')
+    await page.click('[data-testid="member"][data-name="dev"] [data-testid="mutethem"]')
+    expect((await calls('moderateVoice'))[0]).toEqual(['b', 'unmute'])
+    await page.close()
+  })
+
+  it('offers that to the host only', async () => {
+    await open()
+    await push({ members: inVoice, isHost: false })
+    await page.hover('[data-testid="member"][data-name="dev"]')
+    expect(await page.locator('[data-testid="mutethem"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('complies when the host asks it to mute, and says who asked', async () => {
+    // Advisory by nature: nothing forces this, the client chooses to comply.
+    await open()
+    await push({ members: inVoice })
+    await page.evaluate(() => {
+      const w = window as unknown as Record<string, unknown>
+      ;(w.__moderated as (by: string, a: string) => void)('anjali', 'mute')
+    })
+    await expect.poll(async () => await page.textContent('[data-testid="voice"]')).toContain('anjali muted you')
+    await page.close()
+  })
+})
+
 describe('the readiness gate', () => {
   const status = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
     perPeer: [
@@ -442,6 +510,18 @@ describe('remembered identity', () => {
     await page.close()
   })
 
+  it('offers a way back to the default when the stored address is not it', async () => {
+    // A stored address that no longer works is otherwise a dead end: the field
+    // is prefilled with it and nothing says what it should have been.
+    await open()
+    await push({ connected: false })
+    await expect.poll(async () => await page.inputValue('[data-testid="server"]')).toBe('ws://box:9000')
+    await page.click('[data-testid="resetserver"]')
+    expect(await page.inputValue('[data-testid="server"]')).toBe('ws://127.0.0.1:8787')
+    expect(await page.locator('[data-testid="resetserver"]').count()).toBe(0)
+    await page.close()
+  })
+
   it('refuses to join with a blank name', async () => {
     await open()
     await push({ connected: false })
@@ -540,8 +620,8 @@ describe('room code', () => {
 
 describe('roles', () => {
   const members = [
-    { id: 'a', name: 'anjali', isHost: true, mayControl: true },
-    { id: 'b', name: 'dev', isHost: false, mayControl: true }
+    { id: 'a', name: 'anjali', isHost: true, mayControl: true, inVoice: false, muted: false, deafened: false },
+    { id: 'b', name: 'dev', isHost: false, mayControl: true, inVoice: false, muted: false, deafened: false }
   ]
 
   it('offers role actions to the host only', async () => {
@@ -615,6 +695,22 @@ describe('renderer behaviour', () => {
     await push({ mediaName: 'dune.mkv', paused: true })
     await page.click('[data-testid="playpause"]')
     expect(await calls('play')).toHaveLength(1)
+    await page.close()
+  })
+
+  it('strips Electron IPC wrapping from an error before showing it', async () => {
+    await open()
+    await push()
+    await page.evaluate(() => {
+      const w = window as unknown as Record<string, unknown>
+      w.cocine = {
+        ...(w.cocine as object),
+        openFile: () => Promise.reject(new Error("Error invoking remote method 'file:open': Error: Nothing is listening at ws://x"))
+      }
+    })
+    await page.click('[data-testid="open"]')
+    await expect.poll(async () => await page.textContent('[data-testid="banner"]')).toContain('Nothing is listening')
+    expect(await page.textContent('[data-testid="banner"]')).not.toContain('remote method')
     await page.close()
   })
 

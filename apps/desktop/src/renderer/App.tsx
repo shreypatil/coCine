@@ -1,7 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import type { ReactElement, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyEvent } from 'react'
+import { useVoice } from './useVoice.js'
 
-interface Member { id: string; name: string; isHost: boolean; mayControl: boolean }
+interface Member {
+  id: string; name: string; isHost: boolean; mayControl: boolean
+  inVoice: boolean; muted: boolean; deafened: boolean
+}
 interface ChatMessage {
   id: string
   kind: 'said' | 'joined' | 'left' | 'system'
@@ -33,7 +37,7 @@ interface TransferStatus {
 }
 
 interface State {
-  ready: boolean; connected: boolean; members: Member[]
+  ready: boolean; connected: boolean; members: Member[]; memberId: string
   code: string | null; messages: ChatMessage[]
   isHost: boolean; mayControl: boolean
   mediaName: string | null; durationSec: number | null
@@ -69,6 +73,12 @@ declare global {
       pause: () => Promise<void>
       seek: (sec: number) => Promise<void>
       setFullScreen: (on?: boolean) => Promise<boolean>
+      sendSignal: (to: string, payload: unknown) => Promise<void>
+      setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => Promise<void>
+      moderateVoice: (memberId: string, action: 'mute' | 'unmute') => Promise<void>
+      duckFilm: (ducked: boolean) => Promise<void>
+      onSignal: (cb: (from: string, payload: unknown) => void) => () => void
+      onModerated: (cb: (by: string, action: string) => void) => () => void
       onState: (cb: (s: State) => void) => () => void
     }
   }
@@ -79,6 +89,17 @@ const size = (b: number): string => {
   if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MB`
   return `${(b / 1024).toFixed(0)} kB`
 }
+/** Kept in step with the main process, which uses the same value. */
+const DEFAULT_SERVER = 'ws://127.0.0.1:8787'
+
+/**
+ * Electron wraps anything thrown in a handler as
+ * "Error invoking remote method 'x': Error: <the actual message>". The useful
+ * part is the tail, and the prefix is noise in front of it.
+ */
+const humanise = (message: string): string =>
+  message.replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(Error|TypeError):\s*/, '')
+
 const rate = (b: number): string => b > 0 ? `${(b / 1024 ** 2).toFixed(1)} MB/s` : '—'
 /** Countdowns read better rounded than exact; nobody needs 4 m 07 s. */
 const countdown = (s: number | null): string => {
@@ -121,6 +142,9 @@ export function App (): ReactElement {
   const [library, setLibrary] = useState<Library | null>(null)
   const slotRef = useRef<HTMLDivElement>(null)
   const chatRef = useRef<HTMLDivElement>(null)
+
+  const memberIds = (s?.members ?? []).filter(m => m.inVoice || m.id === s?.memberId).map(m => m.id)
+  const voice = useVoice(s?.memberId ?? '', memberIds)
 
   useEffect(() => window.cocine.onState(setS), [])
 
@@ -191,7 +215,7 @@ export function App (): ReactElement {
   const guard = useCallback(async (fn: () => Promise<unknown>) => {
     setBusy(true); setError(null)
     try { await fn() } catch (e) {
-      const m = e instanceof Error ? e.message : String(e)
+      const m = humanise(e instanceof Error ? e.message : String(e))
       console.error(m)
       setError(m)
     } finally { setBusy(false) }
@@ -324,7 +348,14 @@ export function App (): ReactElement {
             <div className="sect join">
               <h4>Watch together</h4>
               <label>Your name<input value={name} onChange={e => setName(e.target.value)} spellCheck={false} data-testid="name" /></label>
-              <label>Server<input value={url} onChange={e => setUrl(e.target.value)} spellCheck={false} data-testid="server" /></label>
+              <label>
+                Server
+                <input value={url} onChange={e => setUrl(e.target.value)} spellCheck={false} data-testid="server" />
+                {url !== DEFAULT_SERVER && (
+                  <button className="mini reset" data-testid="resetserver"
+                    onClick={() => setUrl(DEFAULT_SERVER)}>use default</button>
+                )}
+              </label>
               <button className="btn primary wide" data-testid="create" disabled={busy || !s?.ready || !identityLoaded || !name.trim()}
                 onClick={() => void guard(() => window.cocine.connect({ url, code: null, name }))}>
                 Create a room
@@ -347,6 +378,11 @@ export function App (): ReactElement {
                     <li key={m.id} data-testid="member" data-name={m.name}>
                       <span className={`av t${tint(m.name)}`}>{initials(m.name)}</span>
                       <span className="nm">{m.name}</span>
+                      {m.inVoice && (
+                        <span className={`vdot ${m.muted ? 'off' : ''}`} data-testid="vdot"
+                          title={m.muted ? `${m.name} is muted` : `${m.name} is in voice`} />
+                      )}
+                      {m.deafened && <span className="tag muted" title="Cannot hear the room">deafened</span>}
                       {m.isHost && <span className="tag">host</span>}
                       {!m.mayControl && !m.isHost && <span className="tag muted" title="Cannot control playback">no control</span>}
                       {s.isHost && !m.isHost && (
@@ -358,11 +394,53 @@ export function App (): ReactElement {
                           </button>
                           <button className="mini" data-testid="makehost" title="Make host"
                             onClick={() => void guard(() => window.cocine.transferHost(m.id))}>host</button>
+                          {m.inVoice && (
+                            <button className="mini" data-testid="mutethem"
+                              title="Ask them to mute — advisory, their client chooses to comply"
+                              onClick={() => void guard(() => window.cocine.moderateVoice(m.id, m.muted ? 'unmute' : 'mute'))}>
+                              {m.muted ? 'unmute' : 'mute'}
+                            </button>
+                          )}
                         </span>
                       )}
                     </li>
                   ))}
                 </ul>
+              </div>
+
+              <div className="sect voice" data-testid="voice">
+                <h4>Voice</h4>
+                {!voice.inVoice ? (
+                  <>
+                    <button className="btn primary wide" data-testid="joinvoice"
+                      onClick={() => void voice.join()}>Join voice</button>
+                    <p className="quiet">Hold <b>V</b> to talk. Headphones strongly recommended.</p>
+                  </>
+                ) : (
+                  <>
+                    <div className="vbar">
+                      <button className={voice.muted ? 'mini on' : 'mini'} data-testid="mute"
+                        onClick={() => voice.setMuted(!voice.muted)}>{voice.muted ? 'unmute' : 'mute'}</button>
+                      <button className={voice.deafened ? 'mini on' : 'mini'} data-testid="deafen"
+                        onClick={() => voice.setDeafened(!voice.deafened)}>{voice.deafened ? 'undeafen' : 'deafen'}</button>
+                      <button className="mini" data-testid="leavevoice" onClick={voice.leave}>leave</button>
+                    </div>
+                    <label className="toggle">
+                      <input type="checkbox" checked={voice.pushToTalk} data-testid="ptt"
+                        onChange={e => voice.setPushToTalk(e.target.checked)} />
+                      Push to talk (hold V)
+                    </label>
+                    <p className={voice.talking ? 'quiet talking' : 'quiet'} data-testid="talkstate">
+                      {voice.muted ? 'Microphone off'
+                        : voice.pushToTalk ? (voice.talking ? 'Talking' : 'Hold V to talk')
+                        : 'Microphone open'}
+                    </p>
+                    <p className="quiet">
+                      The film quietens while you talk, because echo cancellation cannot hear it.
+                    </p>
+                  </>
+                )}
+                {voice.error && <p className="quiet vwarn" data-testid="voiceerror">{voice.error}</p>}
               </div>
 
               <div className="chatwrap">

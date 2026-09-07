@@ -23,6 +23,20 @@ const api = {
   transferHost: (memberId) => electron.ipcRenderer.invoke("member:transferHost", memberId),
   startAnyway: () => electron.ipcRenderer.invoke("room:startAnyway"),
   setWaitForLatecomers: (wait) => electron.ipcRenderer.invoke("room:setWaitForLatecomers", wait),
+  sendSignal: (to, payload) => electron.ipcRenderer.invoke("voice:signal", to, payload),
+  setVoiceState: (v) => electron.ipcRenderer.invoke("voice:state", v),
+  moderateVoice: (memberId, action) => electron.ipcRenderer.invoke("voice:moderate", memberId, action),
+  duckFilm: (ducked) => electron.ipcRenderer.invoke("voice:duck", ducked),
+  onSignal: (cb) => {
+    const h = (_e, from, payload) => cb(from, payload);
+    electron.ipcRenderer.on("voice:signal", h);
+    return () => electron.ipcRenderer.off("voice:signal", h);
+  },
+  onModerated: (cb) => {
+    const h = (_e, by, action) => cb(by, action);
+    electron.ipcRenderer.on("voice:moderated", h);
+    return () => electron.ipcRenderer.off("voice:moderated", h);
+  },
   disconnect: () => electron.ipcRenderer.invoke("room:disconnect"),
   play: () => electron.ipcRenderer.invoke("playback:play"),
   pause: () => electron.ipcRenderer.invoke("playback:pause"),

@@ -344,3 +344,95 @@ describe('the readiness gate over the wire', () => {
     expect(after.phase).toBe('preparing')
   }, 20_000)
 })
+
+describe('voice', () => {
+  async function roomOfThree (): Promise<{ a: Peer; b: Peer; c: Peer; bId: string; cId: string }> {
+    const a = await Peer.connect()
+    a.send({ t: 'hello', code: null, name: 'anjali' })
+    const code = (await a.next('welcome')).code
+    const b = await Peer.connect()
+    b.send({ t: 'hello', code, name: 'dev' })
+    const bId = (await b.next('welcome')).memberId
+    const c = await Peer.connect()
+    c.send({ t: 'hello', code, name: 'priya' })
+    const cId = (await c.next('welcome')).memberId
+    return { a, b, c, bId, cId }
+  }
+
+  it('relays a signal to exactly one member and nobody else', async () => {
+    // Negotiation is between two people. A third seeing it would be a leak of
+    // connection details and pointless traffic besides.
+    const { a, b, c, bId } = await roomOfThree()
+    b.seen.length = 0; c.seen.length = 0
+    a.send({ t: 'rtc.signal', to: bId, payload: { kind: 'offer', sdp: 'X' } })
+    const got = await b.next('rtc.signal')
+    expect(got.payload).toEqual({ kind: 'offer', sdp: 'X' })
+    await new Promise(r => setTimeout(r, 200))
+    expect(c.seen.some(m => m.t === 'rtc.signal')).toBe(false)
+  })
+
+  it('does not read the payload it is relaying', async () => {
+    const { a, b, bId } = await roomOfThree()
+    const opaque = { anything: [1, 2, { deep: true }] }
+    a.send({ t: 'rtc.signal', to: bId, payload: opaque })
+    expect((await b.next('rtc.signal')).payload).toEqual(opaque)
+  })
+
+  it('drops a signal aimed at somebody who is not here', async () => {
+    const { a } = await roomOfThree()
+    a.seen.length = 0
+    a.send({ t: 'rtc.signal', to: 'nobody', payload: {} })
+    await new Promise(r => setTimeout(r, 200))
+    expect(a.seen).toHaveLength(0)
+  })
+
+  it('shows everyone who is in voice and who is muted', async () => {
+    const { a, b } = await roomOfThree()
+    b.send({ t: 'voice.state', inVoice: true, muted: true, deafened: false })
+    const st = await a.nextWhere('room.state', m => m.members.some(x => x.inVoice))
+    const dev = st.members.find(m => m.name === 'dev')!
+    expect(dev.inVoice).toBe(true)
+    expect(dev.muted).toBe(true)
+    expect(dev.deafened).toBe(false)
+  })
+
+  it('lets the host ask someone to mute, and tells only them', async () => {
+    const { a, b, c, bId } = await roomOfThree()
+    b.send({ t: 'voice.state', inVoice: true, muted: false, deafened: false })
+    await a.nextWhere('room.state', m => m.members.some(x => x.inVoice))
+    b.seen.length = 0; c.seen.length = 0
+    a.send({ t: 'voice.moderate', memberId: bId, action: 'mute' })
+    expect((await b.next('voice.moderated')).action).toBe('mute')
+    await new Promise(r => setTimeout(r, 200))
+    expect(c.seen.some(m => m.t === 'voice.moderated')).toBe(false)
+  })
+
+  it('records the request in the room log, since it is advisory', async () => {
+    // The server carries no audio in a mesh, so all it can do is ask. Putting
+    // it in the log is what makes it visible that the ask happened.
+    const { a, bId } = await roomOfThree()
+    a.seen.length = 0
+    a.send({ t: 'voice.moderate', memberId: bId, action: 'mute' })
+    const note = await a.nextWhere('chat.message', m => m.message.text.includes('muted'))
+    expect(note.message.text).toContain('muted dev')
+  })
+
+  it('refuses moderation from anyone but the host', async () => {
+    const { b, cId } = await roomOfThree()
+    b.seen.length = 0
+    b.send({ t: 'voice.moderate', memberId: cId, action: 'mute' })
+    expect((await b.next('error')).message).toMatch(/Only the host/)
+  })
+
+  it('clears voice state when somebody leaves', async () => {
+    const { a, b } = await roomOfThree()
+    b.send({ t: 'voice.state', inVoice: true, muted: false, deafened: false })
+    await a.nextWhere('room.state', m => m.members.some(x => x.inVoice))
+    b.ws.close()
+    // Match the condition itself: a two-member state also described the room
+    // before priya joined, when dev was very much still present.
+    const after = await a.nextWhere('room.state',
+      m => m.members.length === 2 && !m.members.some(x => x.name === 'dev'), 4000)
+    expect(after.members.map(m => m.name).sort()).toEqual(['anjali', 'priya'])
+  })
+})

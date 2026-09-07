@@ -133,6 +133,12 @@ export class RoomClient extends EventEmitter {
         // start needs its seek to complete before the anchor instant arrives.
         void this.runTick()
         break
+      case 'rtc.signal':
+        this.emit('rtc-signal', msg.from, msg.payload)
+        break
+      case 'voice.moderated':
+        this.emit('voice-moderated', msg.by, msg.action)
+        break
       case 'transfer.status':
         this.transfer = {
           perPeer: msg.perPeer,
@@ -222,6 +228,14 @@ export class RoomClient extends EventEmitter {
 
   transferHost (memberId: string): void { this.send({ t: 'member.transferHost', memberId }) }
   startAnyway (): void { this.send({ t: 'room.startAnyway' }) }
+  sendSignal (to: string, payload: unknown): void { this.send({ t: 'rtc.signal', to, payload }) }
+  setVoiceState (v: { inVoice: boolean; muted: boolean; deafened: boolean }): void {
+    this.send({ t: 'voice.state', ...v })
+  }
+
+  moderateVoice (memberId: string, action: 'mute' | 'unmute'): void {
+    this.send({ t: 'voice.moderate', memberId, action })
+  }
   setWaitForLatecomers (wait: boolean): void { this.send({ t: 'room.setWaitForLatecomers', wait }) }
 
   /** This client's own membership, once the room state has arrived. */

@@ -25,6 +25,20 @@ const api = {
   transferHost: (memberId: string) => ipcRenderer.invoke('member:transferHost', memberId),
   startAnyway: () => ipcRenderer.invoke('room:startAnyway'),
   setWaitForLatecomers: (wait: boolean) => ipcRenderer.invoke('room:setWaitForLatecomers', wait),
+  sendSignal: (to: string, payload: unknown) => ipcRenderer.invoke('voice:signal', to, payload),
+  setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => ipcRenderer.invoke('voice:state', v),
+  moderateVoice: (memberId: string, action: 'mute' | 'unmute') => ipcRenderer.invoke('voice:moderate', memberId, action),
+  duckFilm: (ducked: boolean) => ipcRenderer.invoke('voice:duck', ducked),
+  onSignal: (cb: (from: string, payload: unknown) => void) => {
+    const h = (_e: unknown, from: string, payload: unknown): void => cb(from, payload)
+    ipcRenderer.on('voice:signal', h)
+    return () => ipcRenderer.off('voice:signal', h)
+  },
+  onModerated: (cb: (by: string, action: string) => void) => {
+    const h = (_e: unknown, by: string, action: string): void => cb(by, action)
+    ipcRenderer.on('voice:moderated', h)
+    return () => ipcRenderer.off('voice:moderated', h)
+  },
   disconnect: () => ipcRenderer.invoke('room:disconnect'),
   play: () => ipcRenderer.invoke('playback:play'),
   pause: () => ipcRenderer.invoke('playback:pause'),

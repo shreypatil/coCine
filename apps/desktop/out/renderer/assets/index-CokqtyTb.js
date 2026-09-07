@@ -12449,11 +12449,237 @@ function requireClient() {
 }
 var clientExports = requireClient();
 var reactExports = requireReact();
+class VoiceMesh {
+  constructor(o) {
+    this.o = o;
+  }
+  o;
+  peers = /* @__PURE__ */ new Map();
+  localTracks = [];
+  get connectedIds() {
+    return [...this.peers.keys()];
+  }
+  /**
+   * Only one side of a pair may offer, or both send offers at once and the
+   * negotiation collapses. Comparing ids is arbitrary but consistent, and both
+   * sides reach the same answer without needing to agree on anything.
+   */
+  shouldInitiate(peerId) {
+    return this.o.selfId < peerId;
+  }
+  setLocalStream(stream, tracks) {
+    this.localTracks = tracks.map((track) => ({ track, stream }));
+    for (const [, p] of this.peers) {
+      for (const { track, stream: s } of this.localTracks) p.conn.addTrack(track, s);
+    }
+  }
+  /** Bring the mesh in line with who is in the call. Safe to call repeatedly. */
+  async setMembers(memberIds) {
+    const wanted = new Set(memberIds.filter((id) => id !== this.o.selfId));
+    for (const id of [...this.peers.keys()]) {
+      if (!wanted.has(id)) this.drop(id);
+    }
+    for (const id of wanted) {
+      if (this.peers.has(id)) continue;
+      const peer = this.open(id);
+      if (this.shouldInitiate(id)) {
+        const offer = await peer.conn.createOffer();
+        await peer.conn.setLocalDescription(offer);
+        this.o.send(id, { kind: "offer", sdp: offer.sdp });
+      }
+    }
+  }
+  open(id) {
+    const conn = this.o.createConnection();
+    const peer = { conn, pendingCandidates: [], remoteSet: false };
+    conn.onicecandidate = (e) => {
+      if (e.candidate) this.o.send(id, { kind: "candidate", candidate: e.candidate });
+    };
+    conn.ontrack = (e) => {
+      if (e.streams[0]) this.o.onRemoteStream(id, e.streams[0]);
+    };
+    conn.onconnectionstatechange = () => this.o.onPeerStateChange?.(id, conn.connectionState);
+    for (const { track, stream } of this.localTracks) conn.addTrack(track, stream);
+    this.peers.set(id, peer);
+    return peer;
+  }
+  async handleSignal(from, payload) {
+    let peer = this.peers.get(from);
+    if (!peer) peer = this.open(from);
+    if (payload.kind === "offer") {
+      await peer.conn.setRemoteDescription({ type: "offer", sdp: payload.sdp });
+      peer.remoteSet = true;
+      await this.flush(peer);
+      const answer = await peer.conn.createAnswer();
+      await peer.conn.setLocalDescription(answer);
+      this.o.send(from, { kind: "answer", sdp: answer.sdp });
+      return;
+    }
+    if (payload.kind === "answer") {
+      await peer.conn.setRemoteDescription({ type: "answer", sdp: payload.sdp });
+      peer.remoteSet = true;
+      await this.flush(peer);
+      return;
+    }
+    if (!peer.remoteSet) {
+      peer.pendingCandidates.push(payload.candidate);
+      return;
+    }
+    await peer.conn.addIceCandidate(payload.candidate);
+  }
+  async flush(peer) {
+    const held = peer.pendingCandidates.splice(0);
+    for (const c of held) await peer.conn.addIceCandidate(c);
+  }
+  drop(id) {
+    const peer = this.peers.get(id);
+    if (!peer) return;
+    peer.conn.onicecandidate = null;
+    peer.conn.ontrack = null;
+    peer.conn.onconnectionstatechange = null;
+    peer.conn.close();
+    this.peers.delete(id);
+  }
+  close() {
+    for (const id of [...this.peers.keys()]) this.drop(id);
+    this.localTracks = [];
+  }
+}
+const MIC = {
+  audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  video: false
+};
+function useVoice(selfId, memberIds) {
+  const [inVoice, setInVoice] = reactExports.useState(false);
+  const [muted, setMutedState] = reactExports.useState(false);
+  const [deafened, setDeafenedState] = reactExports.useState(false);
+  const [pushToTalk, setPushToTalk] = reactExports.useState(true);
+  const [talking, setTalking] = reactExports.useState(false);
+  const [peers, setPeers] = reactExports.useState({});
+  const [error, setError] = reactExports.useState(null);
+  const mesh = reactExports.useRef(null);
+  const stream = reactExports.useRef(null);
+  const audio = reactExports.useRef(/* @__PURE__ */ new Map());
+  const applyMic = reactExports.useCallback(() => {
+    const on = inVoice && !muted && (!pushToTalk || talking);
+    for (const t of stream.current?.getAudioTracks() ?? []) t.enabled = on;
+    void window.cocine.duckFilm(on);
+  }, [inVoice, muted, pushToTalk, talking]);
+  reactExports.useEffect(applyMic, [applyMic]);
+  reactExports.useEffect(() => {
+    for (const el of audio.current.values()) el.muted = deafened;
+  }, [deafened]);
+  reactExports.useEffect(() => {
+    if (inVoice) void window.cocine.setVoiceState({ inVoice, muted, deafened });
+  }, [inVoice, muted, deafened]);
+  reactExports.useEffect(() => window.cocine.onSignal((from, payload) => {
+    void mesh.current?.handleSignal(from, payload).catch((e) => setError(String(e)));
+  }), []);
+  reactExports.useEffect(() => window.cocine.onModerated((by, action) => {
+    setMutedState(action === "mute");
+    setError(action === "mute" ? `${by} muted you` : null);
+  }), []);
+  reactExports.useEffect(() => {
+    if (!mesh.current) return;
+    void mesh.current.setMembers(memberIds).catch((e) => setError(String(e)));
+  }, [memberIds.join(",")]);
+  const join = reactExports.useCallback(async () => {
+    setError(null);
+    try {
+      const s = await navigator.mediaDevices.getUserMedia(MIC);
+      stream.current = s;
+      for (const t of s.getAudioTracks()) t.enabled = false;
+      mesh.current = new VoiceMesh({
+        selfId,
+        send: (to, payload) => void window.cocine.sendSignal(to, payload),
+        createConnection: () => new RTCPeerConnection({ iceServers: [] }),
+        onRemoteStream: (id, remote) => {
+          let el = audio.current.get(id);
+          if (!el) {
+            el = new Audio();
+            el.autoplay = true;
+            audio.current.set(id, el);
+          }
+          el.srcObject = remote;
+          el.muted = deafened;
+          void el.play().catch(() => {
+          });
+        },
+        onPeerStateChange: (id, state) => setPeers((p) => ({
+          ...p,
+          [id]: state === "connected" ? "connected" : state === "failed" || state === "closed" ? "failed" : "connecting"
+        }))
+      });
+      mesh.current.setLocalStream(s, s.getAudioTracks());
+      await mesh.current.setMembers(memberIds);
+      setInVoice(true);
+    } catch (e) {
+      setError(e instanceof Error ? `Could not use the microphone: ${e.message}` : String(e));
+    }
+  }, [selfId, memberIds.join(","), deafened]);
+  const leave = reactExports.useCallback(() => {
+    mesh.current?.close();
+    mesh.current = null;
+    for (const t of stream.current?.getTracks() ?? []) t.stop();
+    stream.current = null;
+    for (const el of audio.current.values()) {
+      el.pause();
+      el.srcObject = null;
+    }
+    audio.current.clear();
+    setPeers({});
+    setInVoice(false);
+    setTalking(false);
+    void window.cocine.duckFilm(false);
+    void window.cocine.setVoiceState({ inVoice: false, muted: false, deafened: false });
+  }, []);
+  reactExports.useEffect(() => {
+    if (!inVoice || !pushToTalk) {
+      setTalking(false);
+      return;
+    }
+    const typing = (e) => {
+      const el = e.target;
+      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+    };
+    const down = (e) => {
+      if (e.key === "v" && !typing(e)) setTalking(true);
+    };
+    const up = (e) => {
+      if (e.key === "v") setTalking(false);
+    };
+    const blur = () => setTalking(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, [inVoice, pushToTalk]);
+  return {
+    inVoice,
+    muted,
+    deafened,
+    talking,
+    pushToTalk,
+    peers,
+    error,
+    join,
+    leave,
+    setMuted: setMutedState,
+    setDeafened: setDeafenedState,
+    setPushToTalk
+  };
+}
 const size = (b) => {
   if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GB`;
   if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MB`;
   return `${(b / 1024).toFixed(0)} kB`;
 };
+const DEFAULT_SERVER = "ws://127.0.0.1:8787";
+const humanise = (message) => message.replace(/^Error invoking remote method '[^']*':\s*/, "").replace(/^(Error|TypeError):\s*/, "");
 const rate = (b) => b > 0 ? `${(b / 1024 ** 2).toFixed(1)} MB/s` : "—";
 const countdown = (s) => {
   if (s === null) return "working it out";
@@ -12490,6 +12716,8 @@ function App() {
   const [library, setLibrary] = reactExports.useState(null);
   const slotRef = reactExports.useRef(null);
   const chatRef = reactExports.useRef(null);
+  const memberIds = (s?.members ?? []).filter((m) => m.inVoice || m.id === s?.memberId).map((m) => m.id);
+  const voice = useVoice(s?.memberId ?? "", memberIds);
   reactExports.useEffect(() => window.cocine.onState(setS), []);
   reactExports.useEffect(() => {
     let live = true;
@@ -12554,7 +12782,7 @@ function App() {
     try {
       await fn();
     } catch (e) {
-      const m = e instanceof Error ? e.message : String(e);
+      const m = humanise(e instanceof Error ? e.message : String(e));
       console.error(m);
       setError(m);
     } finally {
@@ -12721,7 +12949,16 @@ function App() {
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { children: [
                 "Server",
-                /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: url, onChange: (e) => setUrl(e.target.value), spellCheck: false, "data-testid": "server" })
+                /* @__PURE__ */ jsxRuntimeExports.jsx("input", { value: url, onChange: (e) => setUrl(e.target.value), spellCheck: false, "data-testid": "server" }),
+                url !== DEFAULT_SERVER && /* @__PURE__ */ jsxRuntimeExports.jsx(
+                  "button",
+                  {
+                    className: "mini reset",
+                    "data-testid": "resetserver",
+                    onClick: () => setUrl(DEFAULT_SERVER),
+                    children: "use default"
+                  }
+                )
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsx(
                 "button",
@@ -12756,6 +12993,15 @@ function App() {
                 /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "people", children: s.members.map((m) => /* @__PURE__ */ jsxRuntimeExports.jsxs("li", { "data-testid": "member", "data-name": m.name, children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: `av t${tint(m.name)}`, children: initials(m.name) }),
                   /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "nm", children: m.name }),
+                  m.inVoice && /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "span",
+                    {
+                      className: `vdot ${m.muted ? "off" : ""}`,
+                      "data-testid": "vdot",
+                      title: m.muted ? `${m.name} is muted` : `${m.name} is in voice`
+                    }
+                  ),
+                  m.deafened && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "tag muted", title: "Cannot hear the room", children: "deafened" }),
                   m.isHost && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "tag", children: "host" }),
                   !m.mayControl && !m.isHost && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "tag muted", title: "Cannot control playback", children: "no control" }),
                   s.isHost && !m.isHost && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "rowacts", children: [
@@ -12778,9 +13024,75 @@ function App() {
                         onClick: () => void guard(() => window.cocine.transferHost(m.id)),
                         children: "host"
                       }
+                    ),
+                    m.inVoice && /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        className: "mini",
+                        "data-testid": "mutethem",
+                        title: "Ask them to mute — advisory, their client chooses to comply",
+                        onClick: () => void guard(() => window.cocine.moderateVoice(m.id, m.muted ? "unmute" : "mute")),
+                        children: m.muted ? "unmute" : "mute"
+                      }
                     )
                   ] })
                 ] }, m.id)) })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect voice", "data-testid": "voice", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "Voice" }),
+                !voice.inVoice ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      className: "btn primary wide",
+                      "data-testid": "joinvoice",
+                      onClick: () => void voice.join(),
+                      children: "Join voice"
+                    }
+                  ),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "quiet", children: [
+                    "Hold ",
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: "V" }),
+                    " to talk. Headphones strongly recommended."
+                  ] })
+                ] }) : /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "vbar", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        className: voice.muted ? "mini on" : "mini",
+                        "data-testid": "mute",
+                        onClick: () => voice.setMuted(!voice.muted),
+                        children: voice.muted ? "unmute" : "mute"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "button",
+                      {
+                        className: voice.deafened ? "mini on" : "mini",
+                        "data-testid": "deafen",
+                        onClick: () => voice.setDeafened(!voice.deafened),
+                        children: voice.deafened ? "undeafen" : "deafen"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("button", { className: "mini", "data-testid": "leavevoice", onClick: voice.leave, children: "leave" })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "checkbox",
+                        checked: voice.pushToTalk,
+                        "data-testid": "ptt",
+                        onChange: (e) => voice.setPushToTalk(e.target.checked)
+                      }
+                    ),
+                    "Push to talk (hold V)"
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: voice.talking ? "quiet talking" : "quiet", "data-testid": "talkstate", children: voice.muted ? "Microphone off" : voice.pushToTalk ? voice.talking ? "Talking" : "Hold V to talk" : "Microphone open" }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "quiet", children: "The film quietens while you talk, because echo cancellation cannot hear it." })
+                ] }),
+                voice.error && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "quiet vwarn", "data-testid": "voiceerror", children: voice.error })
               ] }),
               /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "chatwrap", children: [
                 /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: "Chat" }),

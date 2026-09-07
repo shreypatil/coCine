@@ -69,7 +69,11 @@ const Member = z.object({
   id: z.string(),
   name: z.string(),
   isHost: z.boolean(),
-  mayControl: z.boolean()
+  mayControl: z.boolean(),
+  /** In the voice call at all. Someone can be in the room without it. */
+  inVoice: z.boolean().default(false),
+  muted: z.boolean().default(false),
+  deafened: z.boolean().default(false)
 });
 const ChatMessage = z.object({
   id: z.string(),
@@ -131,6 +135,19 @@ z.discriminatedUnion("t", [
   z.object({ t: z.literal("member.setControl"), memberId: z.string(), mayControl: z.boolean() }),
   z.object({ t: z.literal("member.transferHost"), memberId: z.string() }),
   z.object({ t: z.literal("peer.report"), report: PeerReport }),
+  /** Opaque WebRTC negotiation, relayed to one other member and nobody else. */
+  z.object({ t: z.literal("rtc.signal"), to: z.string(), payload: z.unknown() }),
+  z.object({
+    t: z.literal("voice.state"),
+    inVoice: z.boolean(),
+    muted: z.boolean(),
+    deafened: z.boolean()
+  }),
+  /**
+   * Host only. Advisory in a mesh: the server has no media to stop, so it can
+   * only ask. Enforcement needs the SFU, which is a later phase.
+   */
+  z.object({ t: z.literal("voice.moderate"), memberId: z.string(), action: z.enum(["mute", "unmute"]) }),
   /** Host only: start even though somebody is not ready. */
   z.object({ t: z.literal("room.startAnyway") }),
   /** Host only: whether the room pauses when someone arrives mid-film. */
@@ -169,6 +186,9 @@ const ServerMessage = z.discriminatedUnion("t", [
   z.object({ t: z.literal("chat.message"), message: ChatMessage }),
   /** Sent once on join so a latecomer sees what was already said. */
   z.object({ t: z.literal("chat.history"), messages: z.array(ChatMessage) }),
+  z.object({ t: z.literal("rtc.signal"), from: z.string(), payload: z.unknown() }),
+  /** Sent to the person being asked, so their own client can comply. */
+  z.object({ t: z.literal("voice.moderated"), by: z.string(), action: z.enum(["mute", "unmute"]) }),
   z.object({ t: z.literal("error"), message: z.string() })
 ]);
 const encode = (m) => JSON.stringify(m);
@@ -326,6 +346,12 @@ class RoomClient extends EventEmitter {
         this.emit("schedule", msg.state);
         void this.runTick();
         break;
+      case "rtc.signal":
+        this.emit("rtc-signal", msg.from, msg.payload);
+        break;
+      case "voice.moderated":
+        this.emit("voice-moderated", msg.by, msg.action);
+        break;
       case "transfer.status":
         this.transfer = {
           perPeer: msg.perPeer,
@@ -423,6 +449,15 @@ class RoomClient extends EventEmitter {
   }
   startAnyway() {
     this.send({ t: "room.startAnyway" });
+  }
+  sendSignal(to, payload) {
+    this.send({ t: "rtc.signal", to, payload });
+  }
+  setVoiceState(v) {
+    this.send({ t: "voice.state", ...v });
+  }
+  moderateVoice(memberId, action) {
+    this.send({ t: "voice.moderate", memberId, action });
   }
   setWaitForLatecomers(wait) {
     this.send({ t: "room.setWaitForLatecomers", wait });
@@ -1088,6 +1123,10 @@ class ExternalMpv {
   async setRate(rate) {
     await this.ipc.setProperty("speed", rate);
   }
+  /** 0 to 100. Used to duck the film while someone is speaking. */
+  async setVolume(percent) {
+    await this.ipc.setProperty("volume", Math.max(0, Math.min(130, percent)));
+  }
   position() {
     return this.pos;
   }
@@ -1246,6 +1285,23 @@ function formatClock(seconds) {
   const t = Math.max(0, Math.floor(seconds));
   return [Math.floor(t / 3600), Math.floor(t / 60) % 60, t % 60].map((n) => String(n).padStart(2, "0")).join(":");
 }
+function explainConnectError(err, url) {
+  const code = err?.code;
+  const message = err instanceof Error ? err.message : String(err);
+  if (code === "ECONNREFUSED") {
+    return new Error(`Nothing is listening at ${url}. Is the server running? Check the address, or reset it to the default.`);
+  }
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+    return new Error(`Could not find a server at ${url}. Check the address.`);
+  }
+  if (code === "ETIMEDOUT" || code === "ECONNRESET") {
+    return new Error(`No answer from ${url}. It may be unreachable from this network.`);
+  }
+  if (/Invalid URL|invalid url/i.test(message)) {
+    return new Error(`${url} is not a valid address. It should look like ws://host:8787`);
+  }
+  return new Error(`Could not join through ${url}: ${message}`);
+}
 const VIDEO_EXTENSIONS = ["mkv", "mp4", "avi", "mov", "webm", "m4v", "ts", "mpg", "mpeg", "wmv", "flv", "ogv"];
 function createHandlers(deps) {
   const log = deps.log ?? (() => {
@@ -1344,7 +1400,12 @@ function createHandlers(deps) {
       const player = deps.getVideo()?.player;
       if (!player) throw new Error("player not ready");
       await deps.getRoom()?.close();
-      const room2 = await deps.createRoom({ ...o, player });
+      let room2;
+      try {
+        room2 = await deps.createRoom({ ...o, player });
+      } catch (err) {
+        throw explainConnectError(err, o.url);
+      }
       deps.setRoom(room2);
       deps.saveIdentity({ name: o.name, server: o.url, lastCode: room2.code });
       const mediaPath2 = deps.getMediaPath();
@@ -1374,6 +1435,30 @@ function createHandlers(deps) {
       if (!room2) throw new Error("not in a room");
       if (!room2.me()?.isHost) throw new Error("only the host can start early");
       room2.startAnyway();
+    },
+    /** Opaque WebRTC negotiation, relayed by the server to one member. */
+    "voice:signal": (to, payload) => {
+      deps.getRoom()?.sendSignal(to, payload);
+    },
+    "voice:state": (v) => {
+      deps.getRoom()?.setVoiceState(v);
+    },
+    "voice:moderate": (memberId, action) => {
+      const room2 = deps.getRoom();
+      if (!room2) throw new Error("not in a room");
+      if (!room2.me()?.isHost) throw new Error("only the host can mute other people");
+      room2.moderateVoice(memberId, action);
+    },
+    /**
+     * Quieten the film while someone is talking. Chromium's echo canceller
+     * cannot hear mpv -- it removes audio Chromium itself played, and mpv plays
+     * through a different path entirely -- so on speakers the film would
+     * otherwise be picked up by every microphone and sent back to the room.
+     */
+    "voice:duck": async (ducked) => {
+      const player = deps.getVideo()?.player;
+      if (!player) return;
+      await player.setVolume?.(ducked ? 35 : 100);
     },
     /** Whether the room pauses when someone arrives mid-film. */
     "room:setWaitForLatecomers": (wait) => {
@@ -1497,6 +1582,7 @@ const state = () => {
     ready: !!player,
     connected: !!room,
     members: room?.members ?? [],
+    memberId: room?.memberId ?? "",
     code: room?.code ?? null,
     messages: room?.messages ?? [],
     isHost: room?.me()?.isHost ?? false,
@@ -1599,6 +1685,12 @@ const handlers = createHandlers({
         }
         return transfer.reportFor(t.infoHash, client.expectedPosition() ?? 0, client.media?.durationSec ?? 0);
       }
+    });
+    client.on("rtc-signal", (from, payload) => {
+      mainWin?.webContents.send("voice:signal", from, payload);
+    });
+    client.on("voice-moderated", (by, action) => {
+      mainWin?.webContents.send("voice:moderated", by, action);
     });
     client.on("media", (media) => {
       void (async () => {

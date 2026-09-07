@@ -29,6 +29,8 @@ export interface PlayerController {
   duration(): number | null
   /** Transient on-screen text drawn by the player itself. */
   showText(text: string, durationMs?: number): Promise<void>
+  /** 0 to 100, for ducking the film while someone speaks. */
+  setVolume(percent: number): Promise<void>
   on(event: 'position', fn: (seconds: number, atMs: number) => void): void
   on(event: 'pause', fn: (paused: boolean) => void): void
   on(event: 'eof', fn: () => void): void

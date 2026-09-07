@@ -20,6 +20,7 @@ export interface PlayerLike {
   seek: (seconds: number) => Promise<void>
   duration: () => number | null
   showText: (text: string, durationMs?: number) => Promise<void>
+  setVolume?: (percent: number) => Promise<void>
 }
 
 export interface VideoLike {
@@ -53,6 +54,9 @@ export interface RoomLike {
   transferHost: (memberId: string) => void
   startAnyway: () => void
   setWaitForLatecomers: (wait: boolean) => void
+  sendSignal: (to: string, payload: unknown) => void
+  setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => void
+  moderateVoice: (memberId: string, action: 'mute' | 'unmute') => void
   me: () => Member | undefined
   close: () => Promise<void>
   memberId: string
@@ -88,6 +92,31 @@ export function formatClock (seconds: number): string {
   const t = Math.max(0, Math.floor(seconds))
   return [Math.floor(t / 3600), Math.floor(t / 60) % 60, t % 60]
     .map(n => String(n).padStart(2, '0')).join(':')
+}
+
+/**
+ * Turn a socket failure into something a person can act on.
+ *
+ * The raw errors are Node's, and "connect ECONNREFUSED 127.0.0.1:40689" tells
+ * someone nothing about what to do -- least of all that the address came from a
+ * setting they have never seen, saved on a previous run.
+ */
+export function explainConnectError (err: unknown, url: string): Error {
+  const code = (err as { code?: string })?.code
+  const message = err instanceof Error ? err.message : String(err)
+  if (code === 'ECONNREFUSED') {
+    return new Error(`Nothing is listening at ${url}. Is the server running? Check the address, or reset it to the default.`)
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return new Error(`Could not find a server at ${url}. Check the address.`)
+  }
+  if (code === 'ETIMEDOUT' || code === 'ECONNRESET') {
+    return new Error(`No answer from ${url}. It may be unreachable from this network.`)
+  }
+  if (/Invalid URL|invalid url/i.test(message)) {
+    return new Error(`${url} is not a valid address. It should look like ws://host:8787`)
+  }
+  return new Error(`Could not join through ${url}: ${message}`)
 }
 
 export const VIDEO_EXTENSIONS = ['mkv', 'mp4', 'avi', 'mov', 'webm', 'm4v', 'ts', 'mpg', 'mpeg', 'wmv', 'flv', 'ogv']
@@ -214,7 +243,12 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       const player = deps.getVideo()?.player
       if (!player) throw new Error('player not ready')
       await deps.getRoom()?.close()
-      const room = await deps.createRoom({ ...o, player })
+      let room: RoomLike
+      try {
+        room = await deps.createRoom({ ...o, player })
+      } catch (err) {
+        throw explainConnectError(err, o.url)
+      }
       deps.setRoom(room)
       // Only remembered once the connection succeeded, so a typo in the server
       // address is not what greets you next launch.
@@ -252,6 +286,34 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       if (!room) throw new Error('not in a room')
       if (!room.me()?.isHost) throw new Error('only the host can start early')
       room.startAnyway()
+    },
+
+    /** Opaque WebRTC negotiation, relayed by the server to one member. */
+    'voice:signal': (to: string, payload: unknown) => {
+      deps.getRoom()?.sendSignal(to, payload)
+    },
+
+    'voice:state': (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => {
+      deps.getRoom()?.setVoiceState(v)
+    },
+
+    'voice:moderate': (memberId: string, action: 'mute' | 'unmute') => {
+      const room = deps.getRoom()
+      if (!room) throw new Error('not in a room')
+      if (!room.me()?.isHost) throw new Error('only the host can mute other people')
+      room.moderateVoice(memberId, action)
+    },
+
+    /**
+     * Quieten the film while someone is talking. Chromium's echo canceller
+     * cannot hear mpv -- it removes audio Chromium itself played, and mpv plays
+     * through a different path entirely -- so on speakers the film would
+     * otherwise be picked up by every microphone and sent back to the room.
+     */
+    'voice:duck': async (ducked: boolean) => {
+      const player = deps.getVideo()?.player
+      if (!player) return
+      await player.setVolume?.(ducked ? 35 : 100)
     },
 
     /** Whether the room pauses when someone arrives mid-film. */

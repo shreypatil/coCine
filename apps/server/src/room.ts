@@ -52,6 +52,16 @@ export class Room {
     this.seq++
   }
 
+  /** Someone joining, leaving or changing their own microphone state. */
+  setVoice (memberId: string, state: { inVoice: boolean; muted: boolean; deafened: boolean }): Member | undefined {
+    const m = this.members.get(memberId)
+    if (!m) return undefined
+    m.inVoice = state.inVoice
+    m.muted = state.muted
+    m.deafened = state.deafened
+    return m
+  }
+
   report (memberId: string, report: PeerReport): void {
     if (this.members.has(memberId)) this.reports.set(memberId, report)
   }
@@ -100,7 +110,10 @@ export class Room {
   }
 
   add (id: string, name: string): Member {
-    const member: Member = { id, name, isHost: this.members.size === 0, mayControl: true }
+    const member: Member = {
+      id, name, isHost: this.members.size === 0, mayControl: true,
+      inVoice: false, muted: false, deafened: false
+    }
     this.members.set(id, member)
     this.lastEmptyAtMs = null
     return member
