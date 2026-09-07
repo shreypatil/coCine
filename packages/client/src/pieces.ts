@@ -88,6 +88,23 @@ export function indexRanges (g: PieceGeometry, headBytes = 2 * 1024 * 1024, tail
   return [[0, headEnd], [tailStart, last]]
 }
 
+/**
+ * How many seconds of film are available without a gap, starting where playback
+ * is. This is the number the readiness gate turns on: not how much of the file
+ * exists, but how long it can play before running into a hole.
+ */
+export function contiguousSecondsFrom (positionSec: number, g: PieceGeometry, has: (index: number) => boolean): number {
+  if (g.pieceCount <= 0 || !(g.durationSec > 0)) return 0
+  const start = pieceAt(positionSec, g)
+  if (!has(start)) return 0
+  let end = start
+  while (end + 1 < g.pieceCount && has(end + 1)) end++
+  const bytesPerSec = g.totalBytes / g.durationSec
+  // The playhead sits somewhere inside its piece, so only count from there.
+  const availableTo = Math.min((end + 1) * g.pieceLength, g.totalBytes)
+  return Math.max(0, availableTo / bytesPerSec - positionSec)
+}
+
 /** The slice of a torrent the scheduler needs. Kept minimal so it can be faked. */
 export interface SelectableTorrent {
   pieceLength: number

@@ -1,7 +1,7 @@
 import WebSocket from 'ws'
 import { EventEmitter } from 'node:events'
 import { ClockSync, tick, extrapolatePosition, DEFAULT_SYNC_CONFIG, type SyncConfig, type SyncAction } from '@cocine/sync'
-import { decodeServer, encode, type ChatMessage, type ClientMessage, type Media, type Member, type PlaybackState, type TorrentInfo } from '@cocine/protocol'
+import { decodeServer, encode, type ChatMessage, type ClientMessage, type Media, type Member, type PeerReport, type PeerStatus, type PlaybackState, type RoomPhase, type TorrentInfo } from '@cocine/protocol'
 import type { PlayerController } from '@cocine/player'
 
 export interface RoomClientOptions {
@@ -15,6 +15,8 @@ export interface RoomClientOptions {
    *  is no value above that; 20 Hz keeps control lag well inside the budget. */
   tickHz?: number
   pingIntervalMs?: number
+  /** Called once a second to describe this client to the room. */
+  getReport?: () => PeerReport | null
 }
 
 /**
@@ -36,6 +38,16 @@ export class RoomClient extends EventEmitter {
   memberId = ''
   code = ''
   media: Media | null = null
+  phase: RoomPhase = 'lobby'
+  waitForLatecomers = true
+  transfer: {
+    perPeer: PeerStatus[]
+    etaSec: number | null
+    tMinSec: number | null
+    bottleneck: string | null
+    fullCopies: number
+    safeForSharerToLeave: boolean
+  } | null = null
   /** Where the room's swarm announces. Learned from the server, never guessed. */
   trackerUrl = ''
   /** Bounded locally as well as on the server, so a long session cannot grow
@@ -57,6 +69,13 @@ export class RoomClient extends EventEmitter {
     // Burst a few pings so the first estimate is usable immediately, then settle.
     for (let i = 0; i < 8; i++) { this.ping(); await new Promise(r => setTimeout(r, 25)) }
     await this.waitForClock()
+
+    if (this.o.getReport) {
+      this.timers.push(setInterval(() => {
+        const report = this.o.getReport?.()
+        if (report) this.send({ t: 'peer.report', report })
+      }, 1000))
+    }
 
     const pingMs = this.o.pingIntervalMs ?? 2000
     this.timers.push(setInterval(() => this.ping(), pingMs))
@@ -89,6 +108,8 @@ export class RoomClient extends EventEmitter {
         this.members = msg.members
         this.code = msg.code
         this.trackerUrl = msg.trackerUrl
+        this.phase = msg.phase
+        this.waitForLatecomers = msg.waitForLatecomers
         if (msg.media?.torrent?.infoHash !== this.media?.torrent?.infoHash) {
           this.media = msg.media
           this.emit('media', msg.media)
@@ -111,6 +132,17 @@ export class RoomClient extends EventEmitter {
         // React immediately rather than waiting for the next tick: a scheduled
         // start needs its seek to complete before the anchor instant arrives.
         void this.runTick()
+        break
+      case 'transfer.status':
+        this.transfer = {
+          perPeer: msg.perPeer,
+          etaSec: msg.etaSec,
+          tMinSec: msg.tMinSec,
+          bottleneck: msg.bottleneck,
+          fullCopies: msg.fullCopies,
+          safeForSharerToLeave: msg.safeForSharerToLeave
+        }
+        this.emit('transfer', this.transfer)
         break
       case 'error':
         this.emit('server-error', msg.message)
@@ -189,6 +221,8 @@ export class RoomClient extends EventEmitter {
   }
 
   transferHost (memberId: string): void { this.send({ t: 'member.transferHost', memberId }) }
+  startAnyway (): void { this.send({ t: 'room.startAnyway' }) }
+  setWaitForLatecomers (wait: boolean): void { this.send({ t: 'room.setWaitForLatecomers', wait }) }
 
   /** This client's own membership, once the room state has arrived. */
   me (): Member | undefined { return this.members.find(m => m.id === this.memberId) }

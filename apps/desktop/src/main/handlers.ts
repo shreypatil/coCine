@@ -51,6 +51,8 @@ export interface RoomLike {
   sendChat: (text: string) => void
   setControl: (memberId: string, mayControl: boolean) => void
   transferHost: (memberId: string) => void
+  startAnyway: () => void
+  setWaitForLatecomers: (wait: boolean) => void
   me: () => Member | undefined
   close: () => Promise<void>
   memberId: string
@@ -242,6 +244,22 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       if (!room) throw new Error('not in a room')
       if (!room.me()?.isHost) throw new Error('only the host can hand over hosting')
       room.transferHost(memberId)
+    },
+
+    /** Start although somebody is still buffering. The host's call to make. */
+    'room:startAnyway': () => {
+      const room = deps.getRoom()
+      if (!room) throw new Error('not in a room')
+      if (!room.me()?.isHost) throw new Error('only the host can start early')
+      room.startAnyway()
+    },
+
+    /** Whether the room pauses when someone arrives mid-film. */
+    'room:setWaitForLatecomers': (wait: boolean) => {
+      const room = deps.getRoom()
+      if (!room) throw new Error('not in a room')
+      if (!room.me()?.isHost) throw new Error('only the host can change that')
+      room.setWaitForLatecomers(wait)
     },
 
     'room:disconnect': async () => {

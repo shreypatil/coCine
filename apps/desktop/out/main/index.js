@@ -91,6 +91,27 @@ const Media = z.object({
   durationSec: z.number(),
   torrent: TorrentInfo.nullable()
 });
+const PeerReport = z.object({
+  /** Fraction of the film held locally, 0 to 1. */
+  havePct: z.number().min(0).max(1),
+  /** Contiguous seconds of film available from the current playhead. */
+  bufferEndSec: z.number().min(0),
+  downBps: z.number().min(0),
+  upBps: z.number().min(0),
+  /** Swarm peers this client is connected to. */
+  peers: z.number().int().min(0)
+});
+const PeerStatus = z.object({
+  memberId: z.string(),
+  name: z.string(),
+  havePct: z.number(),
+  bufferEndSec: z.number(),
+  downBps: z.number(),
+  upBps: z.number(),
+  peers: z.number(),
+  ready: z.boolean()
+});
+const RoomPhase = z.enum(["lobby", "preparing", "ready", "playing"]);
 z.discriminatedUnion("t", [
   /** No code creates a room and returns one; a code joins an existing room. */
   z.object({ t: z.literal("hello"), code: z.string().nullable(), name: z.string().min(1).max(40) }),
@@ -108,7 +129,12 @@ z.discriminatedUnion("t", [
   }),
   z.object({ t: z.literal("chat.send"), text: z.string().min(1).max(MAX_CHAT_LENGTH) }),
   z.object({ t: z.literal("member.setControl"), memberId: z.string(), mayControl: z.boolean() }),
-  z.object({ t: z.literal("member.transferHost"), memberId: z.string() })
+  z.object({ t: z.literal("member.transferHost"), memberId: z.string() }),
+  z.object({ t: z.literal("peer.report"), report: PeerReport }),
+  /** Host only: start even though somebody is not ready. */
+  z.object({ t: z.literal("room.startAnyway") }),
+  /** Host only: whether the room pauses when someone arrives mid-film. */
+  z.object({ t: z.literal("room.setWaitForLatecomers"), wait: z.boolean() })
 ]);
 const ServerMessage = z.discriminatedUnion("t", [
   z.object({ t: z.literal("welcome"), memberId: z.string(), code: z.string(), serverMs: z.number() }),
@@ -121,7 +147,23 @@ const ServerMessage = z.discriminatedUnion("t", [
     members: z.array(Member),
     media: Media.nullable(),
     /** Where to announce, so clients do not have to guess the tracker URL. */
-    trackerUrl: z.string()
+    trackerUrl: z.string(),
+    phase: RoomPhase,
+    waitForLatecomers: z.boolean()
+  }),
+  z.object({
+    t: z.literal("transfer.status"),
+    perPeer: z.array(PeerStatus),
+    /** Seconds until everyone can start, from observed rates. Null while unknown. */
+    etaSec: z.number().nullable(),
+    /** The floor no scheduling can beat. Null until rates are known. */
+    tMinSec: z.number().nullable(),
+    /** Whoever the room is waiting for, by name. */
+    bottleneck: z.string().nullable(),
+    /** Whole copies of the film in the room, counting the sharer. */
+    fullCopies: z.number(),
+    /** Whether the film survives the sharer disconnecting. */
+    safeForSharerToLeave: z.boolean()
   }),
   z.object({ t: z.literal("playback.schedule"), state: PlaybackState, seq: z.number() }),
   z.object({ t: z.literal("chat.message"), message: ChatMessage }),
@@ -201,6 +243,9 @@ class RoomClient extends EventEmitter {
   memberId = "";
   code = "";
   media = null;
+  phase = "lobby";
+  waitForLatecomers = true;
+  transfer = null;
   /** Where the room's swarm announces. Learned from the server, never guessed. */
   trackerUrl = "";
   /** Bounded locally as well as on the server, so a long session cannot grow
@@ -220,6 +265,12 @@ class RoomClient extends EventEmitter {
       await new Promise((r) => setTimeout(r, 25));
     }
     await this.waitForClock();
+    if (this.o.getReport) {
+      this.timers.push(setInterval(() => {
+        const report = this.o.getReport?.();
+        if (report) this.send({ t: "peer.report", report });
+      }, 1e3));
+    }
     const pingMs = this.o.pingIntervalMs ?? 2e3;
     this.timers.push(setInterval(() => this.ping(), pingMs));
     const tickMs = 1e3 / (this.o.tickHz ?? 20);
@@ -252,6 +303,8 @@ class RoomClient extends EventEmitter {
         this.members = msg.members;
         this.code = msg.code;
         this.trackerUrl = msg.trackerUrl;
+        this.phase = msg.phase;
+        this.waitForLatecomers = msg.waitForLatecomers;
         if (msg.media?.torrent?.infoHash !== this.media?.torrent?.infoHash) {
           this.media = msg.media;
           this.emit("media", msg.media);
@@ -272,6 +325,17 @@ class RoomClient extends EventEmitter {
         this.target = msg.state;
         this.emit("schedule", msg.state);
         void this.runTick();
+        break;
+      case "transfer.status":
+        this.transfer = {
+          perPeer: msg.perPeer,
+          etaSec: msg.etaSec,
+          tMinSec: msg.tMinSec,
+          bottleneck: msg.bottleneck,
+          fullCopies: msg.fullCopies,
+          safeForSharerToLeave: msg.safeForSharerToLeave
+        };
+        this.emit("transfer", this.transfer);
         break;
       case "error":
         this.emit("server-error", msg.message);
@@ -356,6 +420,12 @@ class RoomClient extends EventEmitter {
   }
   transferHost(memberId) {
     this.send({ t: "member.transferHost", memberId });
+  }
+  startAnyway() {
+    this.send({ t: "room.startAnyway" });
+  }
+  setWaitForLatecomers(wait) {
+    this.send({ t: "room.setWaitForLatecomers", wait });
   }
   /** This client's own membership, once the room state has arrived. */
   me() {
@@ -497,6 +567,16 @@ function indexRanges(g, headBytes = 2 * 1024 * 1024, tailBytes = 4 * 1024 * 1024
   if (tailStart <= headEnd + 1) return [[0, last]];
   return [[0, headEnd], [tailStart, last]];
 }
+function contiguousSecondsFrom(positionSec, g, has) {
+  if (g.pieceCount <= 0 || !(g.durationSec > 0)) return 0;
+  const start = pieceAt(positionSec, g);
+  if (!has(start)) return 0;
+  let end = start;
+  while (end + 1 < g.pieceCount && has(end + 1)) end++;
+  const bytesPerSec = g.totalBytes / g.durationSec;
+  const availableTo = Math.min((end + 1) * g.pieceLength, g.totalBytes);
+  return Math.max(0, availableTo / bytesPerSec - positionSec);
+}
 const HIGH_PRIORITY = 1;
 class PieceScheduler {
   constructor(torrent, durationSec, cfg = DEFAULT_WINDOWS) {
@@ -553,6 +633,8 @@ class TransferManager extends EventEmitter {
   client = null;
   torrents = /* @__PURE__ */ new Map();
   schedulers = /* @__PURE__ */ new Map();
+  server = null;
+  serverPort = 0;
   ensureClient() {
     if (this.client) return this.client;
     this.client = new WebTorrent({
@@ -562,6 +644,8 @@ class TransferManager extends EventEmitter {
       utp: false,
       webSeeds: false,
       ...this.o.webrtcOnly ? { tcp: false } : {},
+      ...this.o.downloadLimitBps !== void 0 ? { downloadLimit: this.o.downloadLimitBps } : {},
+      ...this.o.uploadLimitBps !== void 0 ? { uploadLimit: this.o.uploadLimitBps } : {},
       tracker: { rtcConfig: { iceServers: this.o.iceServers ?? DEFAULT_ICE_SERVERS } }
     });
     this.client.on("error", (err) => this.emit("error", err));
@@ -598,14 +682,26 @@ class TransferManager extends EventEmitter {
     const existing = this.torrents.get(info.infoHash.toLowerCase());
     if (existing) return { path: existing.files[0]?.path ?? "", torrent: existing };
     await this.o.store.ensureRoomFor(info.bytes);
+    await this.ensureStreamServer();
     const dir = this.o.store.dirFor(info.infoHash);
-    const torrent = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("no metadata from the swarm within 60s")), 6e4);
-      this.ensureClient().add(info.magnet, { announce: [this.o.trackerUrl], path: dir }, (t) => {
-        clearTimeout(timer);
-        resolve(t);
+    const timeout = this.o.metadataTimeoutMs ?? 45e3;
+    const attempt = async () => {
+      let added = null;
+      const t = await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(null), timeout);
+        added = this.ensureClient().add(info.magnet, { announce: [this.o.trackerUrl], path: dir }, (got) => {
+          clearTimeout(timer);
+          resolve(got);
+        });
       });
-    });
+      if (!t && added) {
+        this.emit("warning", `no metadata for ${info.infoHash.slice(0, 8)} in ${timeout / 1e3}s; retrying`);
+        await new Promise((res) => added.destroy(() => res()));
+      }
+      return t;
+    };
+    const torrent = await attempt() ?? await attempt();
+    if (!torrent) throw new Error(`no metadata from the swarm for ${basename(info.magnet)} after two attempts`);
     await this.o.store.record({
       infoHash: torrent.infoHash,
       name: torrent.name,
@@ -628,6 +724,53 @@ class TransferManager extends EventEmitter {
   }
   schedulerFor(infoHash) {
     return this.schedulers.get(infoHash.toLowerCase());
+  }
+  /**
+   * An HTTP origin that streams torrents, blocking on pieces that have not
+   * arrived yet.
+   *
+   * This is what makes watching before the download finishes possible at all.
+   * Playing the file on disk directly would read zeros wherever a piece is
+   * missing, because the file is written sparsely -- so the player has to go
+   * through something that knows how to wait. Byte ranges are supported, which
+   * is what lets mpv seek.
+   */
+  async ensureStreamServer() {
+    if (this.server) return this.serverPort;
+    const server = this.ensureClient().createServer();
+    await new Promise((res) => server.listen(0, "127.0.0.1", res));
+    const addr = server.address();
+    this.serverPort = typeof addr === "object" && addr ? addr.port : 0;
+    this.server = server;
+    return this.serverPort;
+  }
+  /** A URL mpv can open, or null if this film is not being handled here. */
+  streamUrl(infoHash) {
+    const t = this.torrents.get(infoHash.toLowerCase());
+    const file = t?.files[0];
+    if (!file || !this.serverPort) return null;
+    return `http://127.0.0.1:${this.serverPort}${file.streamURL}`;
+  }
+  /**
+   * What this client can tell the room about itself. Null when it is not
+   * involved in this film at all.
+   */
+  reportFor(infoHash, positionSec, durationSec) {
+    const t = this.torrents.get(infoHash.toLowerCase());
+    if (!t) return null;
+    const geometry = {
+      pieceLength: t.pieceLength,
+      pieceCount: t.pieces.length,
+      totalBytes: t.length,
+      durationSec
+    };
+    return {
+      havePct: t.progress,
+      bufferEndSec: t.done ? Math.max(0, durationSec - positionSec) : contiguousSecondsFrom(positionSec, geometry, (i) => t.bitfield.get(i)),
+      downBps: t.downloadSpeed,
+      upBps: t.uploadSpeed,
+      peers: t.numPeers
+    };
   }
   /**
    * Move the windows to follow playback. Called as the room's playhead moves,
@@ -655,6 +798,10 @@ class TransferManager extends EventEmitter {
   async destroy() {
     this.torrents.clear();
     this.schedulers.clear();
+    if (this.server) {
+      await new Promise((res) => this.server.close(() => res()));
+      this.server = null;
+    }
     await new Promise((res) => this.client ? this.client.destroy(() => res()) : res());
     this.client = null;
   }
@@ -1221,6 +1368,20 @@ function createHandlers(deps) {
       if (!room2.me()?.isHost) throw new Error("only the host can hand over hosting");
       room2.transferHost(memberId);
     },
+    /** Start although somebody is still buffering. The host's call to make. */
+    "room:startAnyway": () => {
+      const room2 = deps.getRoom();
+      if (!room2) throw new Error("not in a room");
+      if (!room2.me()?.isHost) throw new Error("only the host can start early");
+      room2.startAnyway();
+    },
+    /** Whether the room pauses when someone arrives mid-film. */
+    "room:setWaitForLatecomers": (wait) => {
+      const room2 = deps.getRoom();
+      if (!room2) throw new Error("not in a room");
+      if (!room2.me()?.isHost) throw new Error("only the host can change that");
+      room2.setWaitForLatecomers(wait);
+    },
     "room:disconnect": async () => {
       await deps.getRoom()?.close();
       deps.setRoom(null);
@@ -1352,6 +1513,9 @@ const state = () => {
     lastAction: room?.lastSyncAction()?.type ?? null,
     fullscreen: mainWin?.isFullScreen() ?? false,
     transfers: transfer?.progress() ?? [],
+    phase: room?.phase ?? "lobby",
+    waitForLatecomers: room?.waitForLatecomers ?? true,
+    transferStatus: room?.transfer ?? null,
     receiving,
     roomTorrent: room?.media?.torrent ?? null
   };
@@ -1421,9 +1585,21 @@ const handlers = createHandlers({
     room = r;
   },
   createRoom: async (o) => {
-    const client = new RoomClient({ url: o.url, code: o.code, name: o.name, player: o.player });
-    await client.connect();
-    if (client.trackerUrl) ensureTransfer(client.trackerUrl);
+    const client = new RoomClient({
+      url: o.url,
+      code: o.code,
+      name: o.name,
+      player: o.player,
+      // What this machine can honestly say about the film it is fetching.
+      getReport: () => {
+        const t = client.media?.torrent;
+        if (!t || !transfer) return null;
+        if (t.infoHash === sharedInfoHash) {
+          return { havePct: 1, bufferEndSec: client.media?.durationSec ?? 0, downBps: 0, upBps: 0, peers: 0 };
+        }
+        return transfer.reportFor(t.infoHash, client.expectedPosition() ?? 0, client.media?.durationSec ?? 0);
+      }
+    });
     client.on("media", (media) => {
       void (async () => {
         const t = media?.torrent;
@@ -1433,23 +1609,19 @@ const handlers = createHandlers({
           console.log(`[film] room is sharing ${media?.name}; fetching`);
           receiving = { name: media?.name ?? "", infoHash: t.infoHash };
           const { path } = await tm.receive(t);
-          const torrent = tm.get(t.infoHash);
-          const load = async () => {
-            await video?.player?.load(path);
-            mediaPath = path;
-            receiving = null;
-            console.log(`[film] received and loaded ${path}`);
-          };
-          if (torrent?.done) await load();
-          else torrent?.on("done", () => {
-            void load().catch((e) => console.error("[film]", e));
-          });
+          const url = tm.streamUrl(t.infoHash) ?? path;
+          await video?.player?.load(url);
+          mediaPath = path;
+          receiving = null;
+          console.log(`[film] streaming ${media?.name} from ${url}`);
         } catch (err) {
           receiving = null;
           console.error("[film] could not receive:", err);
         }
       })();
     });
+    await client.connect();
+    if (client.trackerUrl) ensureTransfer(client.trackerUrl);
     return client;
   },
   getMediaPath: () => mediaPath,

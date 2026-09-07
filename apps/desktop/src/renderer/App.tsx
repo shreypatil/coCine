@@ -19,6 +19,18 @@ interface TransferProgress {
   downBps: number; upBps: number; peers: number; done: boolean; bytes: number
 }
 interface Library { films: StoredFilm[]; usedBytes: number; freeBytes: number }
+interface PeerStatus {
+  memberId: string; name: string; havePct: number; bufferEndSec: number
+  downBps: number; upBps: number; peers: number; ready: boolean
+}
+interface TransferStatus {
+  perPeer: PeerStatus[]
+  etaSec: number | null
+  tMinSec: number | null
+  bottleneck: string | null
+  fullCopies: number
+  safeForSharerToLeave: boolean
+}
 
 interface State {
   ready: boolean; connected: boolean; members: Member[]
@@ -31,6 +43,9 @@ interface State {
   fullscreen: boolean
   transfers: TransferProgress[]
   receiving: { name: string; infoHash: string } | null
+  phase: 'lobby' | 'preparing' | 'ready' | 'playing'
+  waitForLatecomers: boolean
+  transferStatus: TransferStatus | null
 }
 
 declare global {
@@ -48,6 +63,8 @@ declare global {
       sendChat: (text: string) => Promise<void>
       setControl: (memberId: string, mayControl: boolean) => Promise<void>
       transferHost: (memberId: string) => Promise<void>
+      startAnyway: () => Promise<void>
+      setWaitForLatecomers: (wait: boolean) => Promise<void>
       play: () => Promise<void>
       pause: () => Promise<void>
       seek: (sec: number) => Promise<void>
@@ -63,6 +80,14 @@ const size = (b: number): string => {
   return `${(b / 1024).toFixed(0)} kB`
 }
 const rate = (b: number): string => b > 0 ? `${(b / 1024 ** 2).toFixed(1)} MB/s` : '—'
+/** Countdowns read better rounded than exact; nobody needs 4 m 07 s. */
+const countdown = (s: number | null): string => {
+  if (s === null) return 'working it out'
+  if (s <= 1) return 'any moment'
+  if (s < 60) return `about ${Math.round(s)}s`
+  const m = Math.round(s / 60)
+  return m < 60 ? `about ${m} min` : `about ${(m / 60).toFixed(1)} hours`
+}
 
 const clock = (s: number | null | undefined): string => {
   if (s == null || !isFinite(s)) return '--:--:--'
@@ -362,6 +387,52 @@ export function App (): ReactElement {
                 </div>
               </div>
             </>
+          )}
+          {view === 'room' && s?.connected && (s.phase === 'preparing' || s.phase === 'ready') && s.transferStatus && (
+            <div className="sect gate" data-testid="gate">
+              <h4>{s.phase === 'ready' ? 'Everyone is ready' : 'Getting everyone ready'}</h4>
+              {s.phase === 'preparing' && (
+                <p className="gate-eta" data-testid="eta">
+                  {countdown(s.transferStatus.etaSec)}
+                  {s.transferStatus.bottleneck && <span> · waiting on <b>{s.transferStatus.bottleneck}</b></span>}
+                </p>
+              )}
+              <ul className="peers">
+                {s.transferStatus.perPeer.map(p => (
+                  <li key={p.memberId} data-testid="peerstatus" data-name={p.name}>
+                    <span className="pn">{p.name}</span>
+                    <span className={`pv ${p.ready ? 'ok' : ''}`}>{Math.round(p.havePct * 100)}%</span>
+                    <span className="pd">{rate(p.downBps)}</span>
+                    <div className="bar"><span style={{ width: `${Math.round(p.havePct * 100)}%` }} /></div>
+                  </li>
+                ))}
+              </ul>
+              {s.transferStatus.tMinSec !== null && (
+                <p className="quiet" data-testid="floor">
+                  fastest possible {countdown(s.transferStatus.tMinSec)} — nothing can beat that
+                </p>
+              )}
+              <p className={s.transferStatus.safeForSharerToLeave ? 'quiet safe' : 'quiet'} data-testid="durability">
+                {s.transferStatus.safeForSharerToLeave
+                  ? 'Safe for the sharer to leave — the room has a second full copy'
+                  : `${s.transferStatus.fullCopies} full ${s.transferStatus.fullCopies === 1 ? 'copy' : 'copies'} in the room — the film needs the sharer for now`}
+              </p>
+              {s.isHost && (
+                <div className="gate-acts">
+                  {s.phase === 'preparing' && (
+                    <button className="btn" data-testid="startanyway"
+                      onClick={() => void guard(() => window.cocine.startAnyway())}>
+                      Start without {s.transferStatus.perPeer.filter(p => !p.ready).map(p => p.name).join(', ')}
+                    </button>
+                  )}
+                  <label className="toggle">
+                    <input type="checkbox" checked={s.waitForLatecomers} data-testid="waitlate"
+                      onChange={e => void guard(() => window.cocine.setWaitForLatecomers(e.target.checked))} />
+                    Pause when someone arrives late
+                  </label>
+                </div>
+              )}
+            </div>
           )}
           {view === 'room' && (
             <div className="sect film">

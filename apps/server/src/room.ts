@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { positionAt, type ChatMessage, type Media, type Member, type PlaybackState } from '@cocine/protocol'
+import { positionAt, type ChatMessage, type Media, type Member, type PeerReport, type PeerStatus, type PlaybackState, type RoomPhase } from '@cocine/protocol'
+import { bottleneck, durability, etaSeconds, isReady, phaseFor, tMinSeconds, DEFAULT_READINESS, type ReadinessConfig } from './readiness.js'
 
 /** Enough backlog that a latecomer sees the conversation, not so much that a
  *  long session grows without bound. */
@@ -20,8 +21,83 @@ export class Room {
   seq = 0
   readonly chat: ChatMessage[] = []
   lastEmptyAtMs: number | null = Date.now()
+  /** The most recent report from each member, by member id. */
+  readonly reports = new Map<string, PeerReport>()
+  /** Set by the host to start before everyone is ready. Cleared by a new film. */
+  startOverridden = false
+  /** Host preference: does the room pause when someone arrives mid-film? */
+  waitForLatecomers = true
+  /** Whoever announced the film, so their upload can be identified. */
+  sharerId: string | null = null
+  /** The phase last sent to clients, so a change can be noticed and pushed. */
+  lastBroadcastPhase: RoomPhase | null = null
 
-  constructor (readonly code: string, private readonly startLeadMs = 300) {}
+  constructor (
+    readonly code: string,
+    private readonly startLeadMs = 300,
+    private readonly readiness: ReadinessConfig = DEFAULT_READINESS
+  ) {}
+
+  /**
+   * Put a film on. Clears the reports and any override with it: both describe
+   * the previous film, and leaving them behind makes a room nobody has anything
+   * of look ready to start.
+   */
+  setMedia (media: Media, sharerId: string): void {
+    this.media = media
+    this.sharerId = sharerId
+    this.reports.clear()
+    this.startOverridden = false
+    this.state = { kind: 'paused', positionSec: 0 }
+    this.seq++
+  }
+
+  report (memberId: string, report: PeerReport): void {
+    if (this.members.has(memberId)) this.reports.set(memberId, report)
+  }
+
+  /** Every member's state, whether or not they have reported yet. */
+  peerStatuses (): PeerStatus[] {
+    return [...this.members.values()].map(m => {
+      const r = this.reports.get(m.id) ?? { havePct: 0, bufferEndSec: 0, downBps: 0, upBps: 0, peers: 0 }
+      return {
+        memberId: m.id,
+        name: m.name,
+        havePct: r.havePct,
+        bufferEndSec: r.bufferEndSec,
+        downBps: r.downBps,
+        upBps: r.upBps,
+        peers: r.peers,
+        ready: isReady(r, this.readiness)
+      }
+    })
+  }
+
+  phase (): RoomPhase {
+    return phaseFor(this.media !== null, this.state.kind === 'playing', this.peerStatuses(), this.startOverridden)
+  }
+
+  /** Everything the room can honestly say about getting the film to everyone. */
+  transferStatus (): {
+    perPeer: PeerStatus[]
+    etaSec: number | null
+    tMinSec: number | null
+    bottleneck: string | null
+    fullCopies: number
+    safeForSharerToLeave: boolean
+  } {
+    const perPeer = this.peerStatuses()
+    const bytes = this.media?.torrent?.bytes ?? 0
+    const sharer = perPeer.find(p => p.memberId === this.sharerId)
+    const leechers = perPeer.filter(p => p.memberId !== this.sharerId)
+    return {
+      perPeer,
+      etaSec: bytes > 0 ? etaSeconds(bytes, perPeer, this.readiness) : null,
+      tMinSec: sharer ? tMinSeconds(bytes, sharer.upBps, leechers) : null,
+      bottleneck: bottleneck(perPeer),
+      ...durability(perPeer)
+    }
+  }
 
   add (id: string, name: string): Member {
     const member: Member = { id, name, isHost: this.members.size === 0, mayControl: true }
@@ -33,6 +109,7 @@ export class Room {
   remove (id: string): void {
     const wasHost = this.members.get(id)?.isHost
     this.members.delete(id)
+    this.reports.delete(id)
     // Hosting passes to whoever has been here longest rather than collapsing.
     if (wasHost) {
       const next = this.members.values().next().value

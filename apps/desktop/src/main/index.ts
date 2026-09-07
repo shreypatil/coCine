@@ -73,6 +73,9 @@ const state = (): Record<string, unknown> => {
     lastAction: room?.lastSyncAction()?.type ?? null,
     fullscreen: mainWin?.isFullScreen() ?? false,
     transfers: transfer?.progress() ?? [],
+    phase: room?.phase ?? 'lobby',
+    waitForLatecomers: room?.waitForLatecomers ?? true,
+    transferStatus: room?.transfer ?? null,
     receiving,
     roomTorrent: room?.media?.torrent ?? null
   }
@@ -147,14 +150,27 @@ const handlers = createHandlers({
   getRoom: () => room,
   setRoom: r => { room = r as RoomClient | null },
   createRoom: async o => {
-    const client = new RoomClient({ url: o.url, code: o.code, name: o.name, player: o.player as never })
-    await client.connect()
-    // The tracker URL arrives with room state, so the transfer manager cannot
-    // exist before this point.
-    if (client.trackerUrl) ensureTransfer(client.trackerUrl)
-
-    // Someone else put a film on. Fetch it unless this is the one we are
-    // sharing ourselves, or we already have it on disk.
+    // Annotated because getReport closes over `client`, and without a type here
+    // that circular reference makes the whole thing infer as any.
+    const client: RoomClient = new RoomClient({
+      url: o.url,
+      code: o.code,
+      name: o.name,
+      player: o.player as never,
+      // What this machine can honestly say about the film it is fetching.
+      getReport: (): { havePct: number; bufferEndSec: number; downBps: number; upBps: number; peers: number } | null => {
+        const t = client.media?.torrent
+        if (!t || !transfer) return null
+        // The sharer, and anyone who already had the file, hold all of it.
+        if (t.infoHash === sharedInfoHash) {
+          return { havePct: 1, bufferEndSec: client.media?.durationSec ?? 0, downBps: 0, upBps: 0, peers: 0 }
+        }
+        return transfer.reportFor(t.infoHash, client.expectedPosition() ?? 0, client.media?.durationSec ?? 0)
+      }
+    })
+    // Attached before connect: room.state arrives while connecting, so a
+    // listener added afterwards misses a film that was already on when we
+    // joined -- which is the common case for anyone but the first person in.
     client.on('media', (media: { name: string; torrent: { infoHash: string; bytes: number } | null } | null) => {
       void (async () => {
         const t = media?.torrent
@@ -164,23 +180,25 @@ const handlers = createHandlers({
           console.log(`[film] room is sharing ${media?.name}; fetching`)
           receiving = { name: media?.name ?? '', infoHash: t.infoHash }
           const { path } = await tm.receive(t as never)
-          const torrent = tm.get(t.infoHash)
-          const load = async (): Promise<void> => {
-            await video?.player?.load(path)
-            mediaPath = path
-            receiving = null
-            console.log(`[film] received and loaded ${path}`)
-          }
-          // Watching before it finishes is phase 4.5; for now it opens when the
-          // file is whole, which is at least honest about what it is doing.
-          if (torrent?.done) await load()
-          else torrent?.on('done', () => { void load().catch(e => console.error('[film]', e)) })
+          // Open it through the streaming server rather than off disk. The
+          // file is written sparsely, so reading it directly would give zeros
+          // wherever a piece has not arrived; the stream blocks instead, which
+          // is what makes watching before the download finishes possible.
+          const url = tm.streamUrl(t.infoHash) ?? path
+          await video?.player?.load(url)
+          mediaPath = path
+          receiving = null
+          console.log(`[film] streaming ${media?.name} from ${url}`)
         } catch (err) {
           receiving = null
           console.error('[film] could not receive:', err)
         }
       })()
     })
+    await client.connect()
+    // The tracker URL arrives with room state, so the transfer manager cannot
+    // exist before this point.
+    if (client.trackerUrl) ensureTransfer(client.trackerUrl)
     return client as unknown as RoomLike
   },
   getMediaPath: () => mediaPath,

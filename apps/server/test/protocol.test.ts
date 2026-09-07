@@ -39,9 +39,25 @@ class Peer {
 
   /** Waits for the next message of a kind, so tests never sleep on a guess. */
   async next<T extends ServerMessage['t']> (t: T, timeoutMs = 3000): Promise<Extract<ServerMessage, { t: T }>> {
+    return await this.nextWhere(t, () => true, timeoutMs)
+  }
+
+  /**
+   * Waits for a message of a kind that also satisfies a predicate.
+   *
+   * Clearing `seen` and taking the next arrival is not enough: a message the
+   * server had already sent can still be in flight when the queue is cleared,
+   * and then it is what `next` returns. Matching on content instead of on
+   * arrival order removes that race entirely.
+   */
+  async nextWhere<T extends ServerMessage['t']> (
+    t: T,
+    match: (m: Extract<ServerMessage, { t: T }>) => boolean,
+    timeoutMs = 3000
+  ): Promise<Extract<ServerMessage, { t: T }>> {
     const deadline = Date.now() + timeoutMs
     for (;;) {
-      const hit = this.seen.find(m => m.t === t)
+      const hit = this.seen.find(m => m.t === t && match(m as Extract<ServerMessage, { t: T }>))
       if (hit) { this.seen.splice(this.seen.indexOf(hit), 1); return hit as Extract<ServerMessage, { t: T }> }
       if (Date.now() > deadline) throw new Error(`timed out waiting for ${t}; saw ${this.seen.map(m => m.t).join(', ') || 'nothing'}`)
       await new Promise(r => setTimeout(r, 10))
@@ -230,4 +246,101 @@ describe('validation', () => {
     a.ws.send(JSON.stringify({ t: 'chat.send', text: 'x'.repeat(801) }))
     expect((await a.next('error')).message).toMatch(/bad message/)
   })
+})
+
+describe('the readiness gate over the wire', () => {
+  const ready = { havePct: 1, bufferEndSec: 900, downBps: 0, upBps: 0, peers: 1 }
+  const behind = { havePct: 0.2, bufferEndSec: 3, downBps: 1_000_000, upBps: 0, peers: 1 }
+  const torrent = { infoHash: 'c'.repeat(40), magnet: 'magnet:?xt=urn:btih:' + 'c'.repeat(40), bytes: 1_000_000_000, pieceLength: 262144 }
+
+  async function roomOfTwo (): Promise<{ a: Peer; b: Peer; bId: string }> {
+    const a = await Peer.connect()
+    a.send({ t: 'hello', code: null, name: 'anjali' })
+    const code = (await a.next('welcome')).code
+    const b = await Peer.connect()
+    b.send({ t: 'hello', code, name: 'dev' })
+    const bId = (await b.next('welcome')).memberId
+    a.send({ t: 'media.announce', name: 'dune.mkv', durationSec: 7200, torrent })
+    await a.next('room.state')
+    return { a, b, bId }
+  }
+
+  it('holds in preparing while somebody is behind, then opens', async () => {
+    const { a, b } = await roomOfTwo()
+    a.send({ t: 'peer.report', report: ready })
+    b.send({ t: 'peer.report', report: behind })
+    await new Promise(r => setTimeout(r, 1400))
+    expect((await a.next('transfer.status')).bottleneck).toBe('dev')
+
+    b.send({ t: 'peer.report', report: ready })
+    await new Promise(r => setTimeout(r, 1400))
+    const s = await a.next('transfer.status')
+    expect(s.bottleneck).toBeNull()
+    expect(s.perPeer.every(p => p.ready)).toBe(true)
+  }, 20_000)
+
+  it('reports a countdown and the floor it cannot beat', async () => {
+    const { a, b } = await roomOfTwo()
+    a.send({ t: 'peer.report', report: { havePct: 1, bufferEndSec: 900, downBps: 0, upBps: 4_000_000, peers: 1 } })
+    b.send({ t: 'peer.report', report: behind })
+    await new Promise(r => setTimeout(r, 1400))
+    const s = await a.next('transfer.status')
+    expect(s.etaSec).toBeGreaterThan(0)
+    expect(s.tMinSec).toBeGreaterThan(0)
+  }, 20_000)
+
+  it('says the film needs the sharer until a second full copy exists', async () => {
+    const { a, b } = await roomOfTwo()
+    a.send({ t: 'peer.report', report: ready })
+    b.send({ t: 'peer.report', report: behind })
+    await new Promise(r => setTimeout(r, 1400))
+    expect((await a.next('transfer.status')).safeForSharerToLeave).toBe(false)
+
+    b.send({ t: 'peer.report', report: ready })
+    await new Promise(r => setTimeout(r, 1400))
+    const s = await a.next('transfer.status')
+    expect(s.fullCopies).toBe(2)
+    expect(s.safeForSharerToLeave).toBe(true)
+  }, 20_000)
+
+  it('lets only the host start early, and records it in the room log', async () => {
+    const { a, b } = await roomOfTwo()
+    b.seen.length = 0
+    b.send({ t: 'room.startAnyway' })
+    expect((await b.next('error')).message).toMatch(/Only the host/)
+
+    a.send({ t: 'peer.report', report: ready })
+    b.send({ t: 'peer.report', report: behind })
+    await new Promise(r => setTimeout(r, 1200))
+    a.seen.length = 0
+    a.send({ t: 'room.startAnyway' })
+    const note = await a.nextWhere('chat.message', m => m.message.text.includes('without'))
+    expect(note.message.text).toContain('without dev')
+    expect((await a.nextWhere('room.state', m => m.phase === 'ready')).phase).toBe('ready')
+  }, 20_000)
+
+  it('lets only the host choose whether the room waits for latecomers', async () => {
+    const { a, b } = await roomOfTwo()
+    b.seen.length = 0
+    b.send({ t: 'room.setWaitForLatecomers', wait: false })
+    expect((await b.next('error')).message).toMatch(/Only the host/)
+
+    a.send({ t: 'room.setWaitForLatecomers', wait: false })
+    expect((await a.nextWhere('room.state', m => !m.waitForLatecomers)).waitForLatecomers).toBe(false)
+  }, 20_000)
+
+  it('starts the gate afresh when a different film is put on', async () => {
+    // An override for the last film must not let the next one start before
+    // anybody has it.
+    const { a, b } = await roomOfTwo()
+    a.send({ t: 'peer.report', report: ready })
+    b.send({ t: 'peer.report', report: behind })
+    await new Promise(r => setTimeout(r, 1200))
+    a.send({ t: 'room.startAnyway' })
+    await a.next('room.state')
+
+    a.send({ t: 'media.announce', name: 'arrival.mkv', durationSec: 6000, torrent: { ...torrent, infoHash: 'd'.repeat(40) } })
+    const after = await a.nextWhere('room.state', m => m.media?.name === 'arrival.mkv')
+    expect(after.phase).toBe('preparing')
+  }, 20_000)
 })

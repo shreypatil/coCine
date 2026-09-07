@@ -22,6 +22,8 @@ declare module 'webtorrent' {
     name: string
     length: number
     path: string
+    /** Path to append to a createServer() origin to stream this file. */
+    streamURL: string
   }
 
   export interface Torrent extends EventEmitter {
@@ -86,6 +88,8 @@ declare module 'webtorrent' {
     get (torrentId: string): Torrent | null | undefined
     remove (torrentId: string, cb?: () => void): void
     destroy (cb?: () => void): void
+    /** An HTTP server that streams torrents, blocking until pieces arrive. */
+    createServer (opts?: unknown): import('node:http').Server
     throttleDownload (rate: number): void
     throttleUpload (rate: number): void
   }

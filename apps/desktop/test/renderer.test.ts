@@ -29,7 +29,8 @@ const STATE = {
   paused: true, rate: 1, clockOffsetMs: 3, rttMs: 20, lastAction: 'none',
   fullscreen: false,
   code: 'BCDFGHJK', messages: [] as unknown[], isHost: true, mayControl: true,
-  transfers: [] as unknown[], receiving: null as unknown
+  transfers: [] as unknown[], receiving: null as unknown,
+  phase: 'playing', waitForLatecomers: true, transferStatus: null as unknown
 }
 
 beforeAll(async () => {
@@ -78,6 +79,8 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
         return Promise.resolve(w.__library ?? { films: [], usedBytes: 0, freeBytes: 500 * 1024 ** 3 })
       },
       removeFilm: rec('removeFilm'),
+      startAnyway: rec('startAnyway'),
+      setWaitForLatecomers: rec('setWaitForLatecomers'),
       connect: rec('connect'),
       disconnect: rec('disconnect'),
       play: rec('play'),
@@ -264,6 +267,92 @@ const MSGS = [
   { id: '2', kind: 'said', memberId: 'a', name: 'anjali', text: 'starting in five', atServerMs: 1_700_000_060_000 },
   { id: '3', kind: 'system', memberId: 'a', name: 'anjali', text: 'put on dune.mkv', atServerMs: 1_700_000_120_000 }
 ]
+
+describe('the readiness gate', () => {
+  const status = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    perPeer: [
+      { memberId: 'a', name: 'anjali', havePct: 1, bufferEndSec: 900, downBps: 0, upBps: 5e6, peers: 2, ready: true },
+      { memberId: 'b', name: 'dev', havePct: 0.42, bufferEndSec: 8, downBps: 3e6, upBps: 1e6, peers: 2, ready: false }
+    ],
+    etaSec: 240, tMinSec: 130, bottleneck: 'dev', fullCopies: 1, safeForSharerToLeave: false,
+    ...over
+  })
+
+  it('shows who is holding the room up, and for how long', async () => {
+    await open()
+    await push({ phase: 'preparing', transferStatus: status() })
+    await page.waitForSelector('[data-testid="gate"]')
+    expect(await page.textContent('[data-testid="eta"]')).toContain('about 4 min')
+    expect(await page.textContent('[data-testid="eta"]')).toContain('dev')
+    expect(await page.locator('[data-testid="peerstatus"]').count()).toBe(2)
+    expect(await page.textContent('[data-testid="peerstatus"][data-name="dev"]')).toContain('42%')
+    await page.close()
+  })
+
+  it('shows the floor as well as the estimate, so the wait is explicable', async () => {
+    await open()
+    await push({ phase: 'preparing', transferStatus: status() })
+    await page.waitForSelector('[data-testid="floor"]')
+    expect(await page.textContent('[data-testid="floor"]')).toContain('about 2 min')
+    await page.close()
+  })
+
+  it('admits when it cannot estimate rather than inventing a number', async () => {
+    await open()
+    await push({ phase: 'preparing', transferStatus: status({ etaSec: null }) })
+    await page.waitForSelector('[data-testid="eta"]')
+    expect(await page.textContent('[data-testid="eta"]')).toContain('working it out')
+    await page.close()
+  })
+
+  it('says whether the film survives the sharer leaving', async () => {
+    await open()
+    await push({ phase: 'preparing', transferStatus: status() })
+    expect(await page.textContent('[data-testid="durability"]')).toContain('needs the sharer')
+    await push({ phase: 'preparing', transferStatus: status({ fullCopies: 2, safeForSharerToLeave: true }) })
+    expect(await page.textContent('[data-testid="durability"]')).toContain('Safe for the sharer to leave')
+    await page.close()
+  })
+
+  it('offers the host a way past the gate, naming who gets left behind', async () => {
+    await open()
+    await push({ phase: 'preparing', transferStatus: status(), isHost: true })
+    const label = await page.textContent('[data-testid="startanyway"]')
+    expect(label).toContain('dev')
+    await page.click('[data-testid="startanyway"]')
+    expect(await calls('startAnyway')).toHaveLength(1)
+    await page.close()
+  })
+
+  it('offers that override to the host only', async () => {
+    await open()
+    await push({ phase: 'preparing', transferStatus: status(), isHost: false })
+    expect(await page.locator('[data-testid="startanyway"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('lets the host decide whether the room waits for latecomers', async () => {
+    await open()
+    await push({ phase: 'preparing', transferStatus: status(), isHost: true, waitForLatecomers: true })
+    expect(await page.isChecked('[data-testid="waitlate"]')).toBe(true)
+    // Controlled by server state, so it stays checked until the server says
+    // otherwise. What matters is that clicking asks; the box follows the room.
+    await page.click('[data-testid="waitlate"]')
+    expect((await calls('setWaitForLatecomers'))[0]).toEqual([false])
+    expect(await page.isChecked('[data-testid="waitlate"]')).toBe(true)
+
+    await push({ phase: 'preparing', transferStatus: status(), isHost: true, waitForLatecomers: false })
+    expect(await page.isChecked('[data-testid="waitlate"]')).toBe(false)
+    await page.close()
+  })
+
+  it('drops the gate out of the way once the film is playing', async () => {
+    await open()
+    await push({ phase: 'playing', transferStatus: status({ bottleneck: null }) })
+    expect(await page.locator('[data-testid="gate"]').count()).toBe(0)
+    await page.close()
+  })
+})
 
 describe('films on disk', () => {
   const FILMS = {

@@ -12455,6 +12455,13 @@ const size = (b) => {
   return `${(b / 1024).toFixed(0)} kB`;
 };
 const rate = (b) => b > 0 ? `${(b / 1024 ** 2).toFixed(1)} MB/s` : "—";
+const countdown = (s) => {
+  if (s === null) return "working it out";
+  if (s <= 1) return "any moment";
+  if (s < 60) return `about ${Math.round(s)}s`;
+  const m = Math.round(s / 60);
+  return m < 60 ? `about ${m} min` : `about ${(m / 60).toFixed(1)} hours`;
+};
 const clock = (s) => {
   if (s == null || !isFinite(s)) return "--:--:--";
   const t = Math.max(0, Math.floor(s));
@@ -12810,6 +12817,57 @@ function App() {
                     "data-testid": "chatinput"
                   }
                 ) })
+              ] })
+            ] }),
+            view === "room" && s?.connected && (s.phase === "preparing" || s.phase === "ready") && s.transferStatus && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect gate", "data-testid": "gate", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("h4", { children: s.phase === "ready" ? "Everyone is ready" : "Getting everyone ready" }),
+              s.phase === "preparing" && /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "gate-eta", "data-testid": "eta", children: [
+                countdown(s.transferStatus.etaSec),
+                s.transferStatus.bottleneck && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+                  " · waiting on ",
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("b", { children: s.transferStatus.bottleneck })
+                ] })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("ul", { className: "peers", children: s.transferStatus.perPeer.map((p) => /* @__PURE__ */ jsxRuntimeExports.jsxs("li", { "data-testid": "peerstatus", "data-name": p.name, children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "pn", children: p.name }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: `pv ${p.ready ? "ok" : ""}`, children: [
+                  Math.round(p.havePct * 100),
+                  "%"
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "pd", children: rate(p.downBps) }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "bar", children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { width: `${Math.round(p.havePct * 100)}%` } }) })
+              ] }, p.memberId)) }),
+              s.transferStatus.tMinSec !== null && /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "quiet", "data-testid": "floor", children: [
+                "fastest possible ",
+                countdown(s.transferStatus.tMinSec),
+                " — nothing can beat that"
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: s.transferStatus.safeForSharerToLeave ? "quiet safe" : "quiet", "data-testid": "durability", children: s.transferStatus.safeForSharerToLeave ? "Safe for the sharer to leave — the room has a second full copy" : `${s.transferStatus.fullCopies} full ${s.transferStatus.fullCopies === 1 ? "copy" : "copies"} in the room — the film needs the sharer for now` }),
+              s.isHost && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "gate-acts", children: [
+                s.phase === "preparing" && /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                  "button",
+                  {
+                    className: "btn",
+                    "data-testid": "startanyway",
+                    onClick: () => void guard(() => window.cocine.startAnyway()),
+                    children: [
+                      "Start without ",
+                      s.transferStatus.perPeer.filter((p) => !p.ready).map((p) => p.name).join(", ")
+                    ]
+                  }
+                ),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "toggle", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "input",
+                    {
+                      type: "checkbox",
+                      checked: s.waitForLatecomers,
+                      "data-testid": "waitlate",
+                      onChange: (e) => void guard(() => window.cocine.setWaitForLatecomers(e.target.checked))
+                    }
+                  ),
+                  "Pause when someone arrives late"
+                ] })
               ] })
             ] }),
             view === "room" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "sect film", children: [

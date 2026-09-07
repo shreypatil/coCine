@@ -114,6 +114,78 @@ changes. `select()` *accumulates* rather than replacing, so the previous window
 must be deselected first, or the selection list grows until every range is
 equally important, which is the same as having no windows at all.
 
+### The readiness gate
+
+Every client reports once a second what it actually has: fraction of the film,
+**contiguous seconds available from the playhead**, observed rates, peer count.
+The room holds in `preparing` until everyone has a lead buffer, then moves to
+`ready`. That second number is the one the gate turns on — not how much of the
+file exists, but how long it can play before hitting a hole.
+
+The sidebar shows every peer's progress, a countdown from observed rates, and
+the name of whoever the room is waiting for. It also shows **T_min**, the
+Kumar–Ross floor no scheduling can beat, so a long wait is explicable rather
+than just slow. When rates are not yet known it says so instead of inventing a
+number.
+
+Two controls belong to the host, both decisions about other people's time:
+**start without whoever is behind** (which names them), and whether the room
+pauses when someone arrives mid-film.
+
+Announcing a different film clears the reports as well as the override. Without
+that, a room where nobody has the new film still reads as ready, because
+everyone's report describes the *previous* one.
+
+### Surviving the sharer leaving
+
+The room reports how many whole copies exist and whether it is safe for the
+sharer to disconnect. This counts **whole copies rather than per-piece
+coverage**, which would need bitfields on the wire — so a room whose peers
+collectively hold every piece in fragments reads as unsafe. That is deliberate:
+a wrong "yes" loses the film, so the error leans toward "not yet".
+
+### Watching before it arrives
+
+Playback goes through WebTorrent's streaming server, not the file on disk. The
+file is written **sparsely**, so reading it directly returns zeros wherever a
+piece has not arrived; the stream blocks on missing pieces instead, and supports
+byte ranges so mpv can still seek.
+
+### The phase 4 check
+
+```bash
+npm run phase4                       # three receivers, shaped links
+npm run phase4 -- --gb=4 --peers=4   # full scale, slow
+npm run phase4 -- --down=6 --up=3    # a worse connection
+```
+
+Every participant is a real `RoomClient` with a real headless mpv, so the sync
+engine, readiness gate, piece scheduler and transfer are all shipping code.
+
+**Links are shaped on purpose.** Loopback is far faster than any real
+connection, and unshaped the transfer finishes before the readiness gate has
+anything to gate — which proves nothing about watching while a film arrives.
+
+Most recent run — 3 receivers, ~0.6 GB, 20 Mbps down / 10 Mbps up each:
+
+```
+gate opened after 70.3s — slowest receiver had 2.9% of the film
+watchable before complete    yes (2.9% at the gate)
+still arriving while playing yes
+sync during transfer         p99 10.0 ms · worst 11.0 ms
+```
+
+### What phase 4 has not shown
+
+**Two real machines on two real networks.** Everything above runs on loopback in
+one process. That leaves untested: NAT traversal between actual hosts, real
+round-trip variance, and the ten to twenty-five per cent of peer pairs that
+cannot connect without a relay. coturn is phase 6, and this is the gap it fills.
+
+To try it yourself, run the server somewhere both machines can reach, then on
+each machine set that address in the join panel. One person opens a film, the
+other joins with the code.
+
 ## Keyboard
 
 | Key | |
@@ -183,7 +255,7 @@ which `time-pos` reads stale and the engine corrects against a phantom drift.
 | 01 | Sync engine | **done** — 5 clients, 20 events, 40 ms ± 15 ms link, 37 s server clock skew: **p99 drift 35 ms**, 0 of 2598 samples over budget, every event re-converged in 0.3 s |
 | 02 | Single-window shell | **done** — Electron with mpv reparented via `--wid`; see caveat below |
 | 03 | Rooms, roles, chat | **done** — invite codes, chat, host controls; 105 tests |
-| 04 | Transfer | in progress — 4.1–4.6 done: tracker, swarm, sharing, storage, piece selection |
+| 04 | Transfer | **done on this machine** — one part needs a second machine, see below |
 | 05 | Voice | |
 | 06 | NAT hardening | |
 | 07 | Relay mode | |

@@ -33,6 +33,7 @@ export class SignallingServer {
   readonly tracker = new RoomTracker()
   private conns = new Map<WebSocket, Conn>()
   private sweeper: NodeJS.Timeout | null = null
+  private statusTimer: NodeJS.Timeout | null = null
   readonly rooms: RoomStore
   private readonly startLeadMs: number
   private readonly roomTtlMs: number
@@ -68,6 +69,10 @@ export class SignallingServer {
     })
 
     await new Promise<void>(res => this.http!.listen(this.opts.port ?? 0, res))
+    // Transfer status is derived from reports that arrive once a second, so
+    // broadcasting on the same cadence is as fresh as it can meaningfully be.
+    this.statusTimer = setInterval(() => this.broadcastTransferStatus(), 1000)
+    this.statusTimer.unref?.()
     this.sweeper = setInterval(() => this.rooms.sweep(this.roomTtlMs), 60_000)
     this.sweeper.unref?.()
     const addr = this.http.address()
@@ -137,12 +142,10 @@ export class SignallingServer {
 
     switch (msg.t) {
       case 'media.announce': {
-        conn.room.media = { name: msg.name, durationSec: msg.durationSec, torrent: msg.torrent }
+        conn.room.setMedia({ name: msg.name, durationSec: msg.durationSec, torrent: msg.torrent }, me.id)
         // Only info hashes a room has announced are answerable, so this cannot
         // be used as a public tracker for arbitrary torrents.
         if (msg.torrent) this.tracker.allow(msg.torrent.infoHash)
-        conn.room.state = { kind: 'paused', positionSec: 0 }
-        conn.room.seq++
         this.emitChat(conn.room, 'system', me.name, `put on ${msg.name}`, me.id)
         this.broadcastState(conn.room)
         this.broadcast(conn.room, { t: 'playback.schedule', state: conn.room.state, seq: conn.room.seq })
@@ -154,6 +157,30 @@ export class SignallingServer {
         const state = conn.room.apply(msg.intent, msg.positionSec, this.now())
         this.broadcast(conn.room, { t: 'playback.schedule', state, seq: conn.room.seq })
         this.log(`${me.name} → ${msg.intent}${msg.positionSec !== undefined ? ` @${msg.positionSec.toFixed(2)}s` : ''}`)
+        return
+      }
+
+      case 'peer.report': {
+        conn.room.report(me.id, msg.report)
+        return
+      }
+
+      case 'room.startAnyway': {
+        if (!me.isHost) return this.send(ws, { t: 'error', message: 'Only the host can start early' })
+        conn.room.startOverridden = true
+        const waiting = conn.room.peerStatuses().filter(p => !p.ready).map(p => p.name)
+        this.emitChat(conn.room, 'system', me.name,
+          waiting.length ? `started without ${waiting.join(', ')}` : 'started the film', me.id)
+        this.broadcastState(conn.room)
+        return
+      }
+
+      case 'room.setWaitForLatecomers': {
+        if (!me.isHost) return this.send(ws, { t: 'error', message: 'Only the host can change that' })
+        conn.room.waitForLatecomers = msg.wait
+        this.emitChat(conn.room, 'system', me.name,
+          msg.wait ? 'set the room to wait for latecomers' : 'set the room to carry on without latecomers', me.id)
+        this.broadcastState(conn.room)
         return
       }
 
@@ -186,13 +213,36 @@ export class SignallingServer {
     this.broadcast(room, { t: 'chat.message', message })
   }
 
+  private broadcastTransferStatus (): void {
+    const seen = new Set<Room>()
+    for (const c of this.conns.values()) {
+      if (seen.has(c.room)) continue
+      seen.add(c.room)
+
+      // The phase is derived from reports, which arrive continuously and
+      // trigger nothing on their own. Without this the room becomes ready and
+      // never tells anyone -- the gate simply never opens.
+      const phase = c.room.phase()
+      if (phase !== c.room.lastBroadcastPhase) {
+        c.room.lastBroadcastPhase = phase
+        this.broadcastState(c.room)
+      }
+
+      if (!c.room.media?.torrent) continue
+      this.broadcast(c.room, { t: 'transfer.status', ...c.room.transferStatus() })
+    }
+  }
+
   private broadcastState (room: Room): void {
+    room.lastBroadcastPhase = room.phase()
     this.broadcast(room, {
       t: 'room.state',
       code: room.code,
       members: [...room.members.values()],
       media: room.media,
-      trackerUrl: this.trackerUrl
+      trackerUrl: this.trackerUrl,
+      phase: room.phase(),
+      waitForLatecomers: room.waitForLatecomers
     })
   }
 
@@ -214,6 +264,7 @@ export class SignallingServer {
 
   async close (): Promise<void> {
     if (this.sweeper) clearInterval(this.sweeper)
+    if (this.statusTimer) clearInterval(this.statusTimer)
     for (const c of this.conns.keys()) c.terminate()
     this.tracker.close()
     this.wss?.close()

@@ -223,6 +223,23 @@ body {
 .bar { height: 6px; border-radius: 99px; background: var(--s4); overflow: hidden; margin: 8px 0 6px; }
 .bar span { display: block; height: 100%; background: var(--grad); transition: width .3s; }
 
+/* ---------------------------------------------------------------- the gate */
+.gate { border-bottom: 1px solid var(--line-soft); }
+.gate-eta { margin: 0 0 12px; font-size: 12.5px; color: var(--tx2); }
+.gate-eta b { color: var(--warn); }
+.peers { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.peers li { display: grid; grid-template-columns: 1fr auto auto; gap: 3px 8px; align-items: baseline; }
+.pn { font-size: 12.5px; }
+.pv { font-family: var(--mono); font-size: 11.5px; color: var(--tx3); font-variant-numeric: tabular-nums; }
+.pv.ok { color: var(--ok); }
+.pd { font-family: var(--mono); font-size: 10.5px; color: var(--tx3); }
+.peers .bar { grid-column: 1 / -1; margin: 2px 0 0; height: 4px; }
+.quiet.safe { color: var(--ok); }
+.gate-acts { margin-top: 13px; display: flex; flex-direction: column; gap: 9px; align-items: flex-start; }
+.gate-acts .btn { font-size: 11.5px; padding: 6px 11px; }
+.toggle { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--tx2); cursor: pointer; }
+.toggle input { accent-color: var(--a); margin: 0; }
+
 /* ---------------------------------------------------------------- chat */
 .chatwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 14px 0 0; border-bottom: 1px solid var(--line-soft); }
 .chatwrap h4 {

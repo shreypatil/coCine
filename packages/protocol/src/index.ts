@@ -71,6 +71,40 @@ export const Media = z.object({
 })
 export type Media = z.infer<typeof Media>
 
+/** What each client tells the room about itself, once a second. */
+export const PeerReport = z.object({
+  /** Fraction of the film held locally, 0 to 1. */
+  havePct: z.number().min(0).max(1),
+  /** Contiguous seconds of film available from the current playhead. */
+  bufferEndSec: z.number().min(0),
+  downBps: z.number().min(0),
+  upBps: z.number().min(0),
+  /** Swarm peers this client is connected to. */
+  peers: z.number().int().min(0)
+})
+export type PeerReport = z.infer<typeof PeerReport>
+
+export const PeerStatus = z.object({
+  memberId: z.string(),
+  name: z.string(),
+  havePct: z.number(),
+  bufferEndSec: z.number(),
+  downBps: z.number(),
+  upBps: z.number(),
+  peers: z.number(),
+  ready: z.boolean()
+})
+export type PeerStatus = z.infer<typeof PeerStatus>
+
+/**
+ * The room's progress toward everyone being able to watch.
+ *
+ * `lobby` no film. `preparing` a film is arriving and not everyone can start.
+ * `ready` everyone holds enough of a head start. `playing` speaks for itself.
+ */
+export const RoomPhase = z.enum(['lobby', 'preparing', 'ready', 'playing'])
+export type RoomPhase = z.infer<typeof RoomPhase>
+
 export const ClientMessage = z.discriminatedUnion('t', [
   /** No code creates a room and returns one; a code joins an existing room. */
   z.object({ t: z.literal('hello'), code: z.string().nullable(), name: z.string().min(1).max(40) }),
@@ -88,7 +122,12 @@ export const ClientMessage = z.discriminatedUnion('t', [
   }),
   z.object({ t: z.literal('chat.send'), text: z.string().min(1).max(MAX_CHAT_LENGTH) }),
   z.object({ t: z.literal('member.setControl'), memberId: z.string(), mayControl: z.boolean() }),
-  z.object({ t: z.literal('member.transferHost'), memberId: z.string() })
+  z.object({ t: z.literal('member.transferHost'), memberId: z.string() }),
+  z.object({ t: z.literal('peer.report'), report: PeerReport }),
+  /** Host only: start even though somebody is not ready. */
+  z.object({ t: z.literal('room.startAnyway') }),
+  /** Host only: whether the room pauses when someone arrives mid-film. */
+  z.object({ t: z.literal('room.setWaitForLatecomers'), wait: z.boolean() })
 ])
 export type ClientMessage = z.infer<typeof ClientMessage>
 
@@ -103,7 +142,23 @@ export const ServerMessage = z.discriminatedUnion('t', [
     members: z.array(Member),
     media: Media.nullable(),
     /** Where to announce, so clients do not have to guess the tracker URL. */
-    trackerUrl: z.string()
+    trackerUrl: z.string(),
+    phase: RoomPhase,
+    waitForLatecomers: z.boolean()
+  }),
+  z.object({
+    t: z.literal('transfer.status'),
+    perPeer: z.array(PeerStatus),
+    /** Seconds until everyone can start, from observed rates. Null while unknown. */
+    etaSec: z.number().nullable(),
+    /** The floor no scheduling can beat. Null until rates are known. */
+    tMinSec: z.number().nullable(),
+    /** Whoever the room is waiting for, by name. */
+    bottleneck: z.string().nullable(),
+    /** Whole copies of the film in the room, counting the sharer. */
+    fullCopies: z.number(),
+    /** Whether the film survives the sharer disconnecting. */
+    safeForSharerToLeave: z.boolean()
   }),
   z.object({ t: z.literal('playback.schedule'), state: PlaybackState, seq: z.number() }),
   z.object({ t: z.literal('chat.message'), message: ChatMessage }),
