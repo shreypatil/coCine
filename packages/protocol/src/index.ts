@@ -148,8 +148,25 @@ export const ClientMessage = z.discriminatedUnion('t', [
 ])
 export type ClientMessage = z.infer<typeof ClientMessage>
 
+export const IceServer = z.object({
+  urls: z.array(z.string()),
+  username: z.string().optional(),
+  credential: z.string().optional()
+})
+export type IceServer = z.infer<typeof IceServer>
+
 export const ServerMessage = z.discriminatedUnion('t', [
-  z.object({ t: z.literal('welcome'), memberId: z.string(), code: z.string(), serverMs: z.number() }),
+  z.object({
+    t: z.literal('welcome'),
+    memberId: z.string(),
+    code: z.string(),
+    serverMs: z.number(),
+    /**
+     * Two sets, because the planes are treated oppositely. Voice may relay;
+     * bulk never does, and is simply never given a relay to use.
+     */
+    ice: z.object({ voice: z.array(IceServer), bulk: z.array(IceServer) })
+  }),
   /** c1 echoed back, plus the server's receive and send stamps. Four timestamps
    *  are what let a client separate clock offset from network delay. */
   z.object({ t: z.literal('time.pong'), c1: z.number(), s1: z.number(), s2: z.number() }),

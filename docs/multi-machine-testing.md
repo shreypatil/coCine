@@ -32,6 +32,38 @@ other types it in and presses **Join**.
 
 Then one person opens a film. The other should start fetching it automatically.
 
+### Adding a relay (optional on a LAN, needed across the internet)
+
+Voice between two people whose routers both refuse direct connections needs a
+relay. Roughly one home pairing in ten needs one; on mobile networks it is most
+of them. Run coturn next to the signalling server:
+
+```bash
+# edit infra/turnserver.conf and replace static-auth-secret with a long random
+# string -- a relay with a guessable secret is found and abused within days
+docker run -d --name cocine-turn --network host \
+  -v "$PWD/infra/turnserver.conf:/etc/coturn/turnserver.conf:ro" \
+  coturn/coturn:latest -c /etc/coturn/turnserver.conf
+
+# then start the signalling server pointing at it, with the same secret
+COCINE_TURN_URLS="turn:<relay-ip>:3478,turns:<relay-host>:443" \
+COCINE_TURN_SECRET="<the same long random string>" \
+  npm run server
+```
+
+The server prints which relay it is handing out at startup, so a typo shows up
+immediately rather than as voice that mysteriously fails for one pair of people.
+
+Open UDP/TCP 3478, TCP 443, and UDP 49160-49200 to the relay. The 443 listener
+matters more than it looks: it is what gets through networks that block UDP and
+non-standard ports, which is most corporate ones.
+
+**The relay carries voice only.** Bulk film transfer is never given these
+credentials, by design — a relayed film crosses the server twice, in and out,
+for every viewer who needs it. Someone on a hopeless connection will hear
+everyone and still fail to receive the film. That is the intended trade, not a
+bug: relaying films would put the whole cost of the app on whoever runs it.
+
 Keep the terminal running `npm run desktop` visible on both machines. It carries
 the main-process log, which is where the useful detail is.
 
@@ -92,21 +124,41 @@ Nothing has ever run for more than about two minutes.
 
 Ordered by how likely I think they are.
 
-### Peers that cannot connect — very likely, and expected before phase 6
+### Peers that cannot connect — likely, and the main thing to measure
 
 Ten to twenty-five per cent of peer pairs cannot reach each other directly. Both
 behind symmetric NAT or carrier-grade NAT — common on mobile networks — and
-there is no path without a relay. **coturn is phase 6 and does not exist yet.**
+there is no direct path at all.
+
+Voice now has a way out of this, if a relay is configured (see Setup). **Bulk
+transfer deliberately does not**, so a peer that cannot be reached directly by
+anyone cannot receive the film, and this is the case to actually measure: how
+often it happens on real connections.
 
 *Looks like:* transfer progress stays at 0 %, **peers** stays at 0, the room
 never leaves *preparing*. Chat and playback control still work perfectly,
-because those go through the server rather than peer to peer.
+because those go through the server rather than peer to peer. If a relay is
+running, voice works while the transfer does not — which is itself the
+diagnosis.
 
 *How to be sure:* if chat works and progress does not move, it is connectivity,
 not the transfer code. Both machines on the same LAN should always work; if the
 LAN works and across-the-internet does not, that is exactly this.
 
-*Not a bug to report.* It is the gap phase 6 fills.
+*Worth reporting* with the network each machine was on — home broadband, office,
+phone hotspot. The point of this round of testing is to find out how common it
+is, which cannot be worked out from here.
+
+### Voice failing while everything else works — possible
+
+If voice is the only thing broken, it is the relay: either not configured, the
+secret not matching between `turnserver.conf` and `COCINE_TURN_SECRET`, or its
+ports closed.
+
+*Check:* the signalling server's startup line says which relay it hands out, or
+`none` if it has none. `docker logs cocine-turn` shows `ALLOCATE processed,
+success` when credentials are accepted and `401: Unauthorized` when the secret
+does not match.
 
 ### The server not actually reachable — likely, and boring
 

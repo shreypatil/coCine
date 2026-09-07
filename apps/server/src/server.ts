@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { ClientMessage, encode, normaliseCode, type ServerMessage } from '@cocine/protocol'
 import type { Room } from './room.js'
 import { InMemoryRoomStore, type RoomStore } from './store.js'
+import { iceServersFor, type TurnConfig } from './turn.js'
 
 interface Conn { ws: WebSocket; memberId: string; room: Room }
 
@@ -15,6 +16,9 @@ export interface SignallingServerOptions {
   startLeadMs?: number
   log?: (msg: string) => void
   store?: RoomStore
+  /** Relay for voice only. Absent means public STUN alone, which is enough on
+   *  most networks and leaves the rest unable to hold a call. */
+  turn?: TurnConfig
   /** How long an empty room is kept before it is collected. */
   roomTtlMs?: number
   /** Test affordance: delay every outbound message, with jitter, to stand in
@@ -68,7 +72,16 @@ export class SignallingServer {
       this.wss!.handleUpgrade(req, socket, head, ws => this.wss!.emit('connection', ws, req))
     })
 
-    await new Promise<void>(res => this.http!.listen(this.opts.port ?? 0, res))
+    // Binding can fail -- the port is taken, or privileged. Without this the
+    // failure surfaces as an unhandled 'error' event and a bare stack trace,
+    // and the caller's promise never settles either way.
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error): void => { this.http!.off('listening', onListening); reject(err) }
+      const onListening = (): void => { this.http!.off('error', onError); resolve() }
+      this.http!.once('error', onError)
+      this.http!.once('listening', onListening)
+      this.http!.listen(this.opts.port ?? 0)
+    })
     // Transfer status is derived from reports that arrive once a second, so
     // broadcasting on the same cadence is as fresh as it can meaningfully be.
     this.statusTimer = setInterval(() => this.broadcastTransferStatus(), 1000)
@@ -126,7 +139,16 @@ export class SignallingServer {
       const memberId = randomUUID()
       room.add(memberId, msg.name)
       this.conns.set(ws, { ws, memberId, room })
-      this.send(ws, { t: 'welcome', memberId, code: room.code, serverMs: this.now() })
+      this.send(ws, {
+        t: 'welcome',
+        memberId,
+        code: room.code,
+        serverMs: this.now(),
+        ice: {
+          voice: iceServersFor('voice', msg.name, this.opts.turn),
+          bulk: iceServersFor('bulk', msg.name, this.opts.turn)
+        }
+      })
       this.send(ws, { t: 'chat.history', messages: room.chat })
       this.send(ws, { t: 'playback.schedule', state: room.state, seq: room.seq })
       this.emitChat(room, 'joined', msg.name, 'joined the room', memberId)

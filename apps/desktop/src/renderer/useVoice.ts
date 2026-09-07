@@ -32,7 +32,7 @@ const MIC: MediaStreamConstraints = {
   video: false
 }
 
-export function useVoice (selfId: string, memberIds: string[]): VoiceApi {
+export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIceServer[] = []): VoiceApi {
   const [inVoice, setInVoice] = useState(false)
   const [muted, setMutedState] = useState(false)
   const [deafened, setDeafenedState] = useState(false)
@@ -40,6 +40,11 @@ export function useVoice (selfId: string, memberIds: string[]): VoiceApi {
   const [talking, setTalking] = useState(false)
   const [peers, setPeers] = useState<Record<string, 'connecting' | 'connected' | 'failed'>>({})
   const [error, setError] = useState<string | null>(null)
+
+  // Held in a ref so a re-issued credential reaches the next connection without
+  // rebuilding the mesh and dropping the call in progress.
+  const ice = useRef<RTCIceServer[]>(iceServers)
+  ice.current = iceServers
 
   const mesh = useRef<VoiceMesh | null>(null)
   const stream = useRef<MediaStream | null>(null)
@@ -87,7 +92,10 @@ export function useVoice (selfId: string, memberIds: string[]): VoiceApi {
       mesh.current = new VoiceMesh({
         selfId,
         send: (to, payload) => void window.cocine.sendSignal(to, payload),
-        createConnection: () => new RTCPeerConnection({ iceServers: [] }) as unknown as ConnectionLike,
+        // These come from the server at welcome and may include a TURN relay.
+          // With an empty list a call only ever works between peers on the same
+          // network, which is the one case this app is not for.
+          createConnection: () => new RTCPeerConnection({ iceServers: ice.current }) as unknown as ConnectionLike,
         onRemoteStream: (id, remote) => {
           let el = audio.current.get(id)
           if (!el) {

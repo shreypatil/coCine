@@ -2,9 +2,15 @@
 
 Watch a film with friends, in sync, over a peer-to-peer connection.
 
-Phases 0 and 1 of the [build plan](#status) are implemented: mpv is driven over
-JSON IPC, and a room of clients holds synchronised playback inside a 100 ms
-budget across seeks, pauses and a delayed network.
+Phases 0 through 6 of the [build plan](#status) are implemented: mpv is driven
+over JSON IPC inside an Electron shell, a room of clients holds synchronised
+playback inside a 100 ms budget, the film is distributed peer to peer over
+BitTorrent while it plays, voice runs as a WebRTC mesh, and voice falls back to a
+TURN relay where a direct connection is impossible.
+
+What remains is in [docs/TODO.md](docs/TODO.md). The largest item is not code:
+everything so far has been verified on one machine, and the peer-to-peer parts
+need two real machines on two real networks to be meaningfully tested.
 
 ## Layout
 
@@ -13,10 +19,15 @@ packages/
   protocol/   wire contract — Zod schemas shared by client and server
   sync/       clock offset + drift correction — pure, no I/O, heavily tested
   player/     mpv over JSON IPC, behind the PlayerController interface
-  client/     composes socket + clock + sync engine + player
+  client/     composes socket + clock + sync engine + player + transfer
+  voice/      WebRTC mesh state machine — pure, driven with fake connections
 apps/
-  server/     signalling: rooms, authoritative playback state
+  server/     signalling: rooms, playback authority, tracker, readiness, TURN
+  desktop/    Electron main + preload + React renderer
 harness/      transfer benchmark (WebTorrent vs custom policy) — see its README
+infra/        coturn configuration for the voice relay
+docs/         testing checklist and the outstanding-work list
+types/        ambient declarations for webtorrent and bittorrent-tracker
 ```
 
 `sync/` is the component the product hinges on and it touches nothing — no
@@ -30,15 +41,21 @@ npm install
 npm test          # unit tests + a short synchronised-playback integration test
 npm run phase0    # mpv control: event rate, command latency, seek accuracy
 npm run phase1    # five clients, drift measured against a 100 ms budget
+npm run phase4    # a swarm fetching a film: readiness gate, sync during transfer
 ```
 
-Both phase scripts are pass/fail against the plan's exit criteria and exit
+The phase scripts are pass/fail against the plan's exit criteria and exit
 non-zero on failure, so they work as CI gates rather than as demos.
 
 Requires `mpv` and `ffmpeg` on PATH. Test films are generated on first run and
 cached in `.fixtures/`.
 
-### Transfer (phase 4, in progress)
+Two other documents are worth knowing about: **[docs/TODO.md](docs/TODO.md)** for
+what is deferred or blocked, and
+**[docs/multi-machine-testing.md](docs/multi-machine-testing.md)** for testing
+across real machines, which is where the remaining uncertainty lives.
+
+### Transfer (phase 4)
 
 The signalling server now hosts a **private BitTorrent tracker on its own port**
 at `/announce`, alongside the WebSocket signalling on `/`. It answers only for
@@ -180,7 +197,12 @@ sync during transfer         p99 10.0 ms · worst 11.0 ms
 **Two real machines on two real networks.** Everything above runs on loopback in
 one process. That leaves untested: NAT traversal between actual hosts, real
 round-trip variance, and the ten to twenty-five per cent of peer pairs that
-cannot connect without a relay. coturn is phase 6, and this is the gap it fills.
+cannot connect directly.
+
+Phase 6 added a relay, but only for voice — bulk transfer is never relayed, by
+design. So this gap is narrowed rather than closed, and measuring how often it
+bites on real connections is the open question. See
+[docs/TODO.md](docs/TODO.md).
 
 To try it yourself, run the server somewhere both machines can reach, then on
 each machine set that address in the join panel. One person opens a film, the
@@ -215,6 +237,41 @@ In a mesh the server carries no audio, so it cannot stop anyone talking — it c
 only ask, and a modified client could decline. The request is recorded in the
 room log so it is visible that it happened. Real enforcement needs the SFU,
 where the server is in the media path and can simply stop forwarding.
+
+## The relay, and why films never use it
+
+Roughly one pairing in ten on home connections cannot establish a direct peer
+connection; behind carrier-grade NAT, as on most mobile networks, it is most of
+them. A TURN relay is the only way through, and coCine runs one — for voice.
+
+**Bulk film transfer is never given relay credentials.** The enforcement is
+omission rather than a check: `iceServersFor('bulk', ...)` returns STUN only, so
+there is nothing to fall back to. The reason is arithmetic. A relayed film
+crosses the relay twice, in and out, for every viewer who needs it — an 8 GB
+round trip per peer, paid by whoever runs the server. Voice is kilobits and worth
+relaying; films are not.
+
+The visible consequence is worth stating plainly, because it will look like a
+bug: someone on a hopeless connection will hear everyone perfectly and still fail
+to receive the film.
+
+Credentials are minted per connection as an HMAC over an expiry timestamp, so no
+account list exists and nothing needs provisioning. A relay left open, or one with
+a fixed password, is found and abused by strangers within days, and every relayed
+byte is billed to its operator.
+
+```bash
+COCINE_TURN_URLS="turn:relay.example:3478,turns:relay.example:443" \
+COCINE_TURN_SECRET="<same as static-auth-secret in turnserver.conf>" \
+  npm run server
+```
+
+`infra/turnserver.conf` is the coturn side, with private ranges denied so the
+relay cannot be used to reach whatever else the host can route to. Setup and
+firewall ports are in [docs/multi-machine-testing.md](docs/multi-machine-testing.md).
+
+Without a relay configured the server says so at startup rather than failing
+quietly, and voice simply requires a direct connection.
 
 ## Keyboard
 
@@ -285,12 +342,16 @@ which `time-pos` reads stale and the engine corrects against a phantom drift.
 | 00 | Player control spike | **done** — 25 Hz position events, sub-5 ms command RTT, 30 ms seek accuracy |
 | 01 | Sync engine | **done** — 5 clients, 20 events, 40 ms ± 15 ms link, 37 s server clock skew: **p99 drift 35 ms**, 0 of 2598 samples over budget, every event re-converged in 0.3 s |
 | 02 | Single-window shell | **done** — Electron with mpv reparented via `--wid`; see caveat below |
-| 03 | Rooms, roles, chat | **done** — invite codes, chat, host controls; 105 tests |
+| 03 | Rooms, roles, chat | **done** — invite codes, chat, host controls, local persistent identity |
 | 04 | Transfer | **done on this machine** — one part needs a second machine, see below |
 | 05 | Voice | **done** — mesh, push-to-talk, mute/deafen, advisory host mute |
-| 06 | NAT hardening | |
-| 07 | Relay mode | |
-| 08 | Packaging | |
+| 06 | NAT hardening | **done on this machine** — TURN credentials, plane split, forced-relay test; success rate needs real networks |
+| 07 | Relay mode | not started — an origin to fetch from when peer-to-peer cannot deliver |
+| 08 | Packaging | not started — installers, signing, updates |
+| 09 | Interface overhaul | not started — **blocked on your list of issues from manual testing** |
+
+Deferred work, and the two things that need a second machine, are listed in
+[docs/TODO.md](docs/TODO.md).
 
 ## Testing
 
@@ -298,8 +359,8 @@ Three layers. The first two run on every commit and put nothing on screen; the
 third needs a display and is opt-in.
 
 ```bash
-npm test          # layers 1 and 2 — 44 tests, ~17s
-npm run test:app  # layer 3 — real Electron, ~12s
+npm test          # layers 1 and 2 — 253 tests, ~37s
+npm run test:app  # layer 3 — real Electron, 13 tests, ~34s
 ```
 
 | Layer | What it covers | How |

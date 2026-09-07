@@ -1,7 +1,7 @@
 import WebSocket from 'ws'
 import { EventEmitter } from 'node:events'
 import { ClockSync, tick, extrapolatePosition, DEFAULT_SYNC_CONFIG, type SyncConfig, type SyncAction } from '@cocine/sync'
-import { decodeServer, encode, type ChatMessage, type ClientMessage, type Media, type Member, type PeerReport, type PeerStatus, type PlaybackState, type RoomPhase, type TorrentInfo } from '@cocine/protocol'
+import { decodeServer, encode, type ChatMessage, type ClientMessage, type Media, type Member, type PeerReport, type PeerStatus, type PlaybackState, type RoomPhase, type TorrentInfo, type IceServer } from '@cocine/protocol'
 import type { PlayerController } from '@cocine/player'
 
 export interface RoomClientOptions {
@@ -50,6 +50,17 @@ export class RoomClient extends EventEmitter {
   } | null = null
   /** Where the room's swarm announces. Learned from the server, never guessed. */
   trackerUrl = ''
+
+  /**
+   * ICE servers, as issued by the server at welcome. The two planes are handed
+   * out separately and deliberately differ: voice may be given a TURN relay,
+   * bulk transfer never is. Relaying a film means the server carries it twice,
+   * once in and once out, per viewer who needs the relay -- gigabytes of someone
+   * else's bandwidth bill to avoid a NAT. Voice is kilobits and worth relaying.
+   * Until welcome arrives these are empty, which is only ever the case before
+   * any peer connection is attempted.
+   */
+  ice: { voice: IceServer[]; bulk: IceServer[] } = { voice: [], bulk: [] }
   /** Bounded locally as well as on the server, so a long session cannot grow
    *  the renderer's state without limit. */
   messages: ChatMessage[] = []
@@ -102,6 +113,7 @@ export class RoomClient extends EventEmitter {
       case 'welcome':
         this.memberId = msg.memberId
         this.code = msg.code
+        this.ice = msg.ice
         this.emit('welcome', msg.code)
         break
       case 'room.state':

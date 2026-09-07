@@ -44,6 +44,7 @@ interface State {
   positionSec: number; expectedSec: number | null; driftMs: number | null
   paused: boolean; rate: number
   clockOffsetMs: number | null; rttMs: number | null; lastAction: string | null
+  voiceIce: RTCIceServer[]
   fullscreen: boolean
   transfers: TransferProgress[]
   receiving: { name: string; infoHash: string } | null
@@ -144,7 +145,7 @@ export function App (): ReactElement {
   const chatRef = useRef<HTMLDivElement>(null)
 
   const memberIds = (s?.members ?? []).filter(m => m.inVoice || m.id === s?.memberId).map(m => m.id)
-  const voice = useVoice(s?.memberId ?? '', memberIds)
+  const voice = useVoice(s?.memberId ?? '', memberIds, s?.voiceIce ?? [])
 
   useEffect(() => window.cocine.onState(setS), [])
 

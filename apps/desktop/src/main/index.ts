@@ -43,7 +43,9 @@ let receiving: { name: string; infoHash: string } | null = null
 /** Created once the room tells us where to announce; the URL is never guessed. */
 function ensureTransfer (trackerUrl: string): TransferManager {
   if (transfer) return transfer
-  transfer = new TransferManager({ store: films, trackerUrl })
+  // Bulk gets the server's bulk list, which is STUN only by design -- a film
+  // pushed through a relay costs whoever runs it the whole file twice per peer.
+  transfer = new TransferManager({ store: films, trackerUrl, iceServers: room?.ice.bulk ?? [] })
   transfer.on('error', err => console.error('[transfer]', err))
   return transfer
 }
@@ -69,6 +71,7 @@ const state = (): Record<string, unknown> => {
     driftMs: expected === null ? null : (actual - expected) * 1000,
     paused: player?.isPaused() ?? true,
     rate: room?.currentRate() ?? 1,
+    voiceIce: room?.ice.voice ?? [],
     clockOffsetMs: room?.clock.offsetMs() ?? null,
     rttMs: room?.clock.rttMs() ?? null,
     lastAction: room?.lastSyncAction()?.type ?? null,

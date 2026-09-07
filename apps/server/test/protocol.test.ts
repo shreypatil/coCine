@@ -436,3 +436,16 @@ describe('voice', () => {
     expect(after.members.map(m => m.name).sort()).toEqual(['anjali', 'priya'])
   })
 })
+
+describe('starting the server', () => {
+  it('reports a taken port instead of throwing an unhandled event', async () => {
+    const first = new SignallingServer({})
+    const port = await first.listen()
+    const second = new SignallingServer({ port })
+    try {
+      await expect(second.listen()).rejects.toMatchObject({ code: 'EADDRINUSE' })
+    } finally {
+      await first.close()
+    }
+  })
+})
