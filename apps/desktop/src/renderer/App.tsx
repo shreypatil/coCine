@@ -543,10 +543,15 @@ export function App (): ReactElement {
                     <li key={m.id} data-testid="member" data-name={m.name}>
                       <span className={`av t${tint(m.name)}`}>{initials(m.name)}</span>
                       <span className="nm">{m.name}</span>
-                      {m.inVoice && (
-                        <span className={`vdot ${m.muted ? 'off' : ''}`} data-testid="vdot"
-                          title={m.muted ? `${m.name} is muted` : `${m.name} is in voice`} />
-                      )}
+                      {m.inVoice && (() => {
+                        const link = m.id === s.memberId ? 'connected' : voice.peers[m.id]
+                        const cls = m.muted ? 'off' : link === 'failed' ? 'bad' : link === 'connecting' ? 'wait' : ''
+                        const why = link === 'failed'
+                          ? `No voice connection to ${m.name} — usually a firewall`
+                          : link === 'connecting' ? `Connecting to ${m.name}…`
+                          : m.muted ? `${m.name} is muted` : `${m.name} is in voice`
+                        return <span className={`vdot ${cls}`} data-testid="vdot" data-link={link ?? 'none'} title={why} />
+                      })()}
                       {m.deafened && <span className="tag muted" title="Cannot hear the room">deafened</span>}
                       {m.isHost && <span className="tag">host</span>}
                       {!m.mayControl && !m.isHost && <span className="tag muted" title="Cannot control playback">no control</span>}
@@ -684,6 +689,27 @@ export function App (): ReactElement {
                         onChange={e => voice.setPushToTalk(e.target.checked)} />
                       Push to talk (hold V)
                     </label>
+                    {(() => {
+                      // Joining a call and being connected to the people in it
+                      // are different things, and only one of them was visible.
+                      // "Both joined and heard nothing" has two very different
+                      // causes -- nobody held the talk key, or the peer
+                      // connections never came up -- and this separates them.
+                      const states = Object.values(voice.peers)
+                      const connected = states.filter(v => v === 'connected').length
+                      const failed = states.filter(v => v === 'failed').length
+                      const connecting = states.filter(v => v === 'connecting').length
+                      if (states.length === 0) return <p className="quiet" data-testid="voicepeers">Nobody else is in voice yet.</p>
+                      return (
+                        <p className={failed ? 'quiet vwarn' : 'quiet'} data-testid="voicepeers">
+                          {connected > 0 && `Connected to ${connected} of ${states.length}`}
+                          {connected > 0 && (connecting || failed) ? ' · ' : ''}
+                          {connecting > 0 && `${connecting} connecting`}
+                          {connecting > 0 && failed ? ' · ' : ''}
+                          {failed > 0 && `${failed} could not connect — a firewall is the usual reason`}
+                        </p>
+                      )
+                    })()}
                     <p className={voice.talking ? 'quiet talking' : 'quiet'} data-testid="talkstate">
                       {voice.muted ? 'Microphone off'
                         : voice.pushToTalk ? (voice.talking ? 'Talking' : 'Hold V to talk')
@@ -758,13 +784,37 @@ export function App (): ReactElement {
                 </>
               ) : (
                 <>
-                  <p className="fname">{s?.mediaName ?? 'Nothing open'}</p>
+                  {/* What the room is showing, even before this machine has a
+                      byte of it. Saying "Nothing open" while everybody else
+                      watches something is the least helpful true statement the
+                      interface could make. */}
+                  {!s?.mediaName && s?.roomFilm && (
+                    <div className="roomfilm" data-testid="roomfilm">
+                      <p className="fname">{s.roomFilm.name}</p>
+                      <p className="quiet">
+                        {s.receiveError
+                          ? 'could not be fetched'
+                          : s.roomFilm.hasSource ? 'the room is sharing this — fetching it' : 'waiting for the sharer to start sharing'}
+                      </p>
+                      {s.receiveError && (
+                        <p className="quiet small vwarn" data-testid="receiveerror">{s.receiveError}</p>
+                      )}
+                    </div>
+                  )}
+                  {!(!s?.mediaName && s?.roomFilm) && <p className="fname">{s?.mediaName ?? 'Nothing open'}</p>}
                   <p className="quiet">
                     {s?.mediaName
                       ? (duration > 0 ? `${clock(duration)} long` : 'measuring…')
                       : s?.connected ? 'Drop a file anywhere, or use Open film' : 'Create or join a room first'}
                   </p>
 
+                  {s?.webrtcError && s.mode !== 'origin' && (
+                    <p className="quiet small vwarn" data-testid="webrtcerror">
+                      Peer-to-peer is unavailable in this build, so the film cannot travel
+                      between machines. Everything else works; a room on a server with relay
+                      storage can still share through it.
+                    </p>
+                  )}
                   {s?.connected && s.mediaName && (
                     <div className="filmacts" data-testid="filmacts">
                       {s.sharing === 'off' && (

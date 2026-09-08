@@ -50,10 +50,21 @@ npm run nat-check # what this machine's network will do to a peer connection
 Building installers:
 
 ```bash
-node scripts/fetch-mpv.mjs win   # only needed for Windows and macOS
+node scripts/fetch-mpv.mjs win   # mpv itself; only Windows and macOS need it
 COCINE_DEFAULT_SERVER=wss://your-server npm run dist:linux
 COCINE_DEFAULT_SERVER=wss://your-server npm run dist:win
 ```
+
+`npm run audit-native` lists every shipped dependency with native code and how
+each finds its binary — the check that answers "what else could break on another
+platform?". Each `dist:*` goes through `scripts/dist.mjs`, which stages the target platform's
+native WebRTC binaries (`fetch-native.mjs`), swaps in the one that cannot be
+injected, builds, restores the tree, and then reads the finished artifact
+(`check-package.mjs`) — refusing to ship a package whose addons are missing,
+built for the wrong platform, or stuck inside `app.asar`. All of it exists
+because a Windows installer built on Linux shipped twice without a working
+WebRTC binary and died on launch both times; the details are in
+[docs/TODO.md](docs/TODO.md).
 
 The phase scripts are pass/fail against the plan's exit criteria and exit
 non-zero on failure, so they work as CI gates rather than as demos.

@@ -69,7 +69,39 @@ on a Mac `npm run dist:mac` should work, but two parts have never run:
   including whether its dylib dependencies resolve inside the app bundle
 - the `.dmg` itself
 
-### The Windows installer has been built but never run
+### The Windows installer — run once, and it failed
+
+It has now been installed on a real Windows machine, and it did not start:
+
+```
+Error: Cannot load native addon for node-datachannel on win32 (x64).
+Attempted to require "@node-datachannel/win32-x64-msvc".
+```
+
+That was one of two. The tree holds **two copies of node-datachannel** which load
+their binary differently — the root one (0.33) resolves a sibling
+`@node-datachannel/<platform>` package, and the copy nested under
+`webrtc-polyfill` (0.32.3) requires a local `build/Release` by relative path with
+no fallback. npm installs neither for a foreign platform, and `overrides` will
+not collapse them. Fixing the first exposed the second:
+
+```
+Error: Cannot find module '../../../build/Release/node_datachannel.node'
+```
+
+Now: the addon is loaded lazily so its absence is survivable at all,
+`scripts/fetch-native.mjs` stages both binaries for the target,
+`scripts/dist.mjs` injects one and swaps the other in for the build (restoring
+the host's afterwards), and `scripts/check-package.mjs` reads the finished
+artifact — inside `app.asar` as well as beside it — and refuses to ship unless
+every copy can find a loadable binary of the right format.
+
+**Still unproven on Windows beyond those two failures.** The next install there is
+the real check: whether WebRTC now initialises, whether the bundled `mpv.exe`
+starts, and whether `--wid` reparenting works on Windows at all, which is a
+different windowing path from X11.
+
+### The old note, still true of the rest of Windows
 
 `coCine-0.1.0-x64.exe` builds cleanly under wine and carries mpv, but no Windows
 machine has executed it. Untested there: whether the bundled `mpv.exe` starts,

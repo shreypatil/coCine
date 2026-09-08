@@ -22,7 +22,9 @@
     "nat-check": "tsx apps/server/scripts/nat-check.ts",
     "dist:linux": "npm run dist:linux --workspace @cocine/desktop",
     "dist:win": "npm run dist:win --workspace @cocine/desktop",
-    "fetch-mpv": "node scripts/fetch-mpv.mjs"
+    "fetch-mpv": "node scripts/fetch-mpv.mjs",
+    "fetch-native": "node scripts/fetch-native.mjs",
+    "audit-native": "node scripts/audit-native.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

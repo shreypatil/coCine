@@ -166,6 +166,10 @@ export class RoomClient extends EventEmitter {
         this.originAvailable = msg.originAvailable
         if (sourceId(msg.media?.source) !== sourceId(this.media?.source)) {
           this.media = msg.media
+          // The server stops sending transfer status once there is no film, so
+          // without this the last one stays on screen for ever -- percentages
+          // and rates for something nobody is watching any more.
+          if (!msg.media?.source) this.transfer = null
           this.emit('media', msg.media)
         } else {
           this.media = msg.media

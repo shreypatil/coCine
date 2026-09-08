@@ -591,3 +591,44 @@ describe('what the room can say about the transfer', () => {
     expect((await b.next('error')).message).toMatch(/host, or whoever put the film on/)
   }, 20_000)
 })
+
+describe('where the room tells each client to announce', () => {
+  /**
+   * The tracker address used to be one value for everybody, hard-coded to
+   * 127.0.0.1. That is correct only while every peer is on the same machine as
+   * the server: on a second machine it means *that* machine, so its announce
+   * went nowhere and the film never moved, while chat, playback and sync all
+   * worked perfectly and hid it.
+   */
+  const connectAs = async (host: string): Promise<Peer> => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { host } })
+    open.push(ws)
+    const p = new (Peer as unknown as new (ws: WebSocket) => Peer & { seen: ServerMessage[] })(ws)
+    ws.on('message', raw => p.seen.push(decodeServer(String(raw))))
+    await new Promise<void>((res, rej) => { ws.once('open', res); ws.once('error', rej) })
+    return p
+  }
+
+  it('gives each client the address it actually reached the server on', async () => {
+    const a = await Peer.connect()
+    a.send({ t: 'hello', code: null, name: 'anjali' })
+    const w = await a.next('welcome')
+    const mine = await a.next('room.state')
+    expect(mine.trackerUrl).toContain('127.0.0.1')
+
+    // A second machine reaches the same server by its LAN name, and must be
+    // told to announce there rather than to its own loopback.
+    const b = await connectAs('192.168.29.73:9999')
+    b.send({ t: 'hello', code: w.code, name: 'dev' })
+    const theirs = await b.nextWhere('room.state', m => m.members.length === 2)
+    expect(theirs.trackerUrl).toBe('ws://192.168.29.73:9999/announce')
+  }, 20_000)
+
+  it('adds the port when the client reached a bare host name', async () => {
+    const a = await connectAs('cocine.example')
+    a.send({ t: 'hello', code: null, name: 'anjali' })
+    await a.next('welcome')
+    const state = await a.next('room.state')
+    expect(state.trackerUrl).toBe(`ws://cocine.example:${port}/announce`)
+  }, 20_000)
+})

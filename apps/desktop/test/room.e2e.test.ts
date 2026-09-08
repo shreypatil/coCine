@@ -65,6 +65,19 @@ afterAll(async () => {
 }, 40_000)
 
 describe('a room with two people', () => {
+  it('gives the other machine something it can actually fetch', async () => {
+    // The bug this exists for: the transport was created before the room client
+    // had been assigned, found nothing, and never retried -- so Start sharing
+    // announced the film's name and duration with a null source. The second
+    // machine showed a duration at the bottom of the window, said "Nothing
+    // open", and waited for ever. Everything else -- chat, sync, playback --
+    // worked perfectly and hid it.
+    await expect.poll(() => guest.media?.source?.kind, { timeout: 20_000 }).toBe('p2p')
+    const source = guest.media!.source as { kind: 'p2p'; infoHash: string; magnet: string }
+    expect(source.infoHash).toMatch(/^[0-9a-f]{40}$/)
+    expect(source.magnet).toContain(source.infoHash)
+  }, 30_000)
+
   it('created a room and the guest joined it by code', () => {
     expect(code).toMatch(/^[A-Z0-9]{8}$/)
     expect(guest.members.map(m => m.name).sort()).toEqual(['anjali', 'dev'])
@@ -97,6 +110,35 @@ describe('a room with two people', () => {
     guest.requestPlay()
     expect(await refused).toMatch(/playback control/)
   })
+
+  it('starts a second film from its own beginning, not the first one\'s position', async () => {
+    // The bug this exists for: mpv reports time-pos as null once nothing is
+    // loaded, that was ignored as "not a number", and the old position stayed
+    // cached with pause still false. The playhead therefore kept advancing with
+    // no film open, and the next film had to fight a position that never
+    // existed — which on two machines looks exactly like sync collapsing.
+    const second = ensureTestVideo(60, join(process.cwd(), '.fixtures'))
+    await page.click('[data-testid="playpause"]')          // get it moving first
+    await expect.poll(async () => await page.textContent('[data-testid="position"]'), { timeout: 15_000 })
+      .not.toBe('00:00:00')
+
+    await page.click('[data-testid="unloadfilm"]')
+    await expect.poll(async () => await page.textContent('[data-testid="position"]'), { timeout: 15_000 })
+      .toBe('00:00:00')
+    // And it stays there: nothing is playing, so nothing may advance.
+    await new Promise(r => setTimeout(r, 1200))
+    expect(await page.textContent('[data-testid="position"]')).toBe('00:00:00')
+
+    await app.evaluate(async ({ dialog }, chosen) => {
+      ;(dialog as unknown as { showOpenDialog: unknown }).showOpenDialog = async () => ({ canceled: false, filePaths: [chosen] })
+    }, second)
+    await page.click('[data-testid="open"]')
+    await expect.poll(async () => await page.textContent('.fname'), { timeout: 20_000 }).toContain('60s')
+    expect(await page.textContent('[data-testid="position"]')).toBe('00:00:00')
+    // The new film's own length, not the previous one's.
+    await expect.poll(async () => await page.textContent('[data-testid="duration"]'), { timeout: 15_000 })
+      .toBe('00:01:00')
+  }, 90_000)
 
   it('hands hosting over mid-session, and control moves with it', async () => {
     await page.hover('[data-testid="member"][data-name="dev"]')

@@ -8,7 +8,22 @@ import { InMemoryRoomStore, type RoomStore } from './store.js'
 import { iceServersFor, type TurnConfig } from './turn.js'
 import { presign, objectKeyFor, DEFAULT_EXPIRY_SECONDS, type OriginConfig } from './origin.js'
 
-interface Conn { ws: WebSocket; memberId: string; room: Room }
+interface Conn {
+  ws: WebSocket
+  memberId: string
+  room: Room
+  /**
+   * Where the tracker is *from this client's point of view*.
+   *
+   * It used to be one address for everybody, hard-coded to 127.0.0.1, which is
+   * correct only while every peer is on the same machine as the server. On a
+   * second machine that address means the second machine, so its announce went
+   * nowhere: chat, playback and sync all worked and the film never moved. Each
+   * client is told the host it reached the server on, because that is an address
+   * it demonstrably can reach.
+   */
+  trackerUrl: string
+}
 
 export interface SignallingServerOptions {
   port?: number
@@ -49,8 +64,9 @@ export class SignallingServer {
   private readonly delayMs: number
   private readonly jitterMs: number
   private readonly skewMs: number
-  /** Filled in once listening, so clients are told where to announce. */
+  /** The fallback when a client sends no Host header. Filled in once listening. */
   private trackerUrl = ''
+  private port = 0
 
   constructor (private readonly opts: SignallingServerOptions = {}) {
     this.startLeadMs = opts.startLeadMs ?? 300
@@ -68,7 +84,9 @@ export class SignallingServer {
     // firewall for no benefit.
     this.http = createServer((_req, res) => { res.writeHead(404); res.end() })
     this.wss = new WebSocketServer({ noServer: true })
-    this.wss.on('connection', ws => this.onConnection(ws))
+    // The request carries the address this client used to reach us, which is
+    // the only address we know it can reach.
+    this.wss.on('connection', (ws, req) => this.onConnection(ws, req as { headers?: Record<string, string | string[] | undefined> }))
 
     this.http.on('upgrade', (req, socket, head) => {
       const path = (req.url ?? '/').split('?')[0]
@@ -94,11 +112,35 @@ export class SignallingServer {
     this.sweeper.unref?.()
     const addr = this.http.address()
     const port = typeof addr === 'object' && addr ? addr.port : 0
+    this.port = port
     this.trackerUrl = `ws://127.0.0.1:${port}${ANNOUNCE_PATH}`
     return port
   }
 
-  private onConnection (ws: WebSocket): void {
+  /**
+   * Where this client should announce, derived from how it reached us.
+   *
+   * `COCINE_PUBLIC_HOST` overrides it for a deployed server behind a proxy or a
+   * different public name; otherwise the Host header is exactly right, because
+   * the tracker shares this server's port.
+   */
+  private trackerUrlFor (req?: { headers?: Record<string, string | string[] | undefined> }): string {
+    const override = process.env.COCINE_PUBLIC_HOST
+    if (override) {
+      return override.includes('://')
+        ? `${override.replace(/\/$/, '')}${ANNOUNCE_PATH}`
+        : `ws://${override}${ANNOUNCE_PATH}`
+    }
+    const host = req?.headers?.host
+    const value = Array.isArray(host) ? host[0] : host
+    if (!value) return this.trackerUrl
+    // A host without a port means the default one for the scheme, and this
+    // server is not on it.
+    const withPort = value.includes(':') ? value : `${value}:${this.port}`
+    return `ws://${withPort}${ANNOUNCE_PATH}`
+  }
+
+  private onConnection (ws: WebSocket, req?: { headers?: Record<string, string | string[] | undefined> }): void {
     ws.on('message', raw => {
       let msg: ClientMessage
       try { msg = ClientMessage.parse(JSON.parse(String(raw))) } catch (e) {
@@ -106,7 +148,7 @@ export class SignallingServer {
       }
       // Stamped on receipt, before any work, so the clock estimate measures the
       // network rather than this handler.
-      try { this.handle(ws, msg, this.now()) } catch (e) {
+      try { this.handle(ws, msg, this.now(), this.trackerUrlFor(req)) } catch (e) {
         this.send(ws, { t: 'error', message: e instanceof Error ? e.message : String(e) })
       }
     })
@@ -125,7 +167,7 @@ export class SignallingServer {
     this.log(`${who} left ${c.room.code} (${c.room.members.size} present)`)
   }
 
-  private handle (ws: WebSocket, msg: ClientMessage, s1: number): void {
+  private handle (ws: WebSocket, msg: ClientMessage, s1: number, trackerUrl: string): void {
     if (msg.t === 'time.ping') {
       return this.send(ws, { t: 'time.pong', c1: msg.c1, s1, s2: this.now() })
     }
@@ -158,7 +200,7 @@ export class SignallingServer {
       }
       const memberId = randomUUID()
       room.add(memberId, msg.name)
-      this.conns.set(ws, { ws, memberId, room })
+      this.conns.set(ws, { ws, memberId, room, trackerUrl })
       this.send(ws, {
         t: 'welcome',
         memberId,
@@ -370,18 +412,27 @@ export class SignallingServer {
 
   private broadcastState (room: Room): void {
     room.lastBroadcastPhase = room.phase()
-    this.broadcast(room, {
+    // Sent one at a time rather than broadcast, because the tracker address is
+    // the one thing in here that differs per client.
+    for (const c of this.conns.values()) {
+      if (c.room !== room) continue
+      this.send(c.ws, this.roomState(room, c.trackerUrl))
+    }
+  }
+
+  private roomState (room: Room, trackerUrl: string): ServerMessage {
+    return {
       t: 'room.state',
       code: room.code,
       members: [...room.members.values()],
       media: room.media,
-      trackerUrl: this.trackerUrl,
+      trackerUrl,
       phase: room.phase(),
       waitForLatecomers: room.waitForLatecomers,
       openControl: room.openControl,
       mode: room.mode,
       originAvailable: !!this.opts.origin
-    })
+    }
   }
 
   private broadcast (room: Room, msg: ServerMessage): void {

@@ -101,11 +101,22 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
           if (!el) {
             el = new Audio()
             el.autoplay = true
+            // Attached to the document on purpose. A detached <audio> with a
+            // MediaStream in srcObject is not reliably played by Chromium --
+            // it can sit there silently with no error at all, which is
+            // indistinguishable from a call that never connected. Hidden, so it
+            // changes nothing on screen.
+            el.style.display = 'none'
+            document.body.appendChild(el)
             audio.current.set(id, el)
           }
           el.srcObject = remote as MediaStream
           el.muted = deafened
-          void el.play().catch(() => { /* blocked until interaction; harmless */ })
+          // And if it still will not play, say so rather than being quietly
+          // silent: "we both joined and heard nothing" needs a reason.
+          void el.play().catch((e: unknown) => {
+            setError(`Could not play audio from the room: ${e instanceof Error ? e.message : String(e)}`)
+          })
         },
         onPeerStateChange: (id, state) => setPeers(p => ({
           ...p,
@@ -125,7 +136,7 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
     mesh.current = null
     for (const t of stream.current?.getTracks() ?? []) t.stop()
     stream.current = null
-    for (const el of audio.current.values()) { el.pause(); el.srcObject = null }
+    for (const el of audio.current.values()) { el.pause(); el.srcObject = null; el.remove() }
     audio.current.clear()
     setPeers({})
     setInVoice(false)
@@ -141,8 +152,12 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
       const el = e.target as HTMLElement | null
       return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
     }
-    const down = (e: KeyboardEvent): void => { if (e.key === 'v' && !typing(e)) setTalking(true) }
-    const up = (e: KeyboardEvent): void => { if (e.key === 'v') setTalking(false) }
+    // `code`, not `key`: with Caps Lock on, or Shift held, `key` is "V" and the
+    // microphone silently never opened while the interface went on saying
+    // "Hold V to talk". `code` is the physical key, whatever modifiers are on.
+    const isTalkKey = (e: KeyboardEvent): boolean => e.code === 'KeyV' || e.key.toLowerCase() === 'v'
+    const down = (e: KeyboardEvent): void => { if (isTalkKey(e) && !typing(e)) setTalking(true) }
+    const up = (e: KeyboardEvent): void => { if (isTalkKey(e)) setTalking(false) }
     const blur = (): void => setTalking(false)
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)

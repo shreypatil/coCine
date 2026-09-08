@@ -961,3 +961,8 @@ body.overlay-body { background: transparent; }
 .strip span { background: var(--s4); }
 .strip span.part { background: linear-gradient(180deg, #7B5CFF, #5B44C8); }
 .strip span.full { background: linear-gradient(180deg, #B053C8, #7B5CFF); }
+
+/* Whether a voice connection is actually up. Joining a call and being connected
+   to the people in it are different things, and only one was visible. */
+.vdot.wait { background: var(--warn); box-shadow: 0 0 7px var(--warn); }
+.vdot.bad { background: var(--bad); box-shadow: 0 0 7px var(--bad); }

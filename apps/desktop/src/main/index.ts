@@ -8,7 +8,7 @@ import { RoomClient } from '@cocine/client'
 import { VideoWindow } from './video-window.js'
 import { createHandlers, type RoomLike } from './handlers.js'
 import { IdentityStore, identityPathFor } from './identity.js'
-import { FilmStore, TransferManager, OriginTransfer, type MediaTransport } from '@cocine/client'
+import { FilmStore, TransferManager, OriginTransfer, installWebRtc, webRtcFailure, type MediaTransport } from '@cocine/client'
 import { sourceId, type Media } from '@cocine/protocol'
 import { MpvNotFoundError } from '@cocine/player'
 import { startUpdates } from './updates.js'
@@ -56,6 +56,56 @@ let sharing: 'off' | 'sharing' | 'paused' = 'off'
 let announcedByUs = false
 let startupError: { message: string; howToInstall: string } | null = null
 let receiving: { name: string; infoHash: string } | null = null
+/** Why the film could not be fetched, when it could not. */
+let receiveError: string | null = null
+/**
+ * The id of the film this machine took *from the room*, as opposed to one
+ * opened locally. It is what makes "the room took its film off" actionable: a
+ * copy that came from the room goes with it, and a local file somebody opened
+ * themselves stays where it is.
+ */
+let roomFilmId: string | null = null
+/**
+ * Bumped whenever the film changes or goes away.
+ *
+ * Fetching a film is a long await, and the room can move on during it. Without
+ * a generation to check afterwards, a receive that started before the film was
+ * taken off would finish afterwards and quietly reinstate it -- a machine
+ * playing something the room had dropped, in sync with nothing.
+ */
+let filmGeneration = 0
+
+/**
+ * Put the film away, whatever state it was in.
+ *
+ * Every path that ends with no film open goes through here -- the person
+ * pressing Unload, the room taking its film off, and swapping one film for
+ * another -- because the bug this replaces was each of them clearing a
+ * different subset. A guest left holding a film the room had moved on from kept
+ * playing it against anchors meant for a different one, which looks exactly
+ * like synchronisation failing.
+ *
+ * Every step is independently guarded: a transfer that will not stop must not
+ * prevent the player being cleared, and neither must stop the state being
+ * truthful afterwards.
+ */
+async function closeFilm (opts: { stopTransfer?: boolean } = {}): Promise<void> {
+  // Anything in flight for the old film is now stale, whatever it does next.
+  filmGeneration++
+  const id = sharedId ?? receiving?.infoHash ?? null
+  if (opts.stopTransfer !== false && id) {
+    try { await transfer?.stop(id) } catch (err) { console.error('[film] could not stop the transfer:', err) }
+  }
+  try { await video?.player?.unload?.() } catch (err) { console.error('[film] could not unload the player:', err) }
+  mediaPath = null
+  video?.setFilmOpen(false)
+  sharedId = null
+  sharing = 'off'
+  announcedByUs = false
+  roomFilmId = null
+  receiving = null
+  receiveError = null
+}
 /** False until the window has been mapped, so nothing animates unseen. */
 let windowShown = false
 
@@ -66,8 +116,14 @@ let windowShown = false
  * different places and nothing is shared between them. Created only once the
  * room has told us the tracker URL -- it is never guessed.
  */
-function ensureTransfer (): MediaTransport | null {
-  const mode = room?.mode ?? 'p2p'
+function ensureTransfer (client: RoomClient | null = room): MediaTransport | null {
+  // Takes the client explicitly because the first call happens *inside*
+  // createRoom, before the module-level `room` has been assigned. Reading the
+  // module variable there found null, gave up, and left the transport null for
+  // the rest of the session -- so pressing Start sharing announced a film with
+  // no source, and the other machine was told a name and a duration it could
+  // never fetch a byte of.
+  const mode = client?.mode ?? 'p2p'
   if (transfer && transferMode === mode) return transfer
 
   const previous = transfer
@@ -76,18 +132,17 @@ function ensureTransfer (): MediaTransport | null {
   if (previous) void previous.destroy().catch(() => { /* replaced */ })
 
   if (mode === 'origin') {
-    if (!room) return null
-    const client = room
+    if (!client) return null
     transfer = new OriginTransfer({
       store: films,
       getUploadUrl: (contentId, name, bytes) => client.requestUploadUrl(contentId, name, bytes),
       getDownloadUrl: () => client.requestDownloadUrl()
     })
   } else {
-    if (!room?.trackerUrl) return null
+    if (!client?.trackerUrl) return null
     // Bulk gets the server's bulk list, which is STUN only by design -- a film
     // pushed through a relay costs whoever runs it the whole file twice per peer.
-    transfer = new TransferManager({ store: films, trackerUrl: room.trackerUrl, iceServers: room.ice.bulk })
+    transfer = new TransferManager({ store: films, trackerUrl: client.trackerUrl, iceServers: client.ice.bulk })
   }
   transferMode = mode
   ;(transfer as unknown as { on: (e: string, f: (x: unknown) => void) => void })
@@ -130,6 +185,9 @@ const state = (): Record<string, unknown> => {
     openControl: room?.openControl ?? true,
     transferStatus: room?.transfer ?? null,
     receiving,
+    receiveError,
+    /** What the room is showing, whether or not this machine has it yet. */
+    roomFilm: room?.media ? { name: room.media.name, durationSec: room.media.durationSec, hasSource: !!room.media.source } : null,
     roomTorrent: room?.media?.source?.kind === 'p2p' ? room.media.source : null,
     mode: room?.mode ?? 'p2p',
     sharing,
@@ -142,6 +200,12 @@ const state = (): Record<string, unknown> => {
      * itself there. See browse.ts.
      */
     nativePicker: process.platform !== 'linux' || !!process.env.COCINE_NATIVE_DIALOG,
+    /**
+     * Why peer-to-peer is unavailable, when it is. Almost always one thing: the
+     * native WebRTC addon for this platform was left out of the package. Said
+     * out loud, because the alternative is a transfer that simply never starts.
+     */
+    webrtcError: webRtcFailure(),
     startupError
   }
 }
@@ -242,6 +306,11 @@ function createWindow (): void {
     if (!outcome.checked) console.log(`[update] not checking: ${outcome.reason}`)
   })().catch(err => console.log('[update] skipped:', String(err)))
 
+  // Load the WebRTC addon now rather than on the first transfer: if it is
+  // missing, the room should say so before anybody picks a film and waits.
+  installWebRtc()
+  if (webRtcFailure()) console.error('[webrtc] unavailable:', webRtcFailure())
+
   video = new VideoWindow(mainWin)
   void video.start().catch((err: unknown) => {
     // Without mpv there is no application, so this is reported as a wall rather
@@ -341,16 +410,44 @@ const handlers = createHandlers({
       void (async () => {
         const source = media?.source
         const id = sourceId(source)
-        // The film came off the room. Whatever is open locally stays open, but
-        // this machine is no longer part of a swarm for it.
-        if (!source) { sharing = 'off'; sharedId = null; return }
-          if (!id || id === sharedId) return
+
+        if (!source) {
+          // The room took its film off. A copy that came *from the room* goes
+          // with it -- keeping it meant playing one film against another film's
+          // anchors -- while a file somebody opened here themselves is theirs
+          // and stays put. A fetch still in flight counts as from the room: it
+          // has not finished yet, and it must not finish.
+          if (roomFilmId || receiving) {
+            console.log('[film] the room took its film off; closing it here too')
+            await closeFilm()
+          } else {
+            sharing = 'off'
+            sharedId = null
+          }
+          return
+        }
+        if (!id || id === sharedId) return
+
+        // A different film. The previous one has to go first, or its transfer
+        // keeps running and its bytes keep being served for something nobody
+        // is watching.
+        if ((roomFilmId ?? receiving?.infoHash) && (roomFilmId ?? receiving?.infoHash) !== id) await closeFilm()
+
+        const generation = ++filmGeneration
         try {
           const tm = ensureTransfer()
             if (!tm) throw new Error('no transport for this room yet')
           console.log(`[film] room is sharing ${media?.name}; fetching`)
           receiving = { name: media?.name ?? '', infoHash: id }
+          receiveError = null
           const { path } = await tm.receive(source)
+          // The room may have moved on while that was fetching. Finishing the
+          // job now would put back a film nobody else has any more.
+          if (generation !== filmGeneration) {
+            console.log('[film] fetch finished after the room moved on; dropping it')
+            try { await tm.stop(id) } catch { /* already going */ }
+            return
+          }
           // Open it through the streaming server rather than off disk. The
           // file is written sparsely, so reading it directly would give zeros
           // wherever a piece has not arrived; the stream blocks instead, which
@@ -365,17 +462,24 @@ const handlers = createHandlers({
           sharedId = id
           sharing = 'sharing'
           announcedByUs = false
+          roomFilmId = id
           console.log(`[film] streaming ${media?.name} from ${url}`)
         } catch (err) {
+          // A failure for a film the room has already dropped is not news.
+          if (generation !== filmGeneration) return
           receiving = null
+          // Only a console line before, which nobody can see in an installed
+          // copy: the film simply never arrived and the interface said nothing.
+          receiveError = err instanceof Error ? err.message : String(err)
           console.error('[film] could not receive:', err)
         }
       })()
     })
     await client.connect()
     // The tracker URL arrives with room state, so the transfer manager cannot
-    // exist before this point.
-    ensureTransfer()
+    // exist before this point -- and the client has to be passed in, because
+    // the module-level `room` is not assigned until this function returns.
+    ensureTransfer(client)
     return client as unknown as RoomLike
   },
   getMediaPath: () => mediaPath,
@@ -389,12 +493,16 @@ const handlers = createHandlers({
   isFullScreen: () => mainWin?.isFullScreen() ?? false,
   getIdentity: () => identity.get(),
   saveIdentity: patch => identity.save(patch),
-  getTransfer: () => transfer,
+  // Built on demand as well as eagerly: an early attempt can legitimately fail
+  // (no tracker URL yet), and one that never retried is what made sharing
+  // announce a film nobody could fetch.
+  getTransfer: () => transfer ?? ensureTransfer(),
   getSharing: () => sharing,
   setSharing: state => { sharing = state },
   getSharedInfoHash: () => sharedId,
   getAnnouncedByUs: () => announcedByUs,
   setAnnouncedByUs: v => { announcedByUs = v },
+  closeFilm: async () => { await closeFilm() },
   getFilmStore: () => films,
   setSharedInfoHash: h => { sharedId = h },
   log: m => console.log(m)

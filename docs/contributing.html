@@ -110,7 +110,7 @@ npm run nat-check  # what this machine's network does to a peer connection</code
         <tr><td>Native windows: video surface, chat overlay</td><td><code>main/video-window.ts</code>, <code>main/chat-overlay.ts</code>, <code>main/x11-embed.ts</code></td></tr>
         <tr><td>The film picker</td><td><code>main/browse.ts</code> (filesystem, no Electron) and <code>renderer/FilmPicker.tsx</code></td></tr>
         <tr><td>Transfer, both transports</td><td><code>packages/client/src/transfer.ts</code>, <code>origin-transfer.ts</code>, <code>pieces.ts</code>, <code>storage.ts</code></td></tr>
-        <tr><td>Packaging</td><td><code>apps/desktop/electron-builder.yml</code>, <code>scripts/fetch-mpv.mjs</code></td></tr>
+        <tr><td>Packaging</td><td><code>apps/desktop/electron-builder.yml</code>, <code>scripts/fetch-mpv.mjs</code>, <code>scripts/fetch-native.mjs</code>, <code>scripts/check-package.mjs</code></td></tr>
       </tbody>
     </table>
     <p>
@@ -259,6 +259,96 @@ npm run nat-check  # what this machine's network does to a peer connection</code
       unloading takes it off the room when this machine is the one that put it there. A film
       cannot be opened outside a room at all — watching alone is not what the application is
       for, and offering it made the room look optional.
+    </p>
+
+    <h3>A package built on one platform is not a package for another</h3>
+    <p>
+      This has now broken a Windows installer twice, in two different ways, and both times the
+      application died on launch before a window existed. It is worth understanding properly.
+    </p>
+    <p>
+      The tree contains <strong>two copies of node-datachannel</strong>, and they find their
+      native binary by entirely different means:
+    </p>
+    <table>
+      <thead><tr><th>Copy</th><th>Version</th><th>How it loads its binary</th></tr></thead>
+      <tbody>
+        <tr><td><code>node_modules/node-datachannel</code></td><td>0.33+</td>
+          <td>requires a sibling package, <code>@node-datachannel/&lt;platform&gt;-&lt;arch&gt;</code></td></tr>
+        <tr><td><code>webrtc-polyfill/node_modules/node-datachannel</code></td><td>0.32.3</td>
+          <td>an unconditional <code>require("../../../build/Release/node_datachannel.node")</code> — no platform packages, no fallback</td></tr>
+      </tbody>
+    </table>
+    <p>
+      npm installs only what matches the machine doing the installing, so a Linux build has
+      neither of the Windows binaries. The first failure was the missing sibling package; fixing
+      that exposed the second, the nested copy's missing local build. <code>overrides</code> does
+      not collapse the two — npm ignores it here, silently, however the lockfile is regenerated.
+    </p>
+    <p>So the build does three things, all in <code>scripts/dist.mjs</code>:</p>
+    <ul>
+      <li><strong><code>fetch-native.mjs</code></strong> stages both binaries for the target under
+      <code>.native/</code> — the sibling package as a tarball (npm refuses to install one for
+      another platform), the legacy build through <code>prebuild-install</code>, which is exactly
+      what npm would have run on the target machine. It verifies each is the right binary format;
+      a Windows addon that is secretly ELF is worse than none.</li>
+      <li><strong>The sibling package is injected</strong> by electron-builder's
+      <code>files</code> <code>from</code>/<code>to</code>. The legacy one cannot be: it lives at
+      a path that already exists in the tree, and the tree's own file wins — which is how a
+      Windows package came to carry a Linux binary at exactly the path Windows looks in. That one
+      is <strong>swapped into node_modules for the duration of the build</strong> and restored in
+      a <code>finally</code>, because leaving a Windows binary behind would break this machine's
+      tests silently.</li>
+      <li><strong><code>check-package.mjs</code></strong> then reads the artifact — the archive as
+      well as the directory beside it — and refuses to ship unless every copy of node-datachannel
+      can find a binary by its own mechanism, every binary a loader would choose is built for the
+      target, and nothing native is left packed inside <code>app.asar</code>, which cannot be
+      loaded from.</li>
+    </ul>
+    <div class="warn">
+      <span class="h">Two traps worth knowing before you touch electron-builder.yml</span>
+      <p>
+        <code>node-gyp-build</code> looks in <code>build/Release</code> <em>before</em>
+        <code>prebuilds/&lt;platform&gt;-&lt;arch&gt;</code>, so a locally compiled addon shipped
+        to another platform shadows the correct prebuild sitting right beside it.
+      </p>
+      <p>
+        A platform's <code>files</code> list <strong>replaces</strong> the root one, and a list
+        containing only negations has electron-builder prepend the default <code>**/*</code> —
+        which quietly pulled the entire <code>apps/desktop</code> tree, Windows
+        <code>mpv.exe</code> and all, into the Linux package and added 40 MB to it. Repeat the
+        positive patterns in every platform list.
+      </p>
+    </div>
+    <p>
+      None of this is catchable by testing the source tree: on this machine every binary is
+      present and correct. The bugs existed only inside the artifact, which is why the check
+      reads the artifact.
+    </p>
+    <p>
+      <strong><code>npm run audit-native</code></strong> answers the obvious next question —
+      what else could do this? It walks the shipped dependency closure (the production
+      dependencies of <code>apps/desktop</code>; the build's own tools never travel) and sorts
+      everything native into three kinds:
+    </p>
+    <table>
+      <thead><tr><th>Kind</th><th>Meaning</th><th>In this tree</th></tr></thead>
+      <tbody>
+        <tr><td><code>portable</code></td><td>one package carrying prebuilds for every platform — nothing to do</td>
+          <td>bufferutil, utf-8-validate, utp-native, fs-native-extensions — all four carry <code>win32-x64</code> and both macOS tuples</td></tr>
+        <tr><td><code>siblings</code></td><td>the binary is a separate package per platform, so the target's must be fetched</td>
+          <td>node-datachannel 0.33</td></tr>
+        <tr><td><code>local-build</code></td><td>the binary lives in the package itself, so a foreign target needs one put there</td>
+          <td>node-datachannel 0.32.3, nested under webrtc-polyfill</td></tr>
+      </tbody>
+    </table>
+    <p>
+      It also checks that each portable package really does carry a prebuild for every platform
+      coCine targets — portable is a claim, not a guarantee. <strong><code>dist.mjs</code> runs
+      it before every build and refuses to proceed</strong> if a package appears in the last two
+      kinds without being listed in <code>HANDLED</code>. A new dependency that ships
+      per-platform binaries therefore stops the build, rather than shipping an installer that
+      cannot start.
     </p>
 
     <h3>Identity is local, and rooms are anonymous</h3>

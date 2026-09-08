@@ -66,19 +66,43 @@ export class ExternalMpv implements PlayerController {
 
   private onEvent (e: MpvEvent): void {
     if (e.event === 'property-change') {
-      if (e.id === OBS_TIME && typeof e.data === 'number') {
-        this.pos = e.data
-        this.posAt = Date.now()
-        this.events.emit('position', this.pos, this.posAt)
+      if (e.id === OBS_TIME) {
+        if (typeof e.data === 'number') {
+          this.pos = e.data
+          this.posAt = Date.now()
+          this.events.emit('position', this.pos, this.posAt)
+        } else {
+          // mpv reports time-pos as null the moment nothing is loaded. Ignoring
+          // that left the last film's position cached and, with pause still
+          // false, the sync engine extrapolated it forwards for ever: an empty
+          // player claiming to be twenty seconds into a film that is not there.
+          // The next film loaded then had to fight a playhead that never
+          // existed, which looks exactly like synchronisation breaking.
+          this.forgetPosition()
+        }
       } else if (e.id === OBS_PAUSE && typeof e.data === 'boolean') {
         this.paused = e.data
         this.events.emit('pause', this.paused)
-      } else if (e.id === OBS_DURATION && typeof e.data === 'number') {
-        this.dur = e.data
+      } else if (e.id === OBS_DURATION) {
+        this.dur = typeof e.data === 'number' ? e.data : null
       }
     } else if (e.event === 'eof-reached' || e.event === 'end-file') {
       this.events.emit('eof')
     }
+  }
+
+  /**
+   * Back to knowing nothing, which is the truth when no file is open.
+   *
+   * Paused as well as zeroed: an unpaused reading is what licenses the sync
+   * engine to extrapolate, and there is nothing to extrapolate.
+   */
+  private forgetPosition (): void {
+    this.pos = 0
+    this.posAt = Date.now()
+    this.paused = true
+    this.dur = null
+    this.events.emit('position', this.pos, this.posAt)
   }
 
   async load (path: string): Promise<void> {
@@ -188,6 +212,9 @@ export class ExternalMpv implements PlayerController {
    */
   async unload (): Promise<void> {
     await this.ipc.command('stop')
+    // Not left to the property events: `stop` is asynchronous inside mpv, and
+    // for the moments before its null arrives the cached position is a lie.
+    this.forgetPosition()
   }
 
   /** Kill mpv immediately, without waiting on IPC. For process teardown. */

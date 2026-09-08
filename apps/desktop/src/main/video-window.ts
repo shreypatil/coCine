@@ -133,8 +133,20 @@ export class VideoWindow {
     this.parent.on('resize', follow)
     this.parent.on('maximize', follow)
     this.parent.on('unmaximize', follow)
-    this.parent.on('enter-full-screen', follow)
-    this.parent.on('leave-full-screen', follow)
+    // Fullscreen is the transition that breaks this most: on a platform where
+    // the surface is a separate top-level window owned by the main one, the
+    // window manager restacks during the change and can leave the surface
+    // behind the fullscreen window -- a black screen that stays black. Taking
+    // it down and putting it back is what makes it come forward again.
+    const refresh = (): void => {
+      this.reposition()
+      if (!this.embedded && this.wanted && !this.suspended) {
+        this.setShown(false)
+        this.setShown(true)
+      }
+    }
+    this.parent.on('enter-full-screen', refresh)
+    this.parent.on('leave-full-screen', refresh)
     this.parent.on('minimize', () => this.setShown(false))
     this.parent.on('restore', () => { if (this.slot && this.wanted) this.setShown(true) })
     this.parent.on('closed', () => { void this.close() })
@@ -172,8 +184,9 @@ export class VideoWindow {
     else this.setShown(false)
   }
 
-  private reposition (): void {
-    if (!this.win || !this.slot || this.win.isDestroyed() || this.parent.isDestroyed()) return
+  /** Where the surface belongs, in the coordinates its window uses. */
+  private targetBounds (): Rect | null {
+    if (!this.win || !this.slot || this.win.isDestroyed() || this.parent.isDestroyed()) return null
     const content = this.parent.getContentBounds()
     // Renderer rects are in CSS pixels; window bounds are in display pixels.
     const scale = screen.getDisplayMatching(content).scaleFactor || 1
@@ -182,14 +195,21 @@ export class VideoWindow {
     const chrome = chromeOffset(content, this.slot.viewport, scale)
     const originX = (this.embedded ? 0 : content.x) + chrome.x
     const originY = (this.embedded ? 0 : content.y) + chrome.y
-    const bounds = {
+    return {
       x: Math.round(originX + this.slot.x * scale),
       y: Math.round(originY + this.slot.y * scale),
       width: Math.max(1, Math.round(this.slot.width * scale)),
       height: Math.max(1, Math.round(this.slot.height * scale))
     }
+  }
+
+  private reposition (): void {
+    const bounds = this.targetBounds()
+    if (!this.win || !bounds || this.win.isDestroyed()) return
+    const content = this.parent.getContentBounds()
+    const scale = screen.getDisplayMatching(content).scaleFactor || 1
     this.win.setBounds(bounds)
-    if (process.env.COCINE_DEBUG) {
+    if (process.env.COCINE_DEBUG && this.slot) {
       const got = this.win.getBounds()
       console.log(`[video] slot=${this.slot.width}x${this.slot.height}@${this.slot.x},${this.slot.y}` +
         ` content=${content.width}x${content.height}@${content.x},${content.y} scale=${scale}` +
@@ -207,7 +227,17 @@ export class VideoWindow {
   ensureVisible (): void {
     if (!this.win || this.win.isDestroyed()) return
     if (!this.wanted || this.suspended || !this.slot) return
-    if (!this.win.isVisible()) this.reposition()
+    if (!this.win.isVisible()) { this.reposition(); this.setShown(true); return }
+    // Position as well as visibility. A window manager can move or resize this
+    // window behind our back -- a fullscreen transition is the usual moment --
+    // and a surface sitting somewhere other than over the video area is a black
+    // rectangle that never comes right on its own.
+    const want = this.targetBounds()
+    const got = this.win.getBounds()
+    if (!want) return
+    const adrift = Math.abs(want.x - got.x) > 1 || Math.abs(want.y - got.y) > 1 ||
+      Math.abs(want.width - got.width) > 1 || Math.abs(want.height - got.height) > 1
+    if (adrift) this.reposition()
   }
 
   /**

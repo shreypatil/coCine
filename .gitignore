@@ -15,6 +15,10 @@ apps/desktop/resources/mpv/*/*
 # Built installers.
 release/
 
+# Native addons staged for another platform by scripts/fetch-native.mjs.
+# Downloaded, not authored, and one per target.
+.native/
+
 # Generated test films and scratch fixtures. Regenerated on first run; some are
 # hundreds of megabytes.
 .fixtures/

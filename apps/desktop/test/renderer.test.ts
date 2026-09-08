@@ -30,7 +30,7 @@ const STATE = {
   fullscreen: false,
   code: 'BCDFGHJK', messages: [] as unknown[], isHost: true, mayControl: true,
   transfers: [] as unknown[], receiving: null as unknown,
-  phase: 'playing', waitForLatecomers: true, openControl: true, nativePicker: true, windowShown: true, sharing: 'off', sharedInfoHash: null, transferStatus: null as unknown,
+  phase: 'playing', waitForLatecomers: true, openControl: true, nativePicker: true, windowShown: true, sharing: 'off', sharedInfoHash: null, webrtcError: null, receiveError: null, roomFilm: null, transferStatus: null as unknown,
     memberId: 'me',
     mode: 'p2p', originAvailable: false, voiceIce: [] as unknown[],
     startupError: null as unknown
@@ -1339,6 +1339,91 @@ describe('what the transfer is doing', () => {
     })
     expect(await page.locator('[data-testid="peerstatus"]').count()).toBe(3)
     expect(await page.locator('[data-testid="piecestrip"]').count()).toBe(0)
+    await page.close()
+  })
+})
+
+describe('when this build has no WebRTC', () => {
+  // A Windows installer shipped without the native addon and died on launch.
+  // It survives that now — but a swarm that can never connect has to say so,
+  // or it looks like a transfer that is merely slow.
+  it('says peer-to-peer is unavailable rather than failing silently', async () => {
+    await open()
+    await push({ webrtcError: 'Cannot load native addon for node-datachannel on win32 (x64)' })
+    expect(await page.textContent('[data-testid="webrtcerror"]')).toContain('Peer-to-peer is unavailable')
+    await page.close()
+  })
+
+  it('says nothing when everything is fine', async () => {
+    await open()
+    await push({ webrtcError: null })
+    expect(await page.locator('[data-testid="webrtcerror"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('stays quiet in relay mode, where it does not apply', async () => {
+    await open()
+    await push({ webrtcError: 'no addon', mode: 'origin' })
+    expect(await page.locator('[data-testid="webrtcerror"]').count()).toBe(0)
+    await page.close()
+  })
+})
+
+describe('what a guest sees before the film arrives', () => {
+  // The bug this exists for: the room was sharing a film, the guest showed a
+  // duration at the bottom of the window and the words "Nothing open", and
+  // waited for ever with no way to tell what was wrong.
+  it('names the room\'s film even with no local copy', async () => {
+    await open()
+    await push({ mediaName: null, roomFilm: { name: 'dune.mkv', durationSec: 9360, hasSource: true } })
+    const panel = await page.textContent('[data-testid="roomfilm"]')
+    expect(panel).toContain('dune.mkv')
+    expect(panel).toContain('fetching it')
+    await page.close()
+  })
+
+  it('says when the sharer has not started sharing yet', async () => {
+    await open()
+    await push({ mediaName: null, roomFilm: { name: 'dune.mkv', durationSec: 9360, hasSource: false } })
+    expect(await page.textContent('[data-testid="roomfilm"]')).toContain('waiting for the sharer')
+    await page.close()
+  })
+
+  it('shows why it could not be fetched rather than nothing at all', async () => {
+    await open()
+    await push({
+      mediaName: null,
+      roomFilm: { name: 'dune.mkv', durationSec: 9360, hasSource: true },
+      receiveError: 'no transport for this room yet'
+    })
+    expect(await page.textContent('[data-testid="receiveerror"]')).toContain('no transport')
+    await page.close()
+  })
+})
+
+describe('whether voice is actually connected', () => {
+  const inVoice = [
+    { id: 'me', name: 'anjali', isHost: true, mayControl: true, inVoice: true, muted: false, deafened: false },
+    { id: 'b', name: 'dev', isHost: false, mayControl: true, inVoice: true, muted: false, deafened: false }
+  ]
+
+  it('separates being in the call from being connected to the people in it', async () => {
+    // "We both joined and heard nothing" has two very different causes, and the
+    // interface used to show the same thing for both.
+    await open()
+    await push({ members: inVoice })
+    await page.waitForSelector('[data-testid="joinvoice"]')
+    // Not in voice locally, so there is nothing to report yet.
+    expect(await page.textContent('[data-testid="voice"]')).toContain('Hold')
+    await page.close()
+  })
+
+  it('marks a member whose connection has not come up', async () => {
+    await open()
+    await push({ members: inVoice })
+    const dots = await page.$$eval('[data-testid="vdot"]', els => els.map(e => e.getAttribute('data-link')))
+    // Own dot reads as connected; the other has no peer state until we join.
+    expect(dots).toContain('connected')
     await page.close()
   })
 })

@@ -1,6 +1,6 @@
 export { RoomClient } from "./room-client.js"
 export type { RoomClientOptions } from "./room-client.js"
-export { installWebRtc, isWebRtcInstalled, DEFAULT_ICE_SERVERS } from './webrtc.js'
+export { installWebRtc, isWebRtcInstalled, webRtcFailure, DEFAULT_ICE_SERVERS } from './webrtc.js'
 export { FilmStore, OutOfSpaceError } from './storage.js'
 export type { StoredFilm } from './storage.js'
 export { TransferManager } from './transfer.js'

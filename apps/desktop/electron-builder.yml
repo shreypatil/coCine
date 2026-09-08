@@ -10,6 +10,13 @@ directories:
   output: ../../release
   buildResources: build
 
+# A native addon cannot be loaded from inside an archive, so every one of them
+# has to sit beside it. electron-builder detects most on its own; saying it
+# outright covers the ones injected per platform below, which it has no reason
+# to recognise as native.
+asarUnpack:
+  - '**/*.node'
+
 # A placeholder mark, not a designed identity: two playheads in step. Replace
 # build/icon.svg and regenerate icon.png when there is a real one.
 icon: build/icon.png
@@ -32,6 +39,22 @@ extraResources:
 # lead times better spent once strangers are installing it. Both stanzas below
 # are what turn signing on when that changes.
 mac:
+  files:
+    # Repeated from the root list on purpose. A platform `files` list REPLACES
+    # the root one, and a list of only negations has electron-builder prepend
+    # the default `**/*` -- which quietly pulled the whole apps/desktop tree,
+    # Windows mpv.exe and all, into the Linux package and added 40 MB to it.
+    - out/**/*
+    - package.json
+    # @electron/rebuild compiles for whichever machine is building, and
+    # node-gyp-build looks in build/Release *before* prebuilds/<platform>-<arch>
+    # -- so this machine's .node would shadow the correct prebuild sitting right
+    # beside it. All four publish prebuilds for every platform, so dropping the
+    # local build is exactly right.
+    - '!**/node_modules/{bufferutil,utf-8-validate,utp-native,fs-native-extensions}/build/**'
+    - '!**/node_modules/@node-datachannel/!(darwin-arm64|darwin-x64)/**'
+    - from: ../../.native/darwin-arm64/addon
+      to: node_modules/@node-datachannel/darwin-arm64
   category: public.app-category.entertainment
   target: [{ target: dmg, arch: [arm64, x64] }]
   # identity: null keeps electron-builder from picking up a random keychain
@@ -42,6 +65,31 @@ mac:
 
 win:
   target: [{ target: nsis, arch: [x64] }]
+  # The WebRTC binary for the target, staged by scripts/fetch-native.mjs. The
+  # older copy nested under webrtc-polyfill loads by relative path and cannot be
+  # injected -- the tree's own file wins -- so scripts/dist.mjs swaps that one
+  # in for the duration of the build and puts the host's back afterwards.
+  # There are two, because the tree holds two copies of node-datachannel that
+  # find their binary in different ways: the modern one resolves a sibling
+  # package, and the copy nested under webrtc-polyfill requires a local build
+  # by relative path. npm installs neither for a platform it is not running on,
+  # which is how a Windows installer came to ship with no WebRTC at all.
+  files:
+    # Repeated from the root list on purpose. A platform `files` list REPLACES
+    # the root one, and a list of only negations has electron-builder prepend
+    # the default `**/*` -- which quietly pulled the whole apps/desktop tree,
+    # Windows mpv.exe and all, into the Linux package and added 40 MB to it.
+    - out/**/*
+    - package.json
+    # @electron/rebuild compiles for whichever machine is building, and
+    # node-gyp-build looks in build/Release *before* prebuilds/<platform>-<arch>
+    # -- so this machine's .node would shadow the correct prebuild sitting right
+    # beside it. All four publish prebuilds for every platform, so dropping the
+    # local build is exactly right.
+    - '!**/node_modules/{bufferutil,utf-8-validate,utp-native,fs-native-extensions}/build/**'
+    - '!**/node_modules/@node-datachannel/!(win32-x64-msvc)/**'
+    - from: ../../.native/win32-x64/addon
+      to: node_modules/@node-datachannel/win32-x64-msvc
 
 nsis:
   oneClick: false
@@ -52,6 +100,16 @@ nsis:
   createStartMenuShortcut: true
 
 linux:
+  # Everything compiled on this machine is correct for this target, so nothing
+  # is filtered but the other platforms' WebRTC binaries.
+  files:
+    # Repeated from the root list on purpose. A platform `files` list REPLACES
+    # the root one, and a list of only negations has electron-builder prepend
+    # the default `**/*` -- which quietly pulled the whole apps/desktop tree,
+    # Windows mpv.exe and all, into the Linux package and added 40 MB to it.
+    - out/**/*
+    - package.json
+    - '!**/node_modules/@node-datachannel/!(linux-x64-gnu|linux-x64-musl)/**'
   category: AudioVideo
   # Derived from the package name this would be "@cocinedesktop", which is not a
   # legal filename. It is also what users type to launch it.

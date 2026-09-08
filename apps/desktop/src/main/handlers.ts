@@ -124,6 +124,12 @@ export interface HandlerDeps {
   /** Whether the room's film is the one this machine put on. */
   getAnnouncedByUs?: () => boolean
   setAnnouncedByUs?: (v: boolean) => void
+  /**
+   * Put the film away and forget everything about it: transfer stopped, player
+   * emptied, every flag cleared. One implementation, so no caller can clear a
+   * different subset from the next.
+   */
+  closeFilm?: () => Promise<void>
   getOverlay?: () => OverlayLike | null
   getFilmStore: () => FilmStoreLike | null
   setSharedInfoHash?: (infoHash: string | null) => void
@@ -301,12 +307,15 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       const path = deps.getMediaPath()
       if (!path) throw new Error('No film is open')
       const transfer = deps.getTransfer()
-      let source: MediaSource | null = null
-      if (transfer) {
-        source = await transfer.share(path)
-        deps.setSharedInfoHash?.(sourceId(source))
-        log(`[film] sharing as ${sourceId(source)}`)
+      // Announcing a film with no source tells the room its name and its length
+      // and gives it nothing to fetch: the other machines show a duration and
+      // sit there for ever. Better to refuse than to claim to be sharing.
+      if (!transfer) {
+        throw new Error('Cannot share yet — no connection to the room\'s transfer network. Try again in a moment.')
       }
+      const source = await transfer.share(path)
+      deps.setSharedInfoHash?.(sourceId(source))
+      log(`[film] sharing as ${sourceId(source)}`)
       room.announceMedia(basename(path), deps.getVideo()?.player?.duration() ?? 0, source)
       deps.setSharing?.('sharing')
       deps.setAnnouncedByUs?.(true)
@@ -332,22 +341,33 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
      * Put the film away. Takes it off the room too when this machine is the one
      * sharing it, so nobody is left fetching from somebody who has moved on.
      */
+    /**
+     * Put the film away.
+     *
+     * The room is told first, so the other machines start clearing while this
+     * one does; then everything local goes at once through the single path that
+     * knows what "no film here" means. Each step is independently guarded --
+     * a transfer that will not stop must not leave a player holding a film, and
+     * neither may leave the interface claiming one is open.
+     */
     'film:unload': async () => {
-      const id = deps.getSharedInfoHash?.()
-      const sharing = deps.getSharing?.() ?? 'off'
-      if (id && sharing !== 'off') {
-        try { await deps.getTransfer()?.stop(id) } catch { /* going away regardless */ }
-      }
       // Only whoever put the film on takes it off the room. Somebody who was
-      // merely receiving it leaves the room's film where it is.
+      // merely receiving it leaves the room's film where it is for everyone else.
       if (deps.getAnnouncedByUs?.()) {
-        try { deps.getRoom()?.clearMedia() } catch { /* the room may have gone */ }
+        try { deps.getRoom()?.clearMedia() } catch (err) { log(`[film] could not clear the room's film: ${String(err)}`) }
       }
-      deps.setSharedInfoHash?.(null)
-      deps.setSharing?.('off')
-      deps.setAnnouncedByUs?.(false)
-      try { await deps.getVideo()?.player?.unload?.() } catch { /* nothing playing */ }
-      deps.setMediaPath(null)
+      if (deps.closeFilm) {
+        await deps.closeFilm()
+      } else {
+        // Older wiring, and the tests that use it: do the same work in place.
+        const id = deps.getSharedInfoHash?.()
+        if (id) { try { await deps.getTransfer()?.stop(id) } catch { /* going away regardless */ } }
+        try { await deps.getVideo()?.player?.unload?.() } catch { /* nothing playing */ }
+        deps.setSharedInfoHash?.(null)
+        deps.setSharing?.('off')
+        deps.setAnnouncedByUs?.(false)
+        deps.setMediaPath(null)
+      }
       log('[film] unloaded')
       return { ok: true }
     },

@@ -209,12 +209,16 @@ describe('sharing a film with the room, as a separate act', () => {
     expect(r.announceMedia).not.toHaveBeenCalled()
   })
 
-  it('announces without a torrent when there is nothing to share through', async () => {
+  it('refuses to announce a film the room cannot fetch', async () => {
+    // It used to announce with a null source when there was no transport. The
+    // room then showed everyone the film's name and its length with nothing to
+    // download: a duration at the bottom of the window, "Nothing open" in the
+    // panel, and a wait with no end. Saying no is more use than saying nothing.
     const r = room()
     const { h } = build({ getVideo: () => video(), getRoom: () => r, getTransfer: () => null })
     await call(h, 'file:openPath', '/films/dune.mkv')
-    await call(h, 'film:share')
-    expect(r.announceMedia).toHaveBeenCalledWith('dune.mkv', 120, null)
+    await expect(call(h, 'film:share')).rejects.toThrow(/Cannot share yet/)
+    expect(r.announceMedia).not.toHaveBeenCalled()
   })
 
   it('refuses to share outside a room, in words rather than a crash', async () => {
@@ -662,5 +666,71 @@ describe('showing the video surface', () => {
     // black rectangle over nothing.
     const calls = (v.setFilmOpen as ReturnType<typeof vi.fn>).mock.calls
     expect(calls.at(-1)).toEqual([false])
+  })
+})
+
+describe('unloading a film, from every state it can be in', () => {
+  /** The single path everything local goes through; index.ts owns the real one. */
+  const withCloseFilm = (over: Partial<HandlerDeps> = {}): {
+    h: Record<string, (...a: never[]) => unknown>; closed: ReturnType<typeof vi.fn>; r: RoomLike
+  } => {
+    const closed = vi.fn(async () => {})
+    const r = room()
+    const { h } = build({ getRoom: () => r, closeFilm: closed, ...over })
+    return { h, closed, r }
+  }
+
+  it('takes the film off the room when this machine put it there', async () => {
+    const { h, closed, r } = withCloseFilm({ getAnnouncedByUs: () => true })
+    await call(h, 'film:unload')
+    expect(r.clearMedia).toHaveBeenCalledOnce()
+    expect(closed).toHaveBeenCalledOnce()
+  })
+
+  it('leaves the room\'s film alone when this machine was only receiving it', async () => {
+    // Closing your own copy does not get to end everybody else's film.
+    const { h, closed, r } = withCloseFilm({ getAnnouncedByUs: () => false })
+    await call(h, 'film:unload')
+    expect(r.clearMedia).not.toHaveBeenCalled()
+    expect(closed).toHaveBeenCalledOnce()
+  })
+
+  it('still clears everything locally when the room refuses', async () => {
+    // A server that says no, or a connection that has gone, must not leave a
+    // film half-open on this machine.
+    const r = room()
+    r.clearMedia = vi.fn(() => { throw new Error('not your film') })
+    const closed = vi.fn(async () => {})
+    const { h } = build({ getRoom: () => r, closeFilm: closed, getAnnouncedByUs: () => true })
+    await expect(call(h, 'film:unload')).resolves.toEqual({ ok: true })
+    expect(closed).toHaveBeenCalledOnce()
+  })
+
+  it('is safe with no room at all', async () => {
+    const closed = vi.fn(async () => {})
+    const { h } = build({ getRoom: () => null, closeFilm: closed })
+    await expect(call(h, 'film:unload')).resolves.toEqual({ ok: true })
+    expect(closed).toHaveBeenCalledOnce()
+  })
+
+  it('is safe to do twice', async () => {
+    const { h, closed } = withCloseFilm()
+    await call(h, 'film:unload')
+    await call(h, 'film:unload')
+    expect(closed).toHaveBeenCalledTimes(2)
+  })
+
+  it('falls back to clearing in place when nothing supplies the shared path', async () => {
+    // The older wiring, still exercised by tests that build deps by hand.
+    const tx = transfer()
+    const p = player()
+    const { h, deps } = build({
+      getVideo: () => video(p), getRoom: () => room(), getTransfer: () => tx,
+      getSharedInfoHash: () => TORRENT.infoHash
+    })
+    await call(h, 'film:unload')
+    expect(tx.stop).toHaveBeenCalledWith(TORRENT.infoHash)
+    expect(p.unload).toHaveBeenCalledOnce()
+    expect(deps.getMediaPath()).toBeNull()
   })
 })

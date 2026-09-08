@@ -64,12 +64,18 @@ export interface State {
   fullscreen: boolean
   transfers: TransferProgress[]
   receiving: { name: string; infoHash: string } | null
+  /** Why the film could not be fetched, when it could not. */
+  receiveError: string | null
+  /** The room's film, whether or not this machine has a copy yet. */
+  roomFilm: { name: string; durationSec: number; hasSource: boolean } | null
   phase: 'lobby' | 'preparing' | 'ready' | 'playing'
   waitForLatecomers: boolean
   /** Whether someone arriving may drive playback without being handed it. */
   openControl: boolean
   /** Whether the system file dialog can be trusted here; see main/browse.ts. */
   nativePicker: boolean
+  /** Why peer-to-peer is unavailable in this build, if it is. */
+  webrtcError: string | null
   /** Whether the window is on screen. Nothing animates before it is. */
   windowShown: boolean
   /** Whether this machine is feeding the room, and whether that is paused. */
