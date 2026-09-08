@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Contributing to coCine</title>
+<meta name="description" content="The code map, the decisions and why they were made, the protocol reference, the testing rules, and an honest list of what does not work yet." />
+<link rel="stylesheet" href="assets/style.css" />
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+</head>
+<body>
+
+<header class="site">
+  <a class="brand" href="index.html">
+    <svg viewBox="0 0 40 40" aria-hidden="true">
+      <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#7B5CFF"/><stop offset=".55" stop-color="#B053C8"/><stop offset="1" stop-color="#D14FA8"/>
+      </linearGradient></defs>
+      <rect x="2.5" y="7" width="35" height="26" rx="8" fill="none" stroke="url(#g1)" stroke-width="2"/>
+      <circle cx="15.5" cy="20" r="4.1" fill="url(#g1)"/>
+      <circle cx="25" cy="20" r="4.1" fill="none" stroke="url(#g1)" stroke-width="1.7"/>
+    </svg>
+    <span>coCine</span>
+  </a>
+  <nav>
+    <a href="using.html">Using coCine</a>
+    <a href="how-it-works.html">How it works</a>
+    <a href="contributing.html" aria-current="page">Contributing</a>
+    <a href="https://github.com/shreypatil/coCine">GitHub</a>
+  </nav>
+</header>
+
+<div class="wrap doc">
+  <aside class="toc">
+    <h2>On this page</h2>
+    <a href="#setup">Getting set up</a>
+    <a href="#layout">The repository</a>
+    <a href="#map">Where things live</a>
+    <a href="#decisions">Decisions, and why</a>
+    <a href="#protocol">Protocol reference</a>
+    <a href="#testing">Testing, and its rules</a>
+    <a href="#known">Known issues and limits</a>
+    <a href="#workflow">Working on it</a>
+    <a href="#docs">These docs</a>
+  </aside>
+
+  <main>
+    <h1>Contributing</h1>
+    <p class="lede">
+      Everything a new contributor needs that is not obvious from reading the code: why the
+      pieces are arranged the way they are, which constraints are load-bearing, and what is
+      already known to be broken so you do not rediscover it.
+    </p>
+
+    <h2 id="setup">Getting set up</h2>
+    <pre><code>git clone https://github.com/shreypatil/coCine
+cd coCine
+npm install
+
+npm test          # unit + integration, no window, no display
+npm run typecheck # three tsconfigs: node, main, renderer
+npm run desktop   # build the renderer and launch the app
+npm run server    # the signalling server, on :8787</code></pre>
+    <p>
+      Needs <code>mpv</code> and <code>ffmpeg</code> on <code>PATH</code>. Test films are
+      generated on first run and cached in <code>.fixtures/</code>. npm workspaces, not pnpm —
+      for an environment reason rather than a principled one; switching is a
+      <code>pnpm import</code> away.
+    </p>
+    <p>Measurement scripts, all pass/fail against the plan's exit criteria:</p>
+    <pre><code>npm run phase0     # mpv control: event rate, command latency, seek accuracy
+npm run phase1     # five clients, drift against the 100 ms budget
+npm run phase4     # a swarm fetching a film while it plays
+npm run phase7     # relay mode, and what a session costs
+npm run nat-check  # what this machine's network does to a peer connection</code></pre>
+
+    <h2 id="layout">The repository</h2>
+    <table>
+      <thead><tr><th>Package</th><th>Owns</th><th>Depends on I/O?</th></tr></thead>
+      <tbody>
+        <tr><td><code>packages/protocol</code></td><td>The wire contract as Zod schemas, shared by both sides. Room codes, playback anchors, media sources.</td><td>no</td></tr>
+        <tr><td><code>packages/sync</code></td><td>Clock offset estimation and the drift-correction engine. <b>The component the product hinges on.</b></td><td><b>no — deliberately</b></td></tr>
+        <tr><td><code>packages/player</code></td><td>mpv over JSON IPC behind a <code>PlayerController</code> interface; locating and bundling mpv; test-film generation.</td><td>yes</td></tr>
+        <tr><td><code>packages/client</code></td><td>Composes socket + clock + sync engine + player + transfer. Both transports and the film store.</td><td>yes</td></tr>
+        <tr><td><code>packages/voice</code></td><td>The WebRTC mesh state machine, driven with fake connections in tests.</td><td>no</td></tr>
+        <tr><td><code>apps/server</code></td><td>Signalling, rooms, playback authority, the BitTorrent tracker, readiness maths, TURN credentials, signed URLs.</td><td>yes</td></tr>
+        <tr><td><code>apps/desktop</code></td><td>Electron main, preload bridge, React renderer, native window choreography.</td><td>yes</td></tr>
+        <tr><td><code>harness/</code></td><td>Transfer benchmark: custom scheduling policy against stock WebTorrent.</td><td>yes</td></tr>
+        <tr><td><code>infra/</code></td><td>coturn configuration for the voice relay.</td><td>—</td></tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <span class="h">The one architectural rule</span>
+      <p>
+        <code>packages/sync</code> touches nothing — no socket, no player, no clock of its own.
+        That is what allows it to be driven against simulated time and adversarial networks
+        with nothing running, and it is why the drift numbers mean anything. Keep it that way.
+      </p>
+    </div>
+
+    <h2 id="map">Where things live</h2>
+    <table>
+      <thead><tr><th>If you are changing…</th><th>Start at</th></tr></thead>
+      <tbody>
+        <tr><td>What crosses the wire</td><td><code>packages/protocol/src/index.ts</code> — one file, both sides</td></tr>
+        <tr><td>Drift behaviour, correction policy</td><td><code>packages/sync/src/engine.ts</code>, <code>clock.ts</code></td></tr>
+        <tr><td>Room rules, permissions, phases</td><td><code>apps/server/src/room.ts</code>, <code>server.ts</code>, <code>readiness.ts</code></td></tr>
+        <tr><td>Anything the interface does</td><td><code>apps/desktop/src/renderer/App.tsx</code> and its siblings</td></tr>
+        <tr><td>Anything IPC</td><td><code>apps/desktop/src/main/handlers.ts</code> (pure functions over injected deps) plus <code>preload/index.ts</code></td></tr>
+        <tr><td>Native windows: video surface, chat overlay</td><td><code>main/video-window.ts</code>, <code>main/chat-overlay.ts</code>, <code>main/x11-embed.ts</code></td></tr>
+        <tr><td>The film picker</td><td><code>main/browse.ts</code> (filesystem, no Electron) and <code>renderer/FilmPicker.tsx</code></td></tr>
+        <tr><td>Transfer, both transports</td><td><code>packages/client/src/transfer.ts</code>, <code>origin-transfer.ts</code>, <code>pieces.ts</code>, <code>storage.ts</code></td></tr>
+        <tr><td>Packaging</td><td><code>apps/desktop/electron-builder.yml</code>, <code>scripts/fetch-mpv.mjs</code></td></tr>
+      </tbody>
+    </table>
+    <p>
+      <code>handlers.ts</code> deserves a note: every IPC handler is a plain function over
+      injected dependencies, extracted specifically so it can be tested without launching
+      Electron. Three bugs that shipped from there — a dialog with no parent window, a load
+      failure swallowed by <code>void</code>, an unawaited promise that killed the process —
+      were all reachable with nothing running.
+    </p>
+
+    <h2 id="decisions">Decisions, and why</h2>
+
+    <h3>Playback state lives on the server</h3>
+    <p>
+      Not in the host's client. It buys three things: the room survives the host's connection
+      blipping, permissions are enforceable rather than advisory, and a latecomer is correct by
+      construction. The cost is a server that must exist; that was accepted.
+    </p>
+
+    <h3>Anchors, never commands</h3>
+    <p>
+      <code>playback.schedule</code> carries a position and a server timestamp, never “play
+      now”. Every transition is placed 300 ms in the future so the slowest client can finish
+      its seek before the instant arrives. If you ever find yourself adding a message that
+      tells clients to do something immediately, that is the bug.
+    </p>
+
+    <h3>Correct by rate, seek only when you must</h3>
+    <p>
+      A seek is always visible; ±5% of speed is not. Under a second of drift is closed by rate
+      over a two-second horizon. The deadband exists because correcting below 12 ms is noise
+      chasing noise.
+    </p>
+
+    <h3>One <code>MediaTransport</code> interface, two transports</h3>
+    <p>
+      The swarm and the origin fetch differ entirely in mechanism and not at all in shape.
+      Everything above them — readiness, progress, resume, watch-before-complete — is written
+      once. When adding a third, implement the interface rather than special-casing above it.
+    </p>
+
+    <h3>Two ICE planes, and bulk never gets a relay</h3>
+    <p>
+      <code>iceServersFor('bulk', …)</code> returns STUN only. The enforcement is omission, not
+      a check, so there is nothing to accidentally re-enable. A relayed film costs its operator
+      an 8 GB round trip per viewer.
+    </p>
+
+    <h3>mpv as a separate process, reparented with <code>--wid</code></h3>
+    <p>
+      Reimplementing a media player is not a project; driving a real one is. The consequence is
+      the constraint everything visual works around: <strong>nothing Chromium draws can appear
+      over the video</strong>, because the native surface sits above the page. Controls sit
+      beside and beneath it.
+    </p>
+    <p>
+      Two follow-on decisions come from that. The surface is <strong>reparented into the main
+      window</strong> — an Electron non-focusable window is override-redirect, belongs to no
+      workspace, and a tiling window manager leaves it painted over whatever you switch to.
+      And it is <strong>only shown once a film is open</strong>, which is what lets the empty
+      stage say something useful instead of being a black rectangle.
+    </p>
+
+    <h3>Fullscreen chat via the X SHAPE extension</h3>
+    <p>
+      Recorded here as impossible for a while. Raising the overlay, lowering the video,
+      <code>setAlwaysOnTop</code>, <code>moveTop</code>, <code>xdotool windowraise</code> and a
+      direct X <code>ConfigureWindow</code> were all tried; the video stayed on top. Alpha does
+      not help either — a compositing manager composites <em>top-level</em> windows, and this
+      one is deliberately a child.
+    </p>
+    <p>
+      What works is subtraction. The overlay covers the whole video, the renderer measures its
+      message bubbles and reports them, and the main process cuts the window down to exactly
+      those rectangles. No compositing manager required, and input is clipped the same way, so
+      a click outside a bubble reaches the film.
+      <code>apps/desktop/test/overlay-window.e2e.test.ts</code> asserts it against a real X
+      server rather than trusting it.
+    </p>
+
+    <h3>The film picker is ours on Linux</h3>
+    <p>
+      Not a preference — Electron's fallback GTK chooser, used whenever no
+      <code>xdg-desktop-portal</code> is installed, reports an <em>activate</em> gesture to the
+      application as a cancellation:
+    </p>
+    <table>
+      <thead><tr><th>Gesture</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>Double-click a file</td><td class="status-bad"><code>{ canceled: true, filePaths: [] }</code></td></tr>
+        <tr><td>Select, then <kbd>Enter</kbd></td><td class="status-bad"><code>{ canceled: true, filePaths: [] }</code></td></tr>
+        <tr><td>Select, then click <b>Open</b></td><td class="status-ok">returns the path</td></tr>
+      </tbody>
+    </table>
+    <p>
+      Reproduced in a twelve-line Electron application, so it is neither this project's code nor
+      its window handling, and it cannot be patched from here. Double-click is how almost
+      everyone picks a file, so “Open film” silently did nothing. Windows and macOS keep their
+      native dialogs; <code>COCINE_NATIVE_DIALOG=1</code> forces the system one back on Linux.
+    </p>
+
+    <h3>The renderer reports its viewport with the video rectangle</h3>
+    <p>
+      Electron counts a Linux menu bar as part of the window's <em>content</em> while the page's
+      coordinates start below it, so placing the native surface from the page's rectangle alone
+      put the video about thirty pixels too high, over the application's own top bar. The offset
+      is now derived from the reported viewport rather than assumed, and the stock menu is
+      removed on non-macOS platforms.
+    </p>
+
+    <h3>Identity is local, and rooms are anonymous</h3>
+    <p>
+      A stable member id and display name per machine, in <code>userData/identity.json</code>.
+      That covers the whole visible benefit of an account — your name and server are simply
+      there — without an identity provider. Accounts, when they come, are additive; rooms stay
+      invite codes regardless.
+    </p>
+
+    <h2 id="protocol">Protocol reference</h2>
+    <p class="sub">
+      Defined once in <code>packages/protocol/src/index.ts</code>. Zod gives runtime validation
+      on the server and an inferred type on both sides.
+    </p>
+
+    <h3>Client → server</h3>
+    <table>
+      <thead><tr><th>Message</th><th>Meaning</th><th>Who may</th></tr></thead>
+      <tbody>
+        <tr><td><code>hello</code></td><td>Create a room (null code) or join one. Carries optional room options when creating.</td><td>anyone</td></tr>
+        <tr><td><code>time.ping</code></td><td>Clock exchange.</td><td>anyone</td></tr>
+        <tr><td><code>media.announce</code></td><td>Put a film on, with its source.</td><td>anyone in the room</td></tr>
+        <tr><td><code>playback.request</code></td><td>play / pause / seek.</td><td>needs control</td></tr>
+        <tr><td><code>chat.send</code></td><td>A message, ≤ 800 characters.</td><td>anyone</td></tr>
+        <tr><td><code>peer.report</code></td><td>What this client holds, once a second.</td><td>anyone</td></tr>
+        <tr><td><code>rtc.signal</code></td><td>Opaque WebRTC negotiation, relayed to exactly one member.</td><td>anyone</td></tr>
+        <tr><td><code>voice.state</code></td><td>In voice / muted / deafened.</td><td>anyone</td></tr>
+        <tr><td><code>member.setControl</code>, <code>member.transferHost</code></td><td>Permissions and hosting.</td><td><b>host</b></td></tr>
+        <tr><td><code>room.setMode</code></td><td>Peer to peer or relay. Clears the film.</td><td><b>host</b></td></tr>
+        <tr><td><code>room.setOpenControl</code></td><td>Whether arrivals may drive playback.</td><td><b>host</b></td></tr>
+        <tr><td><code>room.setWaitForLatecomers</code></td><td>Whether the room pauses for a latecomer.</td><td><b>host</b></td></tr>
+        <tr><td><code>room.startAnyway</code></td><td>Start before everyone is ready.</td><td><b>host</b></td></tr>
+        <tr><td><code>voice.moderate</code></td><td>Ask someone to mute. Advisory in a mesh.</td><td><b>host</b></td></tr>
+        <tr><td><code>origin.request</code></td><td>Ask for a signed upload or download URL.</td><td>needs control (upload)</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Server → client</h3>
+    <table>
+      <thead><tr><th>Message</th><th>Carries</th></tr></thead>
+      <tbody>
+        <tr><td><code>welcome</code></td><td>member id, room code, server time, both ICE lists</td></tr>
+        <tr><td><code>time.pong</code></td><td>four timestamps, for offset and round trip</td></tr>
+        <tr><td><code>room.state</code></td><td>members, media, tracker URL, phase, mode, host settings</td></tr>
+        <tr><td><code>playback.schedule</code></td><td>the anchor, plus a sequence number</td></tr>
+        <tr><td><code>transfer.status</code></td><td>per-peer progress, ETA, T<sub>min</sub>, bottleneck, durability</td></tr>
+        <tr><td><code>chat.history</code>, <code>chat.message</code></td><td>the last 200 lines, then each new one</td></tr>
+        <tr><td><code>origin.url</code></td><td>one signed URL, scoped to one method and key</td></tr>
+        <tr><td><code>rtc.signal</code>, <code>voice.moderated</code></td><td>relayed negotiation; a mute request</td></tr>
+        <tr><td><code>error</code></td><td>a refusal, in words meant for a person</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="testing">Testing, and its rules</h2>
+    <p>Three layers. The first two run on every commit and put nothing on any screen.</p>
+    <table>
+      <thead><tr><th>Layer</th><th>Command</th><th>What it can catch</th></tr></thead>
+      <tbody>
+        <tr><td>Unit and integration</td><td><code>npm test</code></td>
+          <td>Everything pure, plus the server over a real socket and IPC handlers over injected dependencies.</td></tr>
+        <tr><td>Renderer in headless Chromium</td><td>part of <code>npm test</code></td>
+          <td><b>Real layout.</b> A collapsed video stage, a composer overlapping the panel below, a checkbox stacked above its label — a DOM emulator performs no layout and catches none of these.</td></tr>
+        <tr><td>Whole application</td><td><code>npm run test:app</code></td>
+          <td>Real Electron, real IPC, real mpv. Opt-in, because some of it needs a display.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="warn">
+      <span class="h">Two hard rules</span>
+      <p>
+        <strong>Never put a window on a contributor's desktop.</strong> Default tests run under
+        <code>COCINE_HEADLESS=1</code>, which swaps the reparented player for a standalone
+        headless one and leaves the main window hidden. Anything that genuinely needs real
+        windows belongs in an <code>*.e2e.test.ts</code> file, which <code>npm test</code>
+        excludes.
+      </p>
+      <p>
+        <strong>Never drive a GUI with synthetic clicks at guessed coordinates.</strong> Select
+        elements through a real automation API. Where behaviour lives outside the page — window
+        stacking, shaping, reparenting — ask X directly, as
+        <code>overlay-window.e2e.test.ts</code> does.
+      </p>
+    </div>
+
+    <p>
+      The house style for tests: <strong>each one reproduces a bug that actually shipped</strong>,
+      and says so in a comment. That is why the assertions look oddly specific — they are
+      regressions, not coverage.
+    </p>
+
+    <h2 id="known">Known issues and limits</h2>
+    <p>
+      The full, candid list is
+      <a href="https://github.com/shreypatil/coCine/blob/main/docs/TODO.md">docs/TODO.md</a>.
+      The parts worth knowing before you plan any work:
+    </p>
+
+    <h3>Not yet proven</h3>
+    <ul>
+      <li><strong>Two real machines on two real networks.</strong> Everything measured so far
+      runs on loopback in one process. NAT traversal between actual hosts, real round-trip
+      variance, and the 10–25% of peer pairs that cannot connect directly are all untested.
+      This is the single largest open item.</li>
+      <li><strong>IPv6 has no coverage</strong>, and probably matters more than “loose end”
+      suggests: ICE prioritises it where it exists, and for users on Indian ISPs it is
+      plausibly the biggest determinant of whether peer to peer works at all.</li>
+      <li><strong>The Windows installer has never been run on Windows</strong>, and the macOS
+      build has never been made — it needs a Mac.</li>
+      <li><strong>Relay mode has only been proven against MinIO</strong>, not Cloudflare R2
+      itself.</li>
+      <li><strong>TURN credential minting is unverified against a real coturn</strong>; the
+      image available for testing has no REST-auth path at all.</li>
+    </ul>
+
+    <h3>Deliberate limits</h3>
+    <ul>
+      <li><strong>Voice is a mesh</strong>, so it stops scaling around eight people, and
+      <strong>host mute is advisory</strong> — the server carries no audio, so it can only ask.
+      Both need an SFU.</li>
+      <li><strong>Wayland runs under XWayland</strong>: mpv cannot reparent into a Wayland
+      surface, so the app forces <code>--ozone-platform=x11</code>. The cost is native
+      fractional scaling.</li>
+      <li><strong>Room state is in memory in one process.</strong> Redis becomes necessary with
+      more than one server process; <code>InMemoryRoomStore</code> sits behind an interface so
+      the swap touches nothing else.</li>
+      <li><strong>Relay mode has no quota.</strong> Any host in a room on a storage-configured
+      server can upload as often as they like, and the operator pays.</li>
+      <li><strong>Readiness assumes a constant bitrate</strong> when converting held bytes into
+      seconds, which is wrong for any real encode. It decides when playback may start, so being
+      approximate costs a slightly early or late gate rather than a wrong picture.</li>
+      <li><strong>Nothing deletes films from the relay bucket</strong>; a lifecycle rule is the
+      recommended answer and is a standing cost decision.</li>
+      <li><strong>Chromium's echo canceller cannot hear mpv.</strong> No WebRTC setting fixes
+      it; a real fix means routing the film's audio through the same path as the call.</li>
+      <li><strong>No code signing.</strong> Windows SmartScreen warns on first install, and
+      macOS cannot auto-update at all until there is a Developer ID certificate.</li>
+      <li><strong>The piece scheduler is not faster than stock WebTorrent.</strong> It is kept
+      because it makes streaming-before-complete work, not because it distributes better. Worth
+      re-measuring once real peers with asymmetric uplinks exist.</li>
+    </ul>
+
+    <h3>The one thing blocking public use</h3>
+    <p>
+      An installed copy points at whatever <code>COCINE_DEFAULT_SERVER</code> was set to at build
+      time. Until an instance is running somewhere strangers can reach, a release build has
+      nowhere to point, and the “a friend installs from a link and joins a room” criterion
+      cannot be met however good the installer is. Nothing about this is hard-coded; what is
+      missing is a host.
+    </p>
+
+    <h2 id="workflow">Working on it</h2>
+    <ul>
+      <li>Branch off <code>main</code>. Keep the branch to one change.</li>
+      <li><code>npm test</code> and <code>npm run typecheck</code> must pass. If your change
+      touches native windows, run <code>npm run test:app</code> too.</li>
+      <li>Add the test <em>with</em> the fix, and let it describe the failure it prevents.</li>
+      <li>Comments explain <strong>why</strong>, not what. The codebase is written that way
+      throughout, and it is what makes the load-bearing constraints survivable — most of the
+      hard-won knowledge in this project is in comments next to the code it constrains.</li>
+      <li>Prefer deleting a special case to adding one. If something needs a special case above
+      the <code>MediaTransport</code> or <code>PlayerController</code> interfaces, the interface
+      is probably wrong.</li>
+    </ul>
+
+    <h2 id="docs">These docs</h2>
+    <p>
+      Plain static HTML in <code>docs/</code>, served by GitHub Pages straight from the
+      <code>main</code> branch (Settings → Pages → Deploy from a branch → <code>main</code> /
+      <code>/docs</code>). No build step and no second branch, so a change to behaviour and the
+      change to its documentation land in the same commit. <code>.nojekyll</code> is present so
+      nothing is preprocessed.
+    </p>
+    <p>
+      Edit <code>index.html</code>, <code>using.html</code>, <code>how-it-works.html</code> or
+      this page, and <code>assets/style.css</code> for the shared look. If a number appears on
+      the “How it works” page, it must come from a script in the repository that can reproduce
+      it — no estimates presented as measurements.
+    </p>
+
+    <div class="foot">
+      <a href="https://github.com/shreypatil/coCine">Repository</a> ·
+      <a href="https://github.com/shreypatil/coCine/blob/main/docs/TODO.md">Outstanding work</a> ·
+      <a href="https://github.com/shreypatil/coCine/blob/main/docs/multi-machine-testing.md">Multi-machine testing checklist</a>
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

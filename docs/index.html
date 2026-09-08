@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>coCine — watch a film with friends, in sync</title>
+<meta name="description" content="coCine plays a film in step across several machines, with voice and chat, sending the file peer to peer. Documentation for viewers, for the curious, and for contributors." />
+<link rel="stylesheet" href="assets/style.css" />
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+</head>
+<body>
+
+<header class="site">
+  <a class="brand" href="index.html">
+    <svg viewBox="0 0 40 40" aria-hidden="true">
+      <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#7B5CFF"/><stop offset=".55" stop-color="#B053C8"/><stop offset="1" stop-color="#D14FA8"/>
+      </linearGradient></defs>
+      <rect x="2.5" y="7" width="35" height="26" rx="8" fill="none" stroke="url(#g1)" stroke-width="2"/>
+      <circle cx="15.5" cy="20" r="4.1" fill="url(#g1)"/>
+      <circle cx="25" cy="20" r="4.1" fill="none" stroke="url(#g1)" stroke-width="1.7"/>
+    </svg>
+    <span>coCine</span>
+  </a>
+  <nav>
+    <a href="using.html">Using coCine</a>
+    <a href="how-it-works.html">How it works</a>
+    <a href="contributing.html">Contributing</a>
+    <a href="https://github.com/shreypatil/coCine">GitHub</a>
+  </nav>
+</header>
+
+<div class="wrap">
+
+  <section class="hero">
+    <svg class="mark" viewBox="0 0 40 40" aria-hidden="true">
+      <defs><linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#7B5CFF"/><stop offset=".55" stop-color="#B053C8"/><stop offset="1" stop-color="#D14FA8"/>
+      </linearGradient></defs>
+      <rect x="2.5" y="7" width="35" height="26" rx="8" fill="none" stroke="url(#g2)" stroke-width="1.8"/>
+      <circle cx="15.5" cy="20" r="4.1" fill="url(#g2)"/>
+      <circle cx="25" cy="20" r="4.1" fill="none" stroke="url(#g2)" stroke-width="1.5"/>
+    </svg>
+    <h1>Watch a film together, <span>actually together</span></h1>
+    <p class="lede">
+      One person puts a film on. Everybody else gets it from them — no uploading it
+      anywhere first, no finding your own copy — and the film plays in step on every
+      screen, with voice and chat alongside it.
+    </p>
+  </section>
+
+  <div class="pills" style="justify-content:center">
+    <span class="pill">Playback in step within <b>100&nbsp;ms</b></span>
+    <span class="pill">The film travels <b>peer to peer</b></span>
+    <span class="pill">Watch <b>while it arrives</b></span>
+    <span class="pill">Voice and chat <b>built in</b></span>
+    <span class="pill">Linux · Windows · <b>macOS soon</b></span>
+  </div>
+
+  <div class="doors">
+    <a class="door" href="using.html">
+      <span class="num">01</span>
+      <h2>Using coCine</h2>
+      <p>Install it, start a film night, join someone else's. Nothing technical, except one
+      choice explained properly: sending the film between yourselves, or through a server.</p>
+    </a>
+    <a class="door" href="how-it-works.html">
+      <span class="num">02</span>
+      <h2>How it works</h2>
+      <p>For the curious engineer. What happens between pressing play and five screens
+      agreeing, how the film moves, and the numbers behind both.</p>
+    </a>
+    <a class="door" href="contributing.html">
+      <span class="num">03</span>
+      <h2>Contributing</h2>
+      <p>The code, the decisions behind it and the reasons they were made, plus an honest
+      list of what does not work yet.</p>
+    </a>
+  </div>
+
+  <h2 id="what">What it actually does</h2>
+  <div class="grid two">
+    <div class="card">
+      <h3 style="margin-top:0">Everyone sees the same frame</h3>
+      <p>Nobody is ever told to “play now”. The room agrees on <em>where the film should be at
+      a given moment</em>, and every machine works out the rest for itself, correcting by
+      changing speed a fraction of a percent rather than jumping.</p>
+      <p class="sub">Measured: 35&nbsp;ms at the 99th percentile across five clients on a
+      simulated 40&nbsp;ms link.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">The film comes from whoever has it</h3>
+      <p>The person who opens the film shares it directly with the room, and everyone who
+      receives a piece starts sharing it too. Watching begins once there is enough of a head
+      start — usually long before the download finishes.</p>
+      <p class="sub">Measured: watchable with 2.9% of the film in hand.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Talk over it</h3>
+      <p>Voice runs directly between people, and chat doubles as the room's log. In
+      fullscreen, messages float over the picture and cover nothing else.</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">One person is in charge, gently</h3>
+      <p>The host decides who can drive playback, whether the room waits for latecomers, and
+      whether to start before somebody slow has caught up. Everything else is shared.</p>
+    </div>
+  </div>
+
+  <h2 id="status">Where the project is</h2>
+  <p>
+    Built and working: player control, the synchronisation engine, rooms and roles, transfer,
+    voice, relay fallbacks, and installers for Windows and Linux. Honest about the rest —
+    the peer-to-peer parts have been measured extensively on one machine, and the thing that
+    still needs proving is two real machines on two real home networks.
+  </p>
+  <p>
+    The full list of what is deferred, blocked or known-broken lives in
+    <a href="https://github.com/shreypatil/coCine/blob/main/docs/TODO.md">docs/TODO.md</a>,
+    and the short version is on the <a href="contributing.html#known">contributing page</a>.
+  </p>
+
+  <div class="foot">
+    coCine is MIT licensed. It drives <a href="https://mpv.io">mpv</a>, which is GPLv2+ and ships
+    as a separate program.
+    · <a href="https://github.com/shreypatil/coCine">Source on GitHub</a>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>How coCine works</title>
+<meta name="description" content="The architecture behind coCine: anchored playback, clock estimation, peer-to-peer transfer with a readiness gate, relay fallbacks, and the measurements behind each." />
+<link rel="stylesheet" href="assets/style.css" />
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+</head>
+<body>
+
+<header class="site">
+  <a class="brand" href="index.html">
+    <svg viewBox="0 0 40 40" aria-hidden="true">
+      <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#7B5CFF"/><stop offset=".55" stop-color="#B053C8"/><stop offset="1" stop-color="#D14FA8"/>
+      </linearGradient></defs>
+      <rect x="2.5" y="7" width="35" height="26" rx="8" fill="none" stroke="url(#g1)" stroke-width="2"/>
+      <circle cx="15.5" cy="20" r="4.1" fill="url(#g1)"/>
+      <circle cx="25" cy="20" r="4.1" fill="none" stroke="url(#g1)" stroke-width="1.7"/>
+    </svg>
+    <span>coCine</span>
+  </a>
+  <nav>
+    <a href="using.html">Using coCine</a>
+    <a href="how-it-works.html" aria-current="page">How it works</a>
+    <a href="contributing.html">Contributing</a>
+    <a href="https://github.com/shreypatil/coCine">GitHub</a>
+  </nav>
+</header>
+
+<div class="wrap doc">
+  <aside class="toc">
+    <h2>On this page</h2>
+    <a href="#shape">The shape of the system</a>
+    <a href="#sync">Keeping screens in step</a>
+    <a href="#room">A room, from join to play</a>
+    <a href="#transfer">Moving the film</a>
+    <a href="#gate">The readiness gate</a>
+    <a href="#relay">Relay mode</a>
+    <a href="#voice">Voice, and the two ICE planes</a>
+    <a href="#overlay">Drawing over the picture</a>
+    <a href="#numbers">The numbers</a>
+    <a href="#fails">What happens when things fail</a>
+  </aside>
+
+  <main>
+    <h1>How coCine works</h1>
+    <p class="lede">
+      Written for someone who has never seen the code and wants to know what is actually
+      happening: what runs where, what crosses the wire, and which of the claims on the front
+      page have been measured rather than assumed.
+    </p>
+
+    <h2 id="shape">The shape of the system</h2>
+    <p>
+      Three kinds of process. A <strong>desktop application</strong> per person, one small
+      <strong>signalling server</strong> for the room, and <strong>mpv</strong> — a real media
+      player, driven as a separate process over a JSON IPC socket rather than reimplemented.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 960 400" role="img" aria-label="Architecture: two desktop clients, each with a renderer, main process and mpv, both connected to a signalling server by WebSocket, with direct peer links between them for the film and for voice.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#7B5CFF"/></marker>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#D14FA8"/></marker>
+        </defs>
+
+        <rect class="dg-box" x="10" y="52" width="250" height="196" rx="12"/>
+        <text class="dg-t" x="26" y="76" font-weight="600">Desktop app — Anjali</text>
+        <rect class="dg-accent" x="26" y="90" width="218" height="44" rx="8"/>
+        <text class="dg-t" x="38" y="110">Renderer (React)</text>
+        <text class="dg-s" x="38" y="126">interface · voice · video slot</text>
+        <rect class="dg-accent" x="26" y="142" width="218" height="44" rx="8"/>
+        <text class="dg-t" x="38" y="162">Main process</text>
+        <text class="dg-s" x="38" y="178">room · sync · transfer · windows</text>
+        <rect class="dg-box" x="26" y="194" width="218" height="42" rx="8"/>
+        <text class="dg-t" x="38" y="214">mpv</text>
+        <text class="dg-s" x="38" y="229">separate process · JSON IPC</text>
+
+        <rect class="dg-box" x="352" y="44" width="256" height="162" rx="12"/>
+        <text class="dg-t" x="368" y="68" font-weight="600">Signalling server</text>
+        <text class="dg-s" x="368" y="90">rooms · playback authority · chat</text>
+        <text class="dg-s" x="368" y="110">clock exchanges · WebRTC brokering</text>
+        <text class="dg-s" x="368" y="130">BitTorrent tracker (/announce)</text>
+        <text class="dg-s" x="368" y="150">TURN credentials · signed URLs</text>
+        <text class="dg-s" x="368" y="176" font-style="italic">never carries a frame of film</text>
+
+        <rect class="dg-box" x="700" y="52" width="250" height="196" rx="12"/>
+        <text class="dg-t" x="716" y="76" font-weight="600">Desktop app — Dev</text>
+        <rect class="dg-accent" x="716" y="90" width="218" height="44" rx="8"/>
+        <text class="dg-t" x="728" y="110">Renderer (React)</text>
+        <rect class="dg-accent" x="716" y="142" width="218" height="44" rx="8"/>
+        <text class="dg-t" x="728" y="162">Main process</text>
+        <rect class="dg-box" x="716" y="194" width="218" height="42" rx="8"/>
+        <text class="dg-t" x="728" y="214">mpv</text>
+
+        <path class="dg-arrow" d="M268 140 H344" marker-start="url(#ar)" marker-end="url(#ar)"/>
+        <text class="dg-m" x="306" y="130" text-anchor="middle">WebSocket</text>
+        <path class="dg-arrow" d="M616 140 H692" marker-start="url(#ar)" marker-end="url(#ar)"/>
+        <text class="dg-m" x="654" y="130" text-anchor="middle">WebSocket</text>
+
+        <path class="dg-arrow-2" d="M135 256 V312 H825 V256" marker-start="url(#ar2)" marker-end="url(#ar2)"/>
+        <text class="dg-m" x="480" y="304" text-anchor="middle">the film, peer to peer (WebRTC data channels)</text>
+        <path class="dg-arrow-2" d="M195 256 V356 H765 V256" marker-start="url(#ar2)" marker-end="url(#ar2)"/>
+        <text class="dg-m" x="480" y="348" text-anchor="middle">voice (WebRTC media, relayed only if it must be)</text>
+      </svg>
+      <figcaption>
+        The server is a meeting point and a referee. Film bytes and voice go directly between
+        people; only relay mode (below) changes that, and only for the film.
+      </figcaption>
+    </figure>
+
+    <p>
+      Inside the app the split matters: <strong>the main process owns the room</strong> — the
+      socket, the clock estimate, the sync engine and the transfer — and the renderer is an
+      interface over pushed state, plus the one thing it must own, WebRTC voice, because that
+      is where a microphone and an audio pipeline exist. State is pushed to the renderer ten
+      times a second; every action goes back over a hand-written IPC surface small enough to
+      read in one screen.
+    </p>
+
+    <h2 id="sync">Keeping screens in step</h2>
+    <p>
+      The central design decision: <strong>nobody is ever told to play now.</strong> A command
+      arrives at different clients at different times and therefore cannot produce
+      synchronised playback. Instead the server broadcasts an <em>anchor</em>:
+    </p>
+    <pre><code>{ kind: "playing", positionSec: 1240.5, atServerMs: 1765432100300 }</code></pre>
+    <p>
+      Read as: the film was at 1240.5 s at that instant of server time, and has been advancing
+      in real time since. A client receiving it late is still correct, because it computes
+      where the film should be <em>now</em>. A client receiving it early holds at the position
+      until the instant arrives. Transitions are scheduled 300 ms into the future, which gives
+      the slowest client time to receive the message and finish its seek before the moment it
+      describes.
+    </p>
+
+    <h3>Three pieces make it hold</h3>
+    <div class="grid three">
+      <div class="card">
+        <h4 style="margin-top:0">Clock offset</h4>
+        <p>NTP-style four-timestamp exchanges every 2 s. The estimate keeps the sample with the
+        <strong>lowest round trip</strong> rather than an average — that sample queued least in
+        each direction and is the least asymmetric. Averaging folds in every delayed sample's
+        error.</p>
+      </div>
+      <div class="card">
+        <h4 style="margin-top:0">Position extrapolation</h4>
+        <p>mpv reports position at about 25 Hz, so a reading can be 40 ms stale — 40% of the
+        whole budget. Advancing it at the current rate before use costs nothing and removes
+        that error entirely.</p>
+      </div>
+      <div class="card">
+        <h4 style="margin-top:0">Correction by rate</h4>
+        <p>Drift under a second is erased by nudging playback speed by up to ±5% over a
+        two-second horizon, which is inaudible. Only a gap larger than a second earns a seek,
+        because a seek is always visible.</p>
+      </div>
+    </div>
+
+    <table>
+      <thead><tr><th>Constant</th><th>Value</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Sync tick</td><td>20 Hz</td><td>Above mpv's ~25 Hz position reporting there is nothing new to see.</td></tr>
+        <tr><td>Deadband</td><td>12 ms</td><td>Below this, correcting is noise chasing noise.</td></tr>
+        <tr><td>Seek threshold</td><td>1.0 s</td><td>Larger gaps cannot be closed invisibly by rate.</td></tr>
+        <tr><td>Correction horizon</td><td>2 s</td><td>How long a rate nudge is given to close the gap.</td></tr>
+        <tr><td>Max rate deviation</td><td>±5%</td><td>Inaudible in speech and music.</td></tr>
+        <tr><td>Scheduling lead</td><td>300 ms</td><td>Must exceed worst one-way delay plus seek latency.</td></tr>
+        <tr><td>Drift budget</td><td>100 ms</td><td>The product target everything is measured against.</td></tr>
+      </tbody>
+    </table>
+
+    <p>
+      Two mpv details are load-bearing, and both were found by measurement rather than reading:
+      <code>--hr-seek=yes</code>, without which absolute seeks land on the nearest keyframe and
+      can be seconds out; and waiting for <code>playback-restart</code> after a seek, without
+      which <code>time-pos</code> reads stale and the engine corrects against a phantom drift.
+    </p>
+
+    <h2 id="room">A room, from join to play</h2>
+    <p>
+      Room state lives on the server, not in the host's client. That buys three things: the
+      room survives the host's connection blipping, permissions are enforceable rather than
+      advisory, and a latecomer is correct by construction because they receive the current
+      anchor and compute from it.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 960 500" role="img" aria-label="Sequence diagram: a guest joins, clocks synchronise, the host announces a film, the room reports progress until the readiness gate opens, and playback is scheduled as an anchor.">
+        <defs>
+          <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0 L10 5 L0 10 z" fill="#7B5CFF"/></marker>
+          <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0 L10 5 L0 10 z" fill="#D14FA8"/></marker>
+        </defs>
+
+        <text class="dg-t" x="110" y="24" text-anchor="middle" font-weight="600">Guest</text>
+        <text class="dg-t" x="480" y="24" text-anchor="middle" font-weight="600">Server</text>
+        <text class="dg-t" x="850" y="24" text-anchor="middle" font-weight="600">Host</text>
+        <line class="dg-line" x1="110" y1="36" x2="110" y2="482"/>
+        <line class="dg-line" x1="480" y1="36" x2="480" y2="482"/>
+        <line class="dg-line" x1="850" y1="36" x2="850" y2="482"/>
+
+        <path class="dg-arrow" d="M110 76 H474" marker-end="url(#ar3)"/>
+        <text class="dg-m" x="292" y="68" text-anchor="middle">hello { code, name, options? }</text>
+
+        <path class="dg-arrow" d="M480 116 H116" marker-end="url(#ar3)"/>
+        <text class="dg-m" x="298" y="108" text-anchor="middle">welcome { memberId, code, serverMs, ice }</text>
+
+        <path class="dg-arrow" d="M480 156 H116" marker-end="url(#ar3)"/>
+        <text class="dg-m" x="298" y="148" text-anchor="middle">chat.history · playback.schedule · room.state</text>
+
+        <path class="dg-arrow" d="M110 200 H474" marker-end="url(#ar3)"/>
+        <text class="dg-m" x="292" y="192" text-anchor="middle">time.ping ×8, then every 2 s</text>
+        <path class="dg-arrow" d="M480 236 H116" marker-end="url(#ar3)"/>
+        <text class="dg-m" x="298" y="228" text-anchor="middle">time.pong { c1, s1, s2 }  →  clock offset</text>
+
+        <path class="dg-arrow-2" d="M850 280 H486" marker-end="url(#ar4)"/>
+        <text class="dg-m" x="668" y="272" text-anchor="middle">media.announce { name, duration, source }</text>
+        <path class="dg-arrow" d="M480 316 H116" marker-end="url(#ar3)"/>
+        <text class="dg-m" x="298" y="308" text-anchor="middle">room.state { media, trackerUrl, phase: preparing }</text>
+
+        <rect class="dg-accent" x="126" y="332" width="316" height="30" rx="8"/>
+        <text class="dg-t" x="284" y="352" text-anchor="middle">fetch from the swarm · announce to tracker</text>
+
+        <path class="dg-arrow" d="M110 392 H474" marker-end="url(#ar3)"/>
+        <text class="dg-m" x="292" y="384" text-anchor="middle">peer.report { havePct, bufferEndSec, rates } · 1 Hz</text>
+        <path class="dg-arrow" d="M480 428 H116" marker-end="url(#ar3)"/>
+        <text class="dg-m" x="298" y="420" text-anchor="middle">transfer.status { perPeer, etaSec, tMin, copies }</text>
+
+        <path class="dg-arrow-2" d="M850 466 H486" marker-end="url(#ar4)"/>
+        <text class="dg-m" x="668" y="458" text-anchor="middle">playback.request { intent: "play" }</text>
+        <path class="dg-arrow" d="M474 466 H116" marker-end="url(#ar3)"/>
+        <text class="dg-m" x="292" y="458" text-anchor="middle">playback.schedule { atServerMs = now + 300 ms }</text>
+      </svg>
+      <figcaption>
+        Every message is validated against one Zod schema shared by both sides, so client and
+        server cannot drift apart on shapes without it becoming a compile error.
+      </figcaption>
+    </figure>
+
+    <p>
+      Permissions are enforced where they cannot be bypassed. A client that has not been given
+      control can send <code>playback.request</code> all it likes; the server refuses it. The
+      interface disables the button as a courtesy, not as the mechanism.
+    </p>
+    <p>
+      Room codes are the only credential: eight characters from a 27-symbol alphabet with the
+      confusable ones removed (no <code>0</code>/<code>O</code>, no <code>1</code>/<code>I</code>/<code>L</code>),
+      about 38 bits, chosen to survive being read aloud.
+    </p>
+
+    <h2 id="transfer">Moving the film</h2>
+    <p>
+      The film is a BitTorrent swarm, over WebRTC data channels, announced to a tracker the
+      signalling server also runs on the same port. The server will only answer for info
+      hashes a room has actually announced, so it cannot be used as a public tracker.
+    </p>
+    <ol>
+      <li>The sharer hashes the file in chunks — measured at roughly 780 MB/s, so it costs
+      seconds on a large film and needs no worker thread.</li>
+      <li>The resulting magnet plus piece length goes to the room in
+      <code>media.announce</code>.</li>
+      <li>Everyone else starts fetching and simultaneously starts serving whatever they have.</li>
+      <li>Playback reads through WebTorrent's streaming server rather than the file on disk.
+      The file is written <strong>sparsely</strong>, so reading it directly would return zeros
+      wherever a piece has not arrived; the stream blocks instead and honours byte ranges, so
+      mpv can still seek.</li>
+    </ol>
+    <p>
+      Piece selection runs in three zones — an urgent window just ahead of the playhead, a
+      readahead band after it, and the rest as backfill — which is what makes watching before
+      completion work. Honesty about it: measured against stock WebTorrent in a purpose-built
+      harness, the custom policy was <strong>no faster overall</strong>, and one naive
+      allocator was twice as slow as doing nothing. It is kept for streaming behaviour, not
+      for throughput.
+    </p>
+
+    <h2 id="gate">The readiness gate</h2>
+    <p>
+      Every client reports once a second what it actually has: fraction of the film,
+      <strong>contiguous seconds available from the playhead</strong>, observed rates, and peer
+      count. The room stays in <code>preparing</code> until everybody holds a lead buffer of
+      <strong>20 seconds</strong>, then becomes <code>ready</code>.
+    </p>
+    <p>
+      The second number is the one that matters. How much of a file exists says nothing about
+      whether it can be played; how long it can play before hitting a hole says exactly that.
+    </p>
+    <p>The room also computes, and shows:</p>
+    <ul>
+      <li><strong>An estimate</strong> from observed rates, and the name of whoever it is
+      waiting for. When rates are not yet known it says so rather than inventing a number.</li>
+      <li><strong>T<sub>min</sub></strong>, the Kumar–Ross floor no scheduling policy can beat,
+      so a long wait is explicable rather than just slow.</li>
+      <li><strong>Durability</strong> — how many whole copies exist and whether it is safe for
+      the sharer to leave. It counts whole copies rather than per-piece coverage, so a room
+      that collectively holds every piece in fragments still reads as unsafe. Deliberate: a
+      wrong “yes” loses the film.</li>
+    </ul>
+
+    <h2 id="relay">Relay mode</h2>
+    <p>
+      Peer to peer is the product and it fails for some rooms — nobody able to connect
+      directly, or a sharer whose uplink cannot feed even one viewer. Relay mode is the honest
+      answer rather than a broken swarm: the sharer uploads once to object storage and
+      everyone fetches from there.
+    </p>
+    <p>
+      Both transports implement one <code>MediaTransport</code> interface, so the readiness
+      gate, progress display, resume-after-crash and watch-before-complete all work
+      identically. The origin path fetches byte ranges where the swarm fetches pieces, ahead of
+      the playhead first and backfilling afterwards.
+    </p>
+    <p>
+      <strong>Clients never hold bucket credentials.</strong> The server signs a URL scoped to
+      one method, one key and a few hours. A client cannot name a key either: for an upload the
+      server derives it from the room's own code, and for a download it comes from the room's
+      media — so one room cannot address another's objects. AWS Signature V4 is implemented
+      directly and checked against MinIO in the tests, because a signature that agrees with
+      another copy of the same arithmetic proves nothing.
+    </p>
+
+    <h2 id="voice">Voice, and the two ICE planes</h2>
+    <p>
+      Voice is a full WebRTC mesh — one connection per pair, no media through any server. It
+      stops scaling around eight people, where everyone is encoding a separate stream for
+      everyone else. Only one side of each pair offers, whoever has the lexicographically
+      smaller member id, because both offering at once collapses the negotiation.
+    </p>
+    <p>
+      Roughly one pairing in ten on home connections cannot establish a direct connection;
+      behind carrier-grade NAT, as on most mobile networks, it is most of them. A TURN relay is
+      the way through, and coCine runs one — <strong>for voice only</strong>.
+    </p>
+    <div class="note">
+      <span class="h">Why the film is never relayed</span>
+      <p>
+        A relayed film crosses the relay twice, in and out, for every viewer who needs it — an
+        8 GB round trip per peer, paid by whoever runs the server. Voice is kilobits and worth
+        relaying; films are not. The enforcement is omission rather than a check: the bulk ICE
+        list contains STUN only, so there is nothing to fall back to.
+      </p>
+      <p>
+        The visible consequence is worth stating, because it looks like a bug: someone on a
+        hopeless connection will hear everybody perfectly and still fail to receive the film.
+        Relay mode is the answer for that room, and the host has to choose it.
+      </p>
+    </div>
+    <p>
+      TURN credentials are minted per connection as an HMAC over an expiry timestamp, so no
+      account list exists and nothing needs provisioning. A relay with a fixed password is
+      found and abused by strangers within days, and every relayed byte is billed to its
+      operator.
+    </p>
+    <p>
+      One limitation with no software fix: Chromium's echo canceller removes only audio
+      Chromium itself played, and mpv plays through an entirely separate path. On speakers,
+      every microphone picks up the film and sends it back. Push-to-talk by default, ducking
+      the film while someone talks, and a headphones hint make it survivable.
+    </p>
+
+    <h2 id="overlay">Drawing over the picture</h2>
+    <p>
+      mpv is reparented into a frameless native child window kept exactly over the video
+      rectangle, because <code>--wid</code> makes mpv fill whatever window it is given with no
+      way to ask for a sub-rectangle. The cost is absolute: <strong>nothing Chromium draws can
+      appear over the video</strong>, since the native surface is above the page.
+    </p>
+    <p>
+      Fullscreen chat therefore needed a second native window above the first — and X11 offers
+      no way to blend one window over another, because a compositing manager composites
+      <em>top-level</em> windows and this one is deliberately a child, so the whole application
+      behaves as a single window on a tiling desktop.
+    </p>
+    <p>
+      The answer is the X SHAPE extension, from the other direction: rather than making pixels
+      translucent, remove them. The overlay window covers the whole video and is then cut down
+      to exactly the message bubbles the renderer measures and reports, so the film is
+      untouched everywhere else and a click outside a bubble reaches the film. It needs no
+      compositing manager, so a bare i3 session behaves the same as a composited desktop.
+      Windows and macOS use an ordinary transparent window instead.
+    </p>
+
+    <h2 id="numbers">The numbers</h2>
+    <p class="sub">
+      Every figure below comes from a script in the repository that exits non-zero when it
+      fails, so they are gates rather than demos. Reproduce them with
+      <code>npm run phase0</code>, <code>phase1</code>, <code>phase4</code>, <code>phase7</code>.
+    </p>
+
+    <h3>Player control</h3>
+    <table>
+      <tbody>
+        <tr><td>Position event rate</td><td><b>25 Hz</b></td></tr>
+        <tr><td>Command round trip</td><td><b>under 5 ms</b></td></tr>
+        <tr><td>Seek accuracy</td><td><b>30 ms</b> with <code>--hr-seek=yes</code></td></tr>
+      </tbody>
+    </table>
+
+    <h3>Synchronisation — five clients, 20 events, simulated 40 ms ± 15 ms link, server clock 37 s wrong</h3>
+    <table>
+      <thead><tr><th>Load</th><th>p99 drift</th><th>Worst</th><th>Over the 100 ms budget</th><th>Re-converge after an event</th></tr></thead>
+      <tbody>
+        <tr><td>Standard fixture</td><td class="status-ok"><b>35 ms</b></td><td>—</td><td><b>0 of 2598 samples</b></td><td>0.3 s</td></tr>
+        <tr><td>Five 1080p decoders on one machine</td><td class="status-warn"><b>47 ms</b></td><td>97 ms</td><td>0</td><td>0.3 s</td></tr>
+      </tbody>
+    </table>
+    <p class="sub">
+      The second row is deliberately pessimistic: one machine carries five decoders that would
+      each be on separate hardware in reality. It passes, with visibly less headroom.
+    </p>
+
+    <h3>Transfer — three receivers, ~0.6 GB, shaped to 20 Mbps down / 10 Mbps up each</h3>
+    <table>
+      <tbody>
+        <tr><td>Gate opened after</td><td><b>70.3 s</b></td></tr>
+        <tr><td>Held by the slowest receiver at that moment</td><td><b>2.9%</b> of the film</td></tr>
+        <tr><td>Still arriving during playback</td><td>yes</td></tr>
+        <tr><td>Sync drift <em>while</em> the film was downloading</td><td class="status-ok"><b>p99 10.0 ms</b>, worst 11.0 ms</td></tr>
+      </tbody>
+    </table>
+    <p class="sub">
+      Links are shaped on purpose. Loopback is faster than any real connection, and unshaped
+      the transfer finishes before the gate has anything to gate.
+    </p>
+
+    <h3>Relay mode cost — a 4 GB film, three viewers, one evening</h3>
+    <table>
+      <thead><tr><th></th><th>Cloudflare R2</th><th>AWS S3</th></tr></thead>
+      <tbody>
+        <tr><td>One film night</td><td class="status-ok"><b>$0.02</b></td><td><b>$1.11</b></td></tr>
+        <tr><td>12 GB of downloads</td><td>$0.00 (egress is free)</td><td>$1.08</td></tr>
+        <tr><td>Keeping the film a month</td><td colspan="2">≈ $0.06 per film</td></tr>
+      </tbody>
+    </table>
+    <p class="sub">
+      Free egress is the entire difference, and the reason R2 is the intended target. Peer to
+      peer, for comparison, costs the operator nothing at all.
+    </p>
+
+    <h2 id="fails">What happens when things fail</h2>
+    <table>
+      <thead><tr><th>Failure</th><th>What the system does</th></tr></thead>
+      <tbody>
+        <tr><td>The socket drops mid-film</td>
+          <td>The interface says <em>reconnecting</em> and rejoins by room code with exponential
+          backoff to 30 s. Chat history and room state come back with the join; playback is the
+          server's and is re-anchored on the next schedule.</td></tr>
+        <tr><td>The host leaves</td>
+          <td>Hosting passes to whoever has been in the room longest. The room does not end.</td></tr>
+        <tr><td>The sharer leaves before a second copy exists</td>
+          <td>The transfer stalls. This is why durability is displayed continuously rather than
+          discovered afterwards.</td></tr>
+        <tr><td>Two peers cannot connect</td>
+          <td>Voice still works through the relay; the film does not move. The room's answer is
+          to switch to relay mode.</td></tr>
+        <tr><td>mpv is missing</td>
+          <td>A wall, not a banner — with the install command for that specific distribution and
+          a button to copy it. There is no application without a player.</td></tr>
+        <tr><td>The room empties</td>
+          <td>It is collected after ten minutes of being empty.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="foot">
+      Want to change any of this? The <a href="contributing.html">contributing guide</a> has the
+      code map, the reasoning behind each decision, and the list of what is known not to work.
+    </div>
+  </main>
+</div>
+
+</body>
+</html>

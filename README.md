@@ -61,6 +61,11 @@ non-zero on failure, so they work as CI gates rather than as demos.
 Requires `mpv` and `ffmpeg` on PATH. Test films are generated on first run and
 cached in `.fixtures/`.
 
+**Documentation** lives in [`docs/`](docs/) and is published with GitHub Pages
+straight from `main` — a guide for [people using it](docs/using.html), an
+explanation of [how it works](docs/how-it-works.html), and a
+[contributor's guide](docs/contributing.html).
+
 Two other documents are worth knowing about: **[docs/TODO.md](docs/TODO.md)** for
 what is deferred or blocked, and
 **[docs/multi-machine-testing.md](docs/multi-machine-testing.md)** for testing

@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Using coCine — a guide for film nights</title>
+<meta name="description" content="How to install coCine, host a film night, join someone else's, and choose between sending the film between yourselves or through a server." />
+<link rel="stylesheet" href="assets/style.css" />
+<link rel="icon" href="assets/logo.svg" type="image/svg+xml" />
+</head>
+<body>
+
+<header class="site">
+  <a class="brand" href="index.html">
+    <svg viewBox="0 0 40 40" aria-hidden="true">
+      <defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#7B5CFF"/><stop offset=".55" stop-color="#B053C8"/><stop offset="1" stop-color="#D14FA8"/>
+      </linearGradient></defs>
+      <rect x="2.5" y="7" width="35" height="26" rx="8" fill="none" stroke="url(#g1)" stroke-width="2"/>
+      <circle cx="15.5" cy="20" r="4.1" fill="url(#g1)"/>
+      <circle cx="25" cy="20" r="4.1" fill="none" stroke="url(#g1)" stroke-width="1.7"/>
+    </svg>
+    <span>coCine</span>
+  </a>
+  <nav>
+    <a href="using.html" aria-current="page">Using coCine</a>
+    <a href="how-it-works.html">How it works</a>
+    <a href="contributing.html">Contributing</a>
+    <a href="https://github.com/shreypatil/coCine">GitHub</a>
+  </nav>
+</header>
+
+<div class="wrap doc">
+  <aside class="toc">
+    <h2>On this page</h2>
+    <a href="#install">Installing it</a>
+    <a href="#first">The first time you open it</a>
+    <a href="#host">Hosting a film night</a>
+    <a href="#join">Joining someone else's</a>
+    <a href="#watching">While you are watching</a>
+    <a href="#talking">Chat and voice</a>
+    <a href="#sharing">Sending the film: the one real choice</a>
+    <a href="#host-powers">What the host can do</a>
+    <a href="#films">Films kept on your computer</a>
+    <a href="#keys">Keyboard shortcuts</a>
+    <a href="#trouble">When something goes wrong</a>
+  </aside>
+
+  <main>
+    <h1>Using coCine</h1>
+    <p class="lede">
+      One of you puts a film on; everybody else gets it from them and watches it at the same
+      time. This page is everything you need to run a film night, and nothing you don't.
+    </p>
+
+    <h2 id="install">Installing it</h2>
+
+    <table>
+      <thead><tr><th>Your computer</th><th>Download</th><th>What to do</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Windows</strong></td>
+          <td><code>coCine-x64.exe</code></td>
+          <td>Double-click it and follow the installer. Windows may show a blue
+            “Windows protected your PC” box the first time — click <b>More info</b>, then
+            <b>Run anyway</b>. That appears because the app is not yet signed with a paid
+            certificate, not because anything is wrong with it.</td>
+        </tr>
+        <tr>
+          <td><strong>Ubuntu, Mint, Debian</strong></td>
+          <td><code>coCine-amd64.deb</code></td>
+          <td>Double-click it and let the software installer do the rest. This is the option
+            to pick if you have a choice: it installs the video player coCine needs at the
+            same time.</td>
+        </tr>
+        <tr>
+          <td><strong>Other Linux</strong></td>
+          <td><code>coCine-x86_64.AppImage</code></td>
+          <td>Right-click → Properties → tick “allow executing as a program”, then double-click.
+            You also need <b>mpv</b> installed; if it is missing, coCine tells you the exact
+            one-line command for your system and gives you a button to copy it.</td>
+        </tr>
+        <tr>
+          <td><strong>macOS</strong></td>
+          <td>—</td>
+          <td>Not yet. The Mac version has to be built on a Mac, and that has not happened.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <span class="h">What coCine needs from you</span>
+      <p>A film file on your computer if you are the one putting it on — coCine plays files,
+      it does not stream from Netflix or anywhere else. Everyone else needs nothing except
+      the app and the room code.</p>
+    </div>
+
+    <h2 id="first">The first time you open it</h2>
+    <p>Two boxes on the right, and then you are done for good — coCine remembers both.</p>
+    <ul>
+      <li><strong>Your name.</strong> What everyone else sees. Anything you like.</li>
+      <li><strong>Server.</strong> A meeting point. It carries chat, keeps everyone's clocks
+      in step and introduces people to each other — it never receives the film. If whoever
+      invited you sent an address, paste it here. If the app came with one already filled in,
+      leave it alone.</li>
+    </ul>
+    <div class="warn">
+      <span class="h">If the Server box says 127.0.0.1</span>
+      <p>That address means “this computer”, which is a placeholder rather than a real
+      meeting point. Ask whoever invited you for the address they use, and paste it in. There
+      is a <b>use default</b> button to get back to the one the app shipped with.</p>
+    </div>
+
+    <h2 id="host">Hosting a film night</h2>
+    <ol>
+      <li><strong>Put the film on first.</strong> Press <b>Open film</b> at the top right and
+      pick the file, or just drag it onto the window. Doing this before you create the room
+      means people start receiving it the moment they arrive.</li>
+      <li><strong>Create the room.</strong> Check the three settings in <b>Your room</b>
+      (they are explained <a href="#sharing">below</a> and can all be changed later), then
+      press <b>Create a room</b>.</li>
+      <li><strong>Send the code.</strong> A code like <code>BCDF-GHJK</code> appears at the top.
+      Click it to copy, and send it to whoever is watching. That code is the only thing
+      anybody needs.</li>
+      <li><strong>Wait for the room to be ready.</strong> A panel appears showing everybody's
+      progress — this is the film travelling from you to them. It tells you roughly how long
+      is left and who is furthest behind.</li>
+      <li><strong>Press play.</strong> Everyone starts at the same moment.</li>
+    </ol>
+
+    <div class="tip">
+      <span class="h">You do not have to wait for the download to finish</span>
+      <p>coCine only waits until everybody has a decent head start — typically a few per cent
+      of the film. The rest keeps arriving while you all watch.</p>
+    </div>
+
+    <h2 id="join">Joining someone else's</h2>
+    <ol>
+      <li>Open coCine and check your name is right.</li>
+      <li>Paste the code into the <b>CODE</b> box and press <b>Join</b>.</li>
+      <li>The film starts arriving on its own. You will see it counting up.</li>
+      <li>Wait for the host to press play. You do not need to press anything.</li>
+    </ol>
+    <p>
+      You can arrive late. If the host has left <b>Pause when someone arrives late</b> on, the
+      room pauses so you can catch up; otherwise the film carries on and you join wherever
+      everybody else is.
+    </p>
+
+    <h2 id="watching">While you are watching</h2>
+    <ul>
+      <li><strong>Play, pause and seek affect everybody.</strong> That is the point. If the
+      host has given you control, your pause pauses the room.</li>
+      <li><strong>The number at the top</strong> (something like <code>38 ms</code>) is how far
+      your screen is from everyone else's. Green is good. It fixes itself constantly by
+      running a fraction faster or slower, which you will not notice.</li>
+      <li><strong>Fullscreen</strong> with the button at the bottom right or <kbd>F</kbd>.
+      <kbd>Esc</kbd> comes back.</li>
+    </ul>
+
+    <h2 id="talking">Chat and voice</h2>
+    <h3>Chat</h3>
+    <p>
+      The panel on the right. It also records what happened — who joined, who put a film on,
+      who took control — so there is one place to look when you wonder what just happened.
+    </p>
+    <p>
+      <strong>In fullscreen</strong>, press <kbd>Enter</kbd> to type. Messages appear as small
+      bubbles over the bottom-left of the picture and fade away after a few seconds; nothing
+      else covers the film. <kbd>Esc</kbd> puts the keyboard back on playback.
+    </p>
+
+    <h3>Voice</h3>
+    <ul>
+      <li>Press <b>Join voice</b>. Your microphone stays shut until you hold <kbd>V</kbd>.</li>
+      <li><strong>Wear headphones.</strong> On speakers, your microphone picks up the film and
+      sends it back to everyone. Push-to-talk keeps that survivable, and the film quietens
+      while you talk, but headphones are the real fix.</li>
+      <li><b>mute</b> stops you being heard; <b>deafen</b> also stops you hearing the room.</li>
+      <li>The host can <em>ask</em> you to mute. Your app does it for you — but it is a
+      request, not something the host can enforce, and coCine says so rather than pretending
+      otherwise.</li>
+    </ul>
+
+    <h2 id="sharing">Sending the film: the one real choice</h2>
+    <p>
+      When you create a room you pick how the film gets to everybody. Both options end with
+      the same film on the same screens; they differ in who carries it.
+    </p>
+
+    <div class="grid two">
+      <div class="card">
+        <h3 style="margin-top:0">Between us — peer to peer</h3>
+        <p><strong>The default, and usually right.</strong> The film goes straight from your
+        computer to your friends', and each of them starts passing on the parts they already
+        have. Nothing is stored anywhere else, and it costs nobody anything.</p>
+        <p class="sub">Gets faster with more people, not slower — after the first few minutes
+        they are largely feeding each other.</p>
+      </div>
+      <div class="card">
+        <h3 style="margin-top:0">Through the server — relay</h3>
+        <p>You upload the film once to the server's storage, and everybody downloads it from
+        there. Nobody has to be able to reach anybody else, and you can close your laptop
+        once the upload is done.</p>
+        <p class="sub">Costs whoever pays for the server, and you wait for the upload before
+        anyone can start.</p>
+      </div>
+    </div>
+
+    <h3>Which one should I pick?</h3>
+    <table>
+      <thead><tr><th>If…</th><th>Pick</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>You have no idea</td>
+          <td><b>Between us</b></td>
+          <td>It works for most people, costs nothing, and you can switch if it doesn't.</td>
+        </tr>
+        <tr>
+          <td>You are all on home broadband or wifi</td>
+          <td><b>Between us</b></td>
+          <td>This is exactly the case it is built for.</td>
+        </tr>
+        <tr>
+          <td>Someone is on mobile data or a phone hotspot</td>
+          <td><b>Through the server</b></td>
+          <td>Mobile networks usually stop two people connecting to each other directly.
+          Voice will still work; the film is the part that struggles.</td>
+        </tr>
+        <tr>
+          <td>Someone is on office, campus or hotel wifi</td>
+          <td><b>Through the server</b></td>
+          <td>Those networks often block the kind of direct connection the film needs.</td>
+        </tr>
+        <tr>
+          <td>Your upload speed is very slow and there are several of you</td>
+          <td><b>Through the server</b></td>
+          <td>You upload once instead of feeding everybody, and after that your connection
+          stops being the bottleneck.</td>
+        </tr>
+        <tr>
+          <td>You want to start the film and then close your laptop</td>
+          <td><b>Through the server</b></td>
+          <td>Peer to peer needs somebody who has the film to stay in the room until a second
+          person has all of it.</td>
+        </tr>
+        <tr>
+          <td>You tried “between us” and somebody is stuck at 0%</td>
+          <td><b>Through the server</b></td>
+          <td>That is the sign a direct connection could not be made. Switching re-shares the
+          film, so allow time for the upload.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="note">
+      <span class="h">Telling them apart while you watch</span>
+      <p>If everyone can hear each other perfectly but somebody's film is not moving, that is
+      not a broken app — voice and film travel differently, and voice can get through where
+      the film cannot. That is the moment to switch to <b>Through the server</b>.</p>
+    </div>
+
+    <p class="sub">
+      The relay option only appears if the server you are using has storage set up for it.
+      If it is missing, whoever runs the server has not turned it on.
+    </p>
+
+    <h2 id="host-powers">What the host can do</h2>
+    <table>
+      <thead><tr><th>Setting</th><th>What it means</th></tr></thead>
+      <tbody>
+        <tr><td><b>Who can control playback</b></td>
+          <td>Everyone, or only you. Change it at any time with the
+          <em>Anyone who joins can control playback</em> tick box, or per person by hovering
+          their name and pressing <b>give control</b> / <b>take control</b>.</td></tr>
+        <tr><td><b>Pause when someone arrives late</b></td>
+          <td>On: the film waits for the newcomer. Off: it carries on.</td></tr>
+        <tr><td><b>Start without…</b></td>
+          <td>Begins even though somebody has not received enough of the film. It names who
+          gets left behind, because that is the decision you are making.</td></tr>
+        <tr><td><b>make host</b></td>
+          <td>Hands the room over. Useful when you have to leave and everyone else is staying.</td></tr>
+        <tr><td><b>ask to mute</b></td>
+          <td>Asks somebody's app to mute them. Advisory, as above.</td></tr>
+      </tbody>
+    </table>
+    <p class="sub">
+      If the host leaves, the room does not collapse — whoever has been there longest becomes
+      host automatically.
+    </p>
+
+    <h2 id="films">Films kept on your computer</h2>
+    <p>
+      Films you receive are kept, so watching one again does not download it again. Press
+      <b>Films</b> in the top bar to see what is stored, how much space it uses and how much
+      you have left, and to delete anything you are done with. A film that never finished
+      downloading is marked <em>partial</em>.
+    </p>
+    <p class="sub">
+      Nothing is deleted automatically. Films can be several gigabytes each, so it is worth a
+      look occasionally.
+    </p>
+
+    <h2 id="keys">Keyboard shortcuts</h2>
+    <table>
+      <thead><tr><th>Key</th><th>Does</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Space</kbd></td><td>Play or pause — for the whole room</td></tr>
+        <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Back or forward ten seconds, for the whole room</td></tr>
+        <tr><td><kbd>F</kbd></td><td>Fullscreen</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Leave fullscreen</td></tr>
+        <tr><td><kbd>Enter</kbd></td><td>In fullscreen: type a message</td></tr>
+        <tr><td><kbd>V</kbd> (hold)</td><td>Talk</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="trouble">When something goes wrong</h2>
+
+    <h3>“Open film” doesn't seem to do anything</h3>
+    <p>
+      Fixed, and worth knowing what it was: on some Linux desktops the system's own file
+      chooser told coCine you had cancelled whenever you double-clicked a file. coCine now
+      uses its own file browser on Linux, so double-click, <kbd>Enter</kbd> and the
+      <b>Open film</b> button all work. If you are on an older copy, update it.
+    </p>
+
+    <h3>It says “reconnecting”</h3>
+    <p>
+      Your connection to the meeting point dropped — wifi blip, or the server restarted. It
+      keeps trying by itself and rejoins the same room. If it never comes back, the server is
+      down; nothing on your side will fix that.
+    </p>
+
+    <h3>Somebody is stuck at 0%, but chat works</h3>
+    <p>
+      Their computer and yours cannot reach each other directly. Chat and voice go through the
+      meeting point, so they keep working. Switch the room to
+      <b>Through the server</b> — see <a href="#sharing">above</a>.
+    </p>
+
+    <h3>Everyone hears an echo of the film</h3>
+    <p>
+      Somebody is on speakers. Headphones fix it completely; there is no setting that can,
+      because the echo remover cannot hear the film coCine is playing.
+    </p>
+
+    <h3>“The film needs the sharer for now”</h3>
+    <p>
+      Only one complete copy exists — the host's. If they leave, the rest of the download
+      stops. Once a second person has the whole film it changes to
+      <em>safe for the sharer to leave</em>.
+    </p>
+
+    <h3>coCine says it needs mpv</h3>
+    <p>
+      mpv is the video player coCine drives. On the screen you are looking at there is a
+      command and a <b>Copy the command</b> button: paste it into a terminal, press enter,
+      then start coCine again. On Ubuntu-like systems, installing the <code>.deb</code> instead
+      avoids this entirely.
+    </p>
+
+    <div class="foot">
+      Still stuck? <a href="https://github.com/shreypatil/coCine/issues">Open an issue</a> —
+      say what you saw and what you expected, and it helps enormously to say which of the two
+      sharing options the room was using.
+    </div>
+  </main>
+</div>
+
+</body>
+</html>
