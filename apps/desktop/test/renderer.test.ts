@@ -30,7 +30,7 @@ const STATE = {
   fullscreen: false,
   code: 'BCDFGHJK', messages: [] as unknown[], isHost: true, mayControl: true,
   transfers: [] as unknown[], receiving: null as unknown,
-  phase: 'playing', waitForLatecomers: true, transferStatus: null as unknown,
+  phase: 'playing', waitForLatecomers: true, openControl: true, nativePicker: true, transferStatus: null as unknown,
     memberId: 'me',
     mode: 'p2p', originAvailable: false, voiceIce: [] as unknown[],
     startupError: null as unknown
@@ -75,6 +75,18 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
       setVideoSlot: rec('setVideoSlot'),
       openFile: rec('openFile'),
       openPath: rec('openPath'),
+      browseActive: rec('browseActive'),
+      browseStart: () => {
+        (w.__calls as Array<{ name: string; args: unknown[] }>).push({ name: 'browseStart', args: [] })
+        return Promise.resolve({ places: [{ label: 'Home', path: '/home/anjali' }, { label: 'Videos', path: '/home/anjali/Videos' }], path: '/home/anjali' })
+      },
+      browseList: (path: string, showAll?: boolean) => {
+        (w.__calls as Array<{ name: string; args: unknown[] }>).push({ name: 'browseList', args: [path, showAll] })
+        const dirs = (w.__tree ?? {}) as Record<string, unknown>
+        const hit = dirs[path]
+        if (!hit) return Promise.reject(new Error(`Could not open ${path}`))
+        return Promise.resolve(hit)
+      },
       pathForFile: () => '/films/stub.mkv',
       getIdentity: () => Promise.resolve({ id: 'local-1', name: 'anjali', server: 'ws://box:9000', lastCode: 'BCDFGHJK' }),
       listFilms: () => {
@@ -85,6 +97,8 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
       startAnyway: rec('startAnyway'),
       setWaitForLatecomers: rec('setWaitForLatecomers'),
         setMode: rec('setMode'),
+        setOpenControl: rec('setOpenControl'),
+        focusChat: rec('focusChat'),
       sendSignal: rec('sendSignal'),
       setVoiceState: rec('setVoiceState'),
       moderateVoice: rec('moderateVoice'),
@@ -791,11 +805,24 @@ describe('when the application cannot run at all', () => {
     await page.close()
   })
 
-  it('is not dismissible, because there is nothing behind it worth reaching', async () => {
+  it('cannot be dismissed, because there is nothing behind it worth reaching', async () => {
     await open()
     await push({ startupError: { message: 'no mpv', howToInstall: 'install it' } })
-    // The ordinary error banner has a Dismiss button; this deliberately does not.
-    expect(await page.locator('[data-testid="startuperror"] button').count()).toBe(0)
+    // The ordinary error banner has a Dismiss button; this offers only the one
+    // thing that helps, and stays put afterwards.
+    await page.click('[data-testid="copycmd"]')
+    expect(await page.locator('[data-testid="startuperror"]').count()).toBe(1)
+    await page.close()
+  })
+
+  it('puts the command on the clipboard, so nobody has to retype it', async () => {
+    // Whoever hits this wall is the least technical person in the room: they
+    // followed a link, and now they need a terminal command they did not write.
+    await open()
+    await push({ startupError: { message: 'no mpv', howToInstall: 'sudo pacman -S mpv' } })
+    await page.click('[data-testid="copycmd"]')
+    await expect.poll(async () => await page.evaluate(() => navigator.clipboard.readText()))
+      .toBe('sudo pacman -S mpv')
     await page.close()
   })
 
@@ -854,3 +881,283 @@ describe('a window a tiling manager made narrow', () => {
   })
 })
 
+
+describe('creating a room', () => {
+  /** The join panel, with identity loaded so the buttons are live. */
+  const lobby = async (): Promise<void> => {
+    await open()
+    await push({ connected: false })
+    await expect.poll(async () => await page.inputValue('[data-testid="name"]')).toBe('anjali')
+  }
+
+  it('shows the choices that shape the room rather than hiding them in a room that exists', async () => {
+    await lobby()
+    await page.waitForSelector('[data-testid="roomoptions"]')
+    const text = await page.textContent('[data-testid="roomoptions"]')
+    expect(text).toContain('How the film is shared')
+    expect(text).toContain('Who can control playback')
+    expect(text).toContain('Pause when someone arrives late')
+    await page.close()
+  })
+
+  it('keeps the latecomer checkbox beside its own sentence', async () => {
+    // The field labels in this panel are uppercase blocks, which stacked the
+    // checkbox above shouted text until the toggle was made more specific.
+    await lobby()
+    const row = await page.evaluate(() => {
+      const box = document.querySelector('[data-testid="optlate"]')!.getBoundingClientRect()
+      const label = document.querySelector('[data-testid="optlate"]')!.parentElement!.getBoundingClientRect()
+      return { boxMid: box.y + box.height / 2, labelMid: label.y + label.height / 2, labelHeight: label.height }
+    })
+    expect(Math.abs(row.boxMid - row.labelMid)).toBeLessThan(4)
+    expect(row.labelHeight).toBeLessThan(40)
+    await page.close()
+  })
+
+  it('creates with what the host chose', async () => {
+    await lobby()
+    await page.selectOption('[data-testid="optmode"]', 'origin')
+    await page.selectOption('[data-testid="optcontrol"]', 'host')
+    await page.uncheck('[data-testid="optlate"]')
+    await page.click('[data-testid="create"]')
+    expect((await calls('connect'))[0]![0]).toMatchObject({
+      code: null,
+      options: { mode: 'origin', openControl: false, waitForLatecomers: false }
+    })
+    await page.close()
+  })
+
+  it('defaults to peer to peer, everyone in control, waiting for latecomers', async () => {
+    await lobby()
+    await page.click('[data-testid="create"]')
+    expect((await calls('connect'))[0]![0]).toMatchObject({
+      options: { mode: 'p2p', openControl: true, waitForLatecomers: true }
+    })
+    await page.close()
+  })
+
+  it('says what each way of sharing costs, because one of them costs money', async () => {
+    await lobby()
+    await page.selectOption('[data-testid="optmode"]', 'origin')
+    expect(await page.textContent('[data-testid="roomoptions"]')).toContain('costs whoever runs the server')
+    await page.selectOption('[data-testid="optmode"]', 'p2p')
+    expect(await page.textContent('[data-testid="roomoptions"]')).toContain('Free')
+    await page.close()
+  })
+
+  it('sends no options when joining, because the room already has its own', async () => {
+    await lobby()
+    await page.click('[data-testid="join"]')
+    const args = (await calls('connect'))[0]![0] as { code: string; options?: unknown }
+    expect(args.code).toBe('BCDFGHJK')
+    expect(args.options).toBeUndefined()
+    await page.close()
+  })
+})
+
+describe('room settings once the room exists', () => {
+  it('lets the host close playback control to everyone else', async () => {
+    await open()
+    await push({ isHost: true, openControl: true })
+    expect(await page.isChecked('[data-testid="opencontrol"]')).toBe(true)
+    await page.click('[data-testid="opencontrol"]')
+    expect((await calls('setOpenControl'))[0]).toEqual([false])
+    await page.close()
+  })
+
+  it('offers that to the host only', async () => {
+    await open()
+    await push({ isHost: false })
+    expect(await page.locator('[data-testid="opencontrol"]').count()).toBe(0)
+    await page.close()
+  })
+})
+
+describe('chat in fullscreen', () => {
+  it('Enter asks the overlay for a composer, since nothing is drawn over the film until it does', async () => {
+    await open()
+    await push({ fullscreen: true, connected: true })
+    await page.keyboard.press('Enter')
+    expect(await calls('focusChat')).toHaveLength(1)
+    await page.close()
+  })
+
+  it('leaves Enter alone when the film is not fullscreen', async () => {
+    await open()
+    await push({ fullscreen: false, connected: true })
+    await page.keyboard.press('Enter')
+    expect(await calls('focusChat')).toHaveLength(0)
+    await page.close()
+  })
+})
+
+const TREE = {
+  '/home/anjali': {
+    path: '/home/anjali',
+    parent: '/home',
+    filtered: true,
+    entries: [
+      { name: 'Films', path: '/home/anjali/Films', isDir: true, bytes: 0, modifiedMs: 2, playable: false },
+      { name: 'trailer.mp4', path: '/home/anjali/trailer.mp4', isDir: false, bytes: 5 * 1024 ** 2, modifiedMs: 1, playable: true }
+    ]
+  },
+  '/home/anjali/Films': {
+    path: '/home/anjali/Films',
+    parent: '/home/anjali',
+    filtered: true,
+    entries: [
+      { name: 'dune.mkv', path: '/home/anjali/Films/dune.mkv', isDir: false, bytes: 4 * 1024 ** 3, modifiedMs: 3, playable: true }
+    ]
+  },
+  '/home/anjali/Videos': { path: '/home/anjali/Videos', parent: '/home/anjali', filtered: true, entries: [] }
+}
+
+describe('choosing a film without the system dialog', () => {
+  // Electron's fallback GTK chooser reports a double-click on a file as a
+  // cancellation, so on Linux opening a film silently did nothing. The
+  // application browses for itself there instead.
+  const openPicker = async (over: Record<string, unknown> = {}): Promise<void> => {
+    await open()
+    await page.evaluate(t => { (window as unknown as Record<string, unknown>).__tree = t }, TREE)
+    // The system dialog is trusted in the default fixture; these cases are
+    // about the platforms where it is not.
+    await push({ nativePicker: false, ...over })
+    await page.click('[data-testid="open"]')
+    await page.waitForSelector('[data-testid="picker"]')
+  }
+
+  it('uses the system dialog where it can be trusted', async () => {
+    await open()
+    await push({ nativePicker: true })
+    await page.click('[data-testid="open"]')
+    expect(await calls('openFile')).toHaveLength(1)
+    expect(await page.locator('[data-testid="picker"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('browses for itself where it cannot', async () => {
+    await openPicker()
+    expect(await calls('openFile')).toHaveLength(0)
+    expect(await page.locator('[data-testid="pickerfile"]').count()).toBe(1)
+    expect(await page.locator('[data-testid="pickerdir"]').count()).toBe(1)
+    await page.close()
+  })
+
+  it('gets the video surface out of the way, and puts it back', async () => {
+    // The native surface floats above the window's content: without this the
+    // picker is behind the film and cannot be seen at all.
+    await openPicker()
+    expect((await calls('browseActive'))[0]).toEqual([true])
+    await page.click('[data-testid="pickercancel"]')
+    await expect.poll(async () => (await calls('browseActive')).length).toBe(2)
+    expect((await calls('browseActive'))[1]).toEqual([false])
+    await page.close()
+  })
+
+  it('walks into a folder and opens the film in it', async () => {
+    await openPicker()
+    await page.dblclick('[data-testid="pickerdir"][data-name="Films"]')
+    await page.waitForSelector('[data-testid="pickerfile"][data-name="dune.mkv"]')
+    await page.dblclick('[data-testid="pickerfile"][data-name="dune.mkv"]')
+    expect((await calls('openPath'))[0]).toEqual(['/home/anjali/Films/dune.mkv'])
+    // And it gets out of the way once it has done its job.
+    expect(await page.locator('[data-testid="picker"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('opens the selected film from the keyboard, which the system dialog would not', async () => {
+    await openPicker()
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter')
+    expect((await calls('openPath'))[0]).toEqual(['/home/anjali/trailer.mp4'])
+    await page.close()
+  })
+
+  it('jumps to a place in one click', async () => {
+    await openPicker()
+    await page.click('[data-testid="pickerplaces"] >> text=Videos')
+    await page.waitForSelector('[data-testid="pickerempty"]')
+    expect(await page.textContent('[data-testid="pickerempty"]')).toContain('No films')
+    await page.close()
+  })
+
+  it('shows every file when asked', async () => {
+    await openPicker()
+    await page.check('[data-testid="pickerall"]')
+    await expect.poll(async () => (await calls('browseList')).at(-1)).toEqual(['/home/anjali', true])
+    await page.close()
+  })
+
+  it('says what went wrong with a folder it cannot read', async () => {
+    await openPicker()
+    await page.click('[data-testid="pickerup"]')
+    await page.waitForSelector('[data-testid="pickererror"]')
+    expect(await page.textContent('[data-testid="pickererror"]')).toContain('Could not open /home')
+    await page.close()
+  })
+
+  it('closes on Escape without opening anything', async () => {
+    await openPicker()
+    await page.keyboard.press('Escape')
+    await expect.poll(async () => await page.locator('[data-testid="picker"]').count()).toBe(0)
+    expect(await calls('openPath')).toHaveLength(0)
+    await page.close()
+  })
+
+  it('keeps the film underneath from hearing the keyboard', async () => {
+    // Space would otherwise pause the film while somebody is browsing.
+    await openPicker({ mediaName: 'dune.mkv', paused: true })
+    await page.keyboard.press(' ')
+    expect(await calls('play')).toHaveLength(0)
+    await page.close()
+  })
+})
+
+describe('the launch animation', () => {
+  it('shows the mark and then gets out of the way', async () => {
+    await open()
+    expect(await page.locator('[data-testid="splash"]').count()).toBe(1)
+    await expect.poll(async () => await page.locator('[data-testid="splash"]').count(), { timeout: 5000 }).toBe(0)
+    await page.close()
+  })
+
+  it('never blocks a click, even while it is on screen', async () => {
+    await open()
+    expect(await page.evaluate(() =>
+      getComputedStyle(document.querySelector('[data-testid="splash"]')!).pointerEvents)).toBe('none')
+    await page.close()
+  })
+})
+
+describe('the stage before a film is open', () => {
+  // The native video surface is off until something is playing, which is the
+  // only reason anything here can be seen at all.
+  it('says what to do instead of showing a black rectangle', async () => {
+    await open()
+    await push({ mediaName: null })
+    await page.waitForSelector('[data-testid="welcome"]')
+    const text = await page.textContent('[data-testid="welcome"]')
+    expect(text).toContain('Put a film on')
+    expect(text).toContain('Open film')
+    await page.close()
+  })
+
+  it('gets out of the way once there is a picture', async () => {
+    await open()
+    await push({ mediaName: 'dune.mkv' })
+    expect(await page.locator('[data-testid="welcome"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('never changes the size of the box the surface is measured from', async () => {
+    // Anything that grows the stage moves the native window with it.
+    await open()
+    await push({ mediaName: 'dune.mkv' })
+    const withFilm = await page.evaluate(() => document.querySelector('[data-testid="stage"]')!.getBoundingClientRect().height)
+    await push({ mediaName: null })
+    await page.waitForSelector('[data-testid="welcome"]')
+    const empty = await page.evaluate(() => document.querySelector('[data-testid="stage"]')!.getBoundingClientRect().height)
+    expect(empty).toBe(withFilm)
+    await page.close()
+  })
+})

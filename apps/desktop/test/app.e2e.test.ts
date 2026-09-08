@@ -23,7 +23,10 @@ beforeAll(async () => {
   execFileSync('npx', ['electron-vite', 'build'], { cwd: join(process.cwd(), 'apps/desktop'), stdio: 'ignore' })
   app = await electron.launch({
     args: [join(process.cwd(), 'apps/desktop')],
-    env: { ...process.env, COCINE_HEADLESS: '1' }
+    // COCINE_NATIVE_DIALOG keeps the system dialog in play here, because these
+    // cases are about the dialog path and stub it. Linux would otherwise use
+    // the application's own picker, which picker.e2e.test.ts covers.
+    env: { ...process.env, COCINE_HEADLESS: '1', COCINE_NATIVE_DIALOG: '1' }
   })
   page = await app.firstWindow()
   await page.waitForSelector('[data-testid="stage"]', { timeout: 20_000 })

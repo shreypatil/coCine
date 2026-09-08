@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { chromeOffset } from '../src/main/video-window.js'
 import { createHandlers, explainConnectError, type HandlerDeps, type PlayerLike, type RoomLike, type VideoLike, type TransferLike, type FilmStoreLike } from '../src/main/handlers.js'
 
 /**
@@ -62,7 +63,10 @@ function build (over: Partial<HandlerDeps> = {}): {
   let mediaPath: string | null = null
   let currentRoom: RoomLike | null = null
   let fullscreen = false
-  let identity = { id: 'local-1', name: 'me', server: 'ws://127.0.0.1:8787', lastCode: null as string | null }
+  let identity = {
+    id: 'local-1', name: 'me', server: 'ws://127.0.0.1:8787',
+    lastCode: null as string | null, lastFilmDir: null as string | null
+  }
   const deps: HandlerDeps = {
     showOpenDialog: vi.fn(async () => ({ canceled: false, filePaths: ['/films/dune.mkv'] })),
     getWindow: () => win,
@@ -268,10 +272,11 @@ describe('explaining why a connection failed', () => {
   it('says what to do about a dead address, not what errno it was', async () => {
     // The address usually came from a setting saved on a previous run, which
     // the person has never seen. "ECONNREFUSED" tells them nothing.
-    const e = explainConnectError(refused, 'ws://127.0.0.1:40689')
-    expect(e.message).toContain('ws://127.0.0.1:40689')
+    const e = explainConnectError(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }), 'ws://box.example:8787')
+    expect(e.message).toContain('ws://box.example:8787')
     expect(e.message).toMatch(/Is the server running/)
     expect(e.message).not.toMatch(/ECONNREFUSED|errno/)
+    void refused
   })
 
   it('distinguishes a name it cannot resolve from one that refused', () => {
@@ -292,7 +297,7 @@ describe('explaining why a connection failed', () => {
       createRoom: vi.fn(async () => { throw refused })
     })
     await expect(call(h, 'room:connect', { url: 'ws://127.0.0.1:40689', code: null, name: 'shreya' }))
-      .rejects.toThrow(/Is the server running/)
+      .rejects.toThrow(/Nothing is listening/)
   })
 
   it('does not remember an address that could not be reached', async () => {
@@ -389,5 +394,152 @@ describe('room:connect', () => {
     await call(h, 'file:openPath', '/films/solaris.mkv')
     await call(h, 'room:connect', { url: 'ws://x', roomCode: 'r', name: 'n' })
     expect(r.announceMedia).toHaveBeenCalledWith('solaris.mkv', 120)
+  })
+})
+
+const overlay = (): {
+  setSlot: ReturnType<typeof vi.fn>; setShape: ReturnType<typeof vi.fn>
+  focus: ReturnType<typeof vi.fn>; releaseFocus: ReturnType<typeof vi.fn>
+} => ({ setSlot: vi.fn(), setShape: vi.fn(), focus: vi.fn(), releaseFocus: vi.fn() })
+
+/** A room this client hosts, which is what the settings below all require. */
+const hosted = (over: Partial<RoomLike> = {}): RoomLike => ({
+  ...room(),
+  me: () => ({ id: 'm1', name: 'me', isHost: true, mayControl: true, inVoice: false, muted: false, deafened: false }),
+  setOpenControl: vi.fn(),
+  ...over
+} as RoomLike)
+
+describe('the fullscreen chat overlay', () => {
+  it('is given the video rectangle, because it is positioned inside it', async () => {
+    const o = overlay()
+    const { h } = build({ getOverlay: () => o })
+    await call(h, 'video:slot', { x: 4, y: 5, width: 600, height: 400 })
+    expect(o.setSlot).toHaveBeenCalledWith({ x: 4, y: 5, width: 600, height: 400 })
+  })
+
+  it('passes the reported bubbles through, so the film shows everywhere else', async () => {
+    const o = overlay()
+    const { h } = build({ getOverlay: () => o })
+    const rects = [{ x: 10, y: 300, width: 220, height: 40 }]
+    await call(h, 'overlay:shape', rects)
+    expect(o.setShape).toHaveBeenCalledWith(rects)
+  })
+
+  it('treats a missing shape as no shape rather than passing rubbish to X', async () => {
+    const o = overlay()
+    const { h } = build({ getOverlay: () => o })
+    await call(h, 'overlay:shape', undefined)
+    expect(o.setShape).toHaveBeenCalledWith([])
+  })
+
+  it('hands the keyboard over and back', async () => {
+    const o = overlay()
+    const { h } = build({ getOverlay: () => o })
+    await call(h, 'overlay:focus')
+    await call(h, 'overlay:releaseFocus')
+    expect(o.focus).toHaveBeenCalledOnce()
+    expect(o.releaseFocus).toHaveBeenCalledOnce()
+  })
+})
+
+describe('the options a host chooses while creating a room', () => {
+  it('carries them to the room being created', async () => {
+    const createRoom = vi.fn(async () => room())
+    const { h } = build({ createRoom })
+    await call(h, 'room:connect', {
+      url: 'ws://x', code: null, name: 'anjali',
+      options: { mode: 'origin', openControl: false, waitForLatecomers: false }
+    })
+    expect(createRoom).toHaveBeenCalledWith(expect.objectContaining({
+      options: { mode: 'origin', openControl: false, waitForLatecomers: false }
+    }))
+  })
+
+  it('lets the host change who may control playback afterwards', async () => {
+    const r = hosted()
+    const { h } = build({ getRoom: () => r })
+    await call(h, 'room:setOpenControl', false)
+    expect(r.setOpenControl).toHaveBeenCalledWith(false)
+  })
+
+  it('refuses that to anybody who is not the host', async () => {
+    const r = hosted({
+      me: () => ({ id: 'm1', name: 'me', isHost: false, mayControl: true, inVoice: false, muted: false, deafened: false })
+    })
+    const { h } = build({ getRoom: () => r })
+    await expect(call(h, 'room:setOpenControl', false)).rejects.toThrow('only the host')
+    expect(r.setOpenControl).not.toHaveBeenCalled()
+  })
+})
+
+describe('placing the native video surface', () => {
+  // The bug: Electron counts a Linux menu bar as part of the window's content,
+  // while the page's coordinates start below it, so the video was drawn about
+  // thirty pixels too high -- straight over the room code.
+  it('finds the gap between the window content and the page', () => {
+    expect(chromeOffset({ width: 1000, height: 800 }, { width: 1000, height: 772 }, 1)).toEqual({ x: 0, y: 28 })
+  })
+
+  it('finds nothing to correct when the page fills the content', () => {
+    expect(chromeOffset({ width: 1000, height: 800 }, { width: 1000, height: 800 }, 1)).toEqual({ x: 0, y: 0 })
+  })
+
+  it('works in display pixels, not CSS ones', () => {
+    expect(chromeOffset({ width: 2000, height: 1600 }, { width: 1000, height: 786 }, 2)).toEqual({ x: 0, y: 28 })
+  })
+
+  it('ignores a measurement that cannot be right rather than moving the video', () => {
+    expect(chromeOffset({ width: 1000, height: 800 }, { width: 1000, height: 100 }, 1)).toEqual({ x: 0, y: 0 })
+    expect(chromeOffset({ width: 1000, height: 800 }, undefined, 1)).toEqual({ x: 0, y: 0 })
+    expect(chromeOffset({ width: 1000, height: 800 }, { width: 0, height: 0 }, 1)).toEqual({ x: 0, y: 0 })
+  })
+})
+
+describe('browsing for a film without the system dialog', () => {
+  // Electron's fallback GTK chooser reports a double-click on a file as a
+  // cancellation, so on Linux the system dialog cannot open a film at all.
+  it('starts where the last film came from, with places to jump to', async () => {
+    const { h } = build({
+      getHome: () => '/home/anjali',
+      getIdentity: () => ({ id: 'i', name: 'anjali', server: 'ws://x', lastCode: null, lastFilmDir: '/films' })
+    })
+    const start = await call(h, 'browse:start') as { path: string; places: unknown[] }
+    // The folder only counts if it is still there; this one is not, so home.
+    expect(start.path).toBe('/home/anjali')
+    expect(Array.isArray(start.places)).toBe(true)
+  })
+
+  it('remembers the folder a film was opened from', async () => {
+    const { h, deps } = build()
+    await call(h, 'file:openPath', '/films/scifi/solaris.mkv')
+    expect(deps.getIdentity().lastFilmDir).toBe('/films/scifi')
+  })
+
+  it('hides the video surface while the picker is up, and restores it after', async () => {
+    // The surface floats above the window's content, so a panel drawn over the
+    // video area is invisible until it is out of the way.
+    const v = video()
+    const { h } = build({ getVideo: () => v })
+    await call(h, 'browse:active', true)
+    expect(v.suspend).toHaveBeenCalledOnce()
+    await call(h, 'browse:active', false)
+    expect(v.resume).toHaveBeenCalledOnce()
+  })
+})
+
+describe('explaining a connection that failed', () => {
+  it('tells someone who was sent a link what to do about the default address', () => {
+    // A fresh install points at this machine until told otherwise, and
+    // "connection refused" means nothing to the person who followed a link.
+    const e = explainConnectError({ code: 'ECONNREFUSED' }, 'ws://127.0.0.1:8787')
+    expect(e.message).toContain('this machine')
+    expect(e.message).toMatch(/invited you/)
+  })
+
+  it('keeps the plainer message for a real address', () => {
+    const e = explainConnectError({ code: 'ECONNREFUSED' }, 'ws://cocine.example:8787')
+    expect(e.message).toContain('Is the server running?')
+    expect(e.message).not.toContain('this machine')
   })
 })

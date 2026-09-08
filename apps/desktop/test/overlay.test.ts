@@ -65,7 +65,9 @@ async function openOverlay (): Promise<Page> {
     w.cocine = {
       sendChat: rec('sendChat'),
       releaseChatFocus: rec('releaseChatFocus'),
+      setOverlayShape: rec('setOverlayShape'),
       onFocusChat: (cb: () => void) => { w.__focusChat = cb; return () => {} },
+      onOverlayLayout: (cb: (l: string) => void) => { w.__layout = cb; return () => {} },
       onState: (cb: (s: unknown) => void) => { w.__push = cb; return () => {} }
     }
   })
@@ -84,18 +86,35 @@ const calls = async (name: string): Promise<unknown[][]> =>
   page.evaluate(n => (window as unknown as { __calls: Array<{ name: string; args: unknown[] }> })
     .__calls.filter(c => c.name === n).map(c => c.args), name)
 
+/** Open the composer the way the main window does, with a real focus event. */
+const openComposer = async (): Promise<void> => {
+  await page.evaluate(() => (window as unknown as { __focusChat: () => void }).__focusChat())
+  await page.waitForSelector('[data-testid="overlayinput"]')
+}
+
+const setLayout = async (layout: 'floating' | 'panel'): Promise<void> => {
+  await page.evaluate(l => (window as unknown as { __layout: (x: string) => void }).__layout(l), layout)
+}
+
+/** The rectangles the window was last cut down to. */
+const lastShape = async (): Promise<Array<{ x: number; y: number; width: number; height: number }>> => {
+  const all = await calls('setOverlayShape')
+  return (all.at(-1)?.[0] ?? []) as Array<{ x: number; y: number; width: number; height: number }>
+}
+
 describe('the fullscreen chat overlay', () => {
   it('renders the chat rather than the whole interface', async () => {
     await openOverlay()
     await push()
-    // The main interface must not be here: this window is 380px wide and sits
-    // over the film.
+    // The main interface must not be here: this window sits over the film.
     expect(await page.locator('[data-testid="controls"]').count()).toBe(0)
     expect(await page.locator('[data-testid="overlaychat"]').count()).toBe(1)
     await page.close()
   })
 
   it('shows what was said, including the system lines', async () => {
+    // The bug this exists for: the main process pushed state to the main window
+    // only, so this window rendered an empty conversation for ever.
     await openOverlay()
     await push()
     const text = await page.textContent('[data-testid="overlaychat"]')
@@ -104,9 +123,61 @@ describe('the fullscreen chat overlay', () => {
     await page.close()
   })
 
+  it('says nothing at all when there is nothing recent to say', async () => {
+    // No panel, no placeholder, no "nothing said yet" -- an idle overlay must
+    // not cover a single pixel of the film.
+    await openOverlay()
+    await push({ messages: [] })
+    expect(await page.locator('[data-testid="overlaymsg"]').count()).toBe(0)
+    expect(await page.textContent('[data-testid="overlay"]')).toBe('')
+    await expect.poll(async () => (await lastShape()).length).toBe(0)
+    await page.close()
+  })
+
+  it('drops a line once it has been up long enough', async () => {
+    await openOverlay()
+    await push({
+      messages: [{ id: 'old', kind: 'said', memberId: 'd', name: 'dev', text: 'said this ages ago', atServerMs: Date.now() - 10 * 60_000 }]
+    })
+    expect(await page.locator('[data-testid="overlaymsg"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('covers only the bubbles, never the whole window', async () => {
+    // This is the whole point of the window: the film shows through everywhere
+    // the conversation is not.
+    await openOverlay()
+    await push()
+    await expect.poll(async () => (await lastShape()).length).toBeGreaterThan(0)
+    const rects = await lastShape()
+    const view = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
+    const covered = rects.reduce((a, r) => a + r.width * r.height, 0)
+    expect(covered).toBeLessThan(view.w * view.h * 0.5)
+    for (const r of rects) {
+      expect(r.x).toBeGreaterThanOrEqual(0)
+      expect(r.y).toBeGreaterThanOrEqual(0)
+      expect(r.x + r.width).toBeLessThanOrEqual(view.w + 1)
+      expect(r.y + r.height).toBeLessThanOrEqual(view.h + 1)
+    }
+    await page.close()
+  })
+
+  it('has no composer until the main window asks for one', async () => {
+    await openOverlay()
+    await push()
+    expect(await page.locator('[data-testid="overlayinput"]').count()).toBe(0)
+    await openComposer()
+    // Focus lands a frame after the field is rendered; there is nothing to
+    // focus before that.
+    await expect.poll(async () => await page.evaluate(() =>
+      document.activeElement?.getAttribute('data-testid'))).toBe('overlayinput')
+    await page.close()
+  })
+
   it('sends a message on Enter and clears the field', async () => {
     await openOverlay()
     await push()
+    await openComposer()
     await page.fill('[data-testid="overlayinput"]', 'nice')
     await page.press('[data-testid="overlayinput"]', 'Enter')
     expect((await calls('sendChat'))[0]).toEqual(['nice'])
@@ -117,36 +188,46 @@ describe('the fullscreen chat overlay', () => {
   it('does not send an empty message', async () => {
     await openOverlay()
     await push()
+    await openComposer()
     await page.press('[data-testid="overlayinput"]', 'Enter')
     expect(await calls('sendChat')).toHaveLength(0)
     await page.close()
   })
 
-  it('hands the keyboard back on Escape', async () => {
+  it('hands the keyboard back on Escape and closes the composer', async () => {
     // Without this the main window's shortcuts stay dead while the overlay has
     // focus, including the one that leaves fullscreen.
     await openOverlay()
     await push()
+    await openComposer()
     await page.press('[data-testid="overlayinput"]', 'Escape')
     expect(await calls('releaseChatFocus')).toHaveLength(1)
+    expect(await page.locator('[data-testid="overlayinput"]').count()).toBe(0)
     await page.close()
   })
 
-  it('takes focus when the main window asks it to', async () => {
+  it('keeps older lines up while the composer is open', async () => {
+    // Replying to something you can no longer see is worse than covering a
+    // little more of the film for as long as someone is typing.
     await openOverlay()
-    await push()
-    await page.evaluate(() => (window as unknown as { __focusChat: () => void }).__focusChat())
-    expect(await page.evaluate(() =>
-      document.activeElement?.getAttribute('data-testid'))).toBe('overlayinput')
+    await push({
+      messages: [{ id: 'old', kind: 'said', memberId: 'd', name: 'dev', text: 'said this ages ago', atServerMs: Date.now() - 10 * 60_000 }]
+    })
+    expect(await page.locator('[data-testid="overlaymsg"]').count()).toBe(0)
+    await openComposer()
+    expect(await page.locator('[data-testid="overlaymsg"]').count()).toBe(1)
     await page.close()
   })
 
-  it('keeps the newest message in view', async () => {
+  it('falls back to a scrolling panel where the window cannot be shaped', async () => {
     await openOverlay()
+    await setLayout('panel')
     const many = Array.from({ length: 60 }, (_, i) => ({
       id: `m${i}`, kind: 'said', memberId: 'd', name: 'dev', text: `line ${i}`, atServerMs: Date.now()
     }))
     await push({ messages: many })
+    // The composer is always there in the panel, and the newest line is in view.
+    await page.waitForSelector('[data-testid="overlayinput"]')
     const atBottom = await page.evaluate(() => {
       const el = document.querySelector('[data-testid="overlaychat"]')!
       return el.scrollHeight - el.scrollTop - el.clientHeight < 4

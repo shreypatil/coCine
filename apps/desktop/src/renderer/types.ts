@@ -61,20 +61,48 @@ export interface State {
   receiving: { name: string; infoHash: string } | null
   phase: 'lobby' | 'preparing' | 'ready' | 'playing'
   waitForLatecomers: boolean
+  /** Whether someone arriving may drive playback without being handed it. */
+  openControl: boolean
+  /** Whether the system file dialog can be trusted here; see main/browse.ts. */
+  nativePicker: boolean
   transferStatus: TransferStatus | null
 }
+
+/** What the host settles before anybody else is in the room. */
+export interface RoomOptions {
+  mode?: 'p2p' | 'origin'
+  openControl?: boolean
+  waitForLatecomers?: boolean
+}
+
+export interface ShapeRect { x: number; y: number; width: number; height: number }
+
+export interface DirEntry {
+  name: string; path: string; isDir: boolean
+  bytes: number; modifiedMs: number; playable: boolean
+}
+export interface Listing { path: string; parent: string | null; entries: DirEntry[]; filtered: boolean }
+export interface Place { label: string; path: string }
 
 declare global {
   interface Window {
     cocine: {
-      setVideoSlot: (r: { x: number; y: number; width: number; height: number }) => Promise<unknown>
+      setVideoSlot: (r: {
+        x: number; y: number; width: number; height: number
+        viewport?: { width: number; height: number }
+      }) => Promise<unknown>
       openFile: () => Promise<{ path: string; name: string; durationSec: number | null } | null>
+      /** The application's own picker: where to start, and one folder at a time. */
+      browseStart: () => Promise<{ places: Place[]; path: string }>
+      browseList: (path: string, showAll?: boolean) => Promise<Listing>
+      /** Hides the video surface while the picker is up, or it covers it. */
+      browseActive: (active: boolean) => Promise<unknown>
       openPath: (path: string) => Promise<{ path: string; name: string; durationSec: number | null }>
       pathForFile: (f: File) => string | null
       getIdentity: () => Promise<{ id: string; name: string; server: string; lastCode: string | null }>
       listFilms: () => Promise<Library>
       removeFilm: (infoHash: string) => Promise<void>
-      connect: (o: { url: string; code: string | null; name: string }) => Promise<{ memberId: string; code: string }>
+      connect: (o: { url: string; code: string | null; name: string; options?: RoomOptions }) => Promise<{ memberId: string; code: string }>
       disconnect: () => Promise<void>
       sendChat: (text: string) => Promise<void>
       setControl: (memberId: string, mayControl: boolean) => Promise<void>
@@ -82,6 +110,7 @@ declare global {
       startAnyway: () => Promise<void>
       setWaitForLatecomers: (wait: boolean) => Promise<void>
       setMode: (mode: 'p2p' | 'origin') => Promise<unknown>
+      setOpenControl: (open: boolean) => Promise<unknown>
       play: () => Promise<void>
       pause: () => Promise<void>
       seek: (sec: number) => Promise<void>
@@ -97,6 +126,12 @@ declare global {
       onFocusChat: (cb: () => void) => () => void
       /** Overlay only: hand the keyboard back, so shortcuts work again. */
       releaseChatFocus: () => Promise<unknown>
+      /** Main window only: ask the overlay to take the keyboard. */
+      focusChat: () => Promise<unknown>
+      /** Overlay only: which rectangles of its window should exist at all. */
+      setOverlayShape: (rects: ShapeRect[]) => Promise<unknown>
+      /** Overlay only: whether it floats over the film or falls back to a box. */
+      onOverlayLayout: (cb: (layout: 'floating' | 'panel') => void) => () => void
     }
   }
 }

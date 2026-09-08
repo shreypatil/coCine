@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { locateMpv, bundledMpvPath, MpvNotFoundError } from '../src/locate.js'
+import { locateMpv, bundledMpvPath, MpvNotFoundError, INSTALL_HINTS, linuxInstallHint } from '../src/locate.js'
 
 /**
  * Someone installing coCine from a link has no reason to own a media player, so
@@ -73,12 +73,16 @@ describe('finding mpv', () => {
     }
   })
 
-  it('gives Linux users their package manager, not Homebrew', () => {
+  it('gives Linux users their own package manager, not Homebrew', () => {
+    // Which one depends on the machine this runs on -- the point is that it is
+    // a package manager command and not the wrong platform's.
     try {
       locateMpv({ platform: 'linux', env: { PATH: '' } })
       throw new Error('should not have found mpv')
     } catch (err) {
-      expect((err as MpvNotFoundError).howToInstall).toContain('apt install mpv')
+      const hint = (err as MpvNotFoundError).howToInstall
+      expect(hint).toMatch(/\b(apt|dnf|pacman|zypper|apk)\b/)
+      expect(hint).not.toContain('brew')
     }
   })
 
@@ -97,5 +101,27 @@ describe('finding mpv', () => {
     fake(join(pathDir, 'mpv'))
     expect(() => locateMpv({ env: { COCINE_MPV: '/nope/mpv', PATH: pathDir }, platform: 'linux' }))
       .toThrow(/COCINE_MPV/)
+  })
+})
+
+describe('telling someone how to install mpv', () => {
+  // Whoever reads this followed a link and now needs a terminal command. A list
+  // of three package managers to choose between is not an instruction.
+  const release = (id: string, like?: string): string =>
+    `NAME="X"\nID=${id}\n${like ? `ID_LIKE="${like}"\n` : ''}`
+
+  it('names the package manager this system actually has', () => {
+    expect(linuxInstallHint(release('ubuntu', 'debian'))).toBe('sudo apt install mpv')
+    expect(linuxInstallHint(release('debian'))).toBe('sudo apt install mpv')
+    expect(linuxInstallHint(release('fedora'))).toBe('sudo dnf install mpv')
+    expect(linuxInstallHint(release('manjaro', 'arch'))).toBe('sudo pacman -S mpv')
+    expect(linuxInstallHint(release('arch'))).toBe('sudo pacman -S mpv')
+    expect(linuxInstallHint(release('opensuse-tumbleweed', 'suse'))).toBe('sudo zypper install mpv')
+    expect(linuxInstallHint(release('alpine'))).toBe('sudo apk add mpv')
+  })
+
+  it('falls back to something honest when it cannot tell', () => {
+    expect(linuxInstallHint(null)).toBe(INSTALL_HINTS.linux)
+    expect(linuxInstallHint(release('someobscuredistro'))).toBe(INSTALL_HINTS.linux)
   })
 })

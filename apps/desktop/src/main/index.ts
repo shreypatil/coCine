@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import type { BrowserWindow as BW } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, basename } from 'node:path'
@@ -114,16 +114,31 @@ const state = (): Record<string, unknown> => {
     transfers: transfer?.progress() ?? [],
     phase: room?.phase ?? 'lobby',
     waitForLatecomers: room?.waitForLatecomers ?? true,
+    openControl: room?.openControl ?? true,
     transferStatus: room?.transfer ?? null,
     receiving,
     roomTorrent: room?.media?.source?.kind === 'p2p' ? room.media.source : null,
     mode: room?.mode ?? 'p2p',
     originAvailable: room?.originAvailable ?? false,
+    /**
+     * Whether the system's own file dialog can be trusted to return what was
+     * chosen. It cannot on Linux without a desktop portal -- an activate
+     * gesture is reported as a cancellation -- so the application browses for
+     * itself there. See browse.ts.
+     */
+    nativePicker: process.platform !== 'linux' || !!process.env.COCINE_NATIVE_DIALOG,
     startupError
   }
 }
 
 function createWindow (): void {
+  // The application has its own top bar, and Electron's stock File/Edit/View
+  // menu is both redundant and load-bearing in the wrong way: on Linux it is
+  // drawn inside the window's content area, which pushed the whole interface
+  // down by its height while the native video surface stayed where the page
+  // said, covering the room code. macOS keeps a menu, where removing it would
+  // take the standard shortcuts with it.
+  if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
   mainWin = new BrowserWindow({
     width: 1180,
     height: 720,
@@ -151,8 +166,13 @@ function createWindow (): void {
   mainWin.on('ready-to-show', () => { if (!process.env.COCINE_HEADLESS) mainWin?.show() })
   // The renderer relayouts on this, which resizes the video surface via the
   // existing slot reporting -- no separate fullscreen handling for the video.
+  // Both windows render from this. The overlay was left out of the first
+  // version, which is why the fullscreen chat sat on "Nothing said yet" for a
+  // conversation the main window was showing perfectly well.
   const pushState = (): void => {
-    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('state', state())
+    const s = state()
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('state', s)
+    overlay?.send('state', s)
   }
   // Chat is hidden with the rest of the sidebar in fullscreen, so it comes back
   // as an overlay over the film. Only while in a room -- there is nothing to
@@ -181,7 +201,16 @@ function createWindow (): void {
   // Fire and forget: an update check must never delay the window appearing, and
   // never prevent a film being watched if it fails.
   void (async () => {
-    const { autoUpdater } = await import('electron-updater')
+    // electron-updater is CommonJS. Bundled and imported from an ESM main it
+    // came back with only a default export, so the named import was undefined
+    // and every packaged build failed its update check with a TypeError before
+    // reaching the updater at all. Both shapes are accepted here.
+    const mod = await import('electron-updater') as unknown as {
+      autoUpdater?: unknown
+      default?: { autoUpdater?: unknown }
+    }
+    const autoUpdater = mod.autoUpdater ?? mod.default?.autoUpdater
+    if (!autoUpdater) throw new Error('electron-updater exposed no autoUpdater')
     const outcome = await startUpdates({
       updater: autoUpdater as never,
       isPackaged: app.isPackaged,
@@ -210,6 +239,7 @@ function createWindow (): void {
     const arg = process.argv.find(a => a.startsWith('--film='))
     if (arg) {
       mediaPath = arg.slice('--film='.length)
+      video?.setFilmOpen(true)
       try { await video?.player?.load(mediaPath) } catch (e) { console.error('could not load film:', e) }
     }
     statusTimer = setInterval(() => {
@@ -221,7 +251,7 @@ function createWindow (): void {
         const at = room?.expectedPosition() ?? 0
         transfer.updatePlayhead(id, at, room?.media?.durationSec ?? 0)
       }
-      if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('state', state())
+      pushState()
     }, 100)
   })
 }
@@ -230,6 +260,8 @@ const handlers = createHandlers({
   showOpenDialog: (parent, options) => dialog.showOpenDialog(parent as BW, options),
   getWindow: () => mainWin,
   getVideo: () => video,
+  getOverlay: () => overlay,
+  getHome: () => app.getPath('home'),
   getRoom: () => room,
   setRoom: r => { room = r as RoomClient | null },
   createRoom: async o => {
@@ -239,6 +271,8 @@ const handlers = createHandlers({
       url: o.url,
       code: o.code,
       name: o.name,
+      // Only meaningful when creating; the server ignores them on a join.
+      options: o.options,
       player: o.player as never,
       // What this machine can honestly say about the film it is fetching.
       getReport: (): { havePct: number; bufferEndSec: number; downBps: number; upBps: number; peers: number } | null => {
@@ -279,6 +313,7 @@ const handlers = createHandlers({
           // wherever a piece has not arrived; the stream blocks instead, which
           // is what makes watching before the download finishes possible.
           const url = tm.streamUrl(id) ?? path
+          video?.setFilmOpen(true)
           await video?.player?.load(url)
           mediaPath = path
           receiving = null
@@ -296,7 +331,12 @@ const handlers = createHandlers({
     return client as unknown as RoomLike
   },
   getMediaPath: () => mediaPath,
-  setMediaPath: p => { mediaPath = p },
+  setMediaPath: p => {
+    mediaPath = p
+    // The surface only belongs on screen once there is a picture for it; until
+    // then the interface owns that space and can say what to do.
+    video?.setFilmOpen(!!p)
+  },
   setFullScreen: on => mainWin?.setFullScreen(on),
   isFullScreen: () => mainWin?.isFullScreen() ?? false,
   getIdentity: () => identity.get(),

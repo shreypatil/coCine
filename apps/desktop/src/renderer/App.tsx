@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import type { ReactElement, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyEvent } from 'react'
 import { useVoice } from './useVoice.js'
+import { FilmPicker } from './FilmPicker.js'
 import { hhmm, initials, tint } from './format.js'
 import type { Library, State, StoredFilm } from './types.js'
 import './types.js'
@@ -39,6 +40,41 @@ const clock = (s: number | null | undefined): string => {
 }
 const pretty = (code: string): string => code.length > 4 ? `${code.slice(0, 4)}-${code.slice(4)}` : code
 
+/** How long the launch mark is on screen before the interface takes over. */
+const SPLASH_MS = 1550
+
+/**
+ * The mark, drawn on and then gone.
+ *
+ * It covers the window rather than delaying it: the application is already
+ * loading underneath, nothing waits for this, and it lets no clicks through to
+ * be swallowed. Someone who has asked for reduced motion never sees it -- the
+ * stylesheet hides it outright -- so it is decoration in the honest sense.
+ */
+function Splash (): ReactElement {
+  return (
+    <div className="splash" data-testid="splash" aria-hidden="true">
+      <div className="splash-inner">
+        <svg viewBox="0 0 40 40">
+          <defs>
+            <linearGradient id="splashgrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stopColor="#7B5CFF" />
+              <stop offset="0.55" stopColor="#B053C8" />
+              <stop offset="1" stopColor="#D14FA8" />
+            </linearGradient>
+          </defs>
+          <rect className="frame" x="2.5" y="7" width="35" height="26" rx="8"
+            fill="none" stroke="url(#splashgrad)" strokeWidth="2" strokeLinecap="round" />
+          <circle className="m1" cx="15.5" cy="20" r="4.1" fill="url(#splashgrad)" />
+          <circle className="m2" cx="25" cy="20" r="4.1" fill="none" stroke="url(#splashgrad)" strokeWidth="1.7" />
+        </svg>
+        <div className="word">coCine</div>
+        <div className="tag">watch together</div>
+      </div>
+    </div>
+  )
+}
+
 export function App (): ReactElement {
   const [s, setS] = useState<State | null>(null)
   const [url, setUrl] = useState('')
@@ -51,6 +87,14 @@ export function App (): ReactElement {
   const [error, setError] = useState<string | null>(null)
   const [dropping, setDropping] = useState(false)
   const [view, setView] = useState<'room' | 'films'>('room')
+  // What the host settles before anybody else arrives. Held here rather than
+  // pushed at the server, because until the room exists there is nothing to
+  // push at -- they travel with the creating connection.
+  const [optMode, setOptMode] = useState<'p2p' | 'origin'>('p2p')
+  const [optOpenControl, setOptOpenControl] = useState(true)
+  const [optWaitLate, setOptWaitLate] = useState(true)
+  const [picking, setPicking] = useState(false)
+  const [splash, setSplash] = useState(true)
   const [library, setLibrary] = useState<Library | null>(null)
   const slotRef = useRef<HTMLDivElement>(null)
   const chatRef = useRef<HTMLDivElement>(null)
@@ -59,6 +103,13 @@ export function App (): ReactElement {
   const voice = useVoice(s?.memberId ?? '', memberIds, s?.voiceIce ?? [])
 
   useEffect(() => window.cocine.onState(setS), [])
+
+  // Taken off the page once it has faded, so nothing is left over the interface
+  // holding a compositing layer for the rest of the session.
+  useEffect(() => {
+    const t = setTimeout(() => setSplash(false), SPLASH_MS)
+    return () => clearTimeout(t)
+  }, [])
 
   // Who you were last time. Loaded once, before anything is typed, so the join
   // panel is filled in rather than asking for the same three answers every launch.
@@ -81,9 +132,13 @@ export function App (): ReactElement {
     if (!el) return
     const push = (): void => {
       const r = el.getBoundingClientRect()
+      // The viewport goes with it: the main process cannot otherwise tell where
+      // this page's origin sits inside the window, and a menu bar it does not
+      // know about put the video over the top bar.
       void window.cocine.setVideoSlot({
         x: Math.round(r.x), y: Math.round(r.y),
-        width: Math.round(r.width), height: Math.round(r.height)
+        width: Math.round(r.width), height: Math.round(r.height),
+        viewport: { width: window.innerWidth, height: window.innerHeight }
       })
     }
     push()
@@ -133,6 +188,11 @@ export function App (): ReactElement {
     } finally { setBusy(false) }
   }, [])
 
+  // Read inside the key handler, which is registered once and must not be
+  // re-registered on every open and close.
+  const pickingRef = useRef(false)
+  pickingRef.current = picking
+
   const togglePlay = useCallback(() => {
     if (!s?.mediaName) return
     void guard(() => s.paused ? window.cocine.play() : window.cocine.pause())
@@ -142,16 +202,23 @@ export function App (): ReactElement {
     const onKey = (e: KeyboardEvent): void => {
       const el = e.target as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return
+      // The picker has the screen and its own keys; space must not reach the
+      // film underneath it.
+      if (pickingRef.current) return
       const pos = s?.positionSec ?? 0
       if (e.key === ' ') { e.preventDefault(); togglePlay() }
       else if (e.key === 'f' || e.key === 'F') { void window.cocine.setFullScreen() }
       else if (e.key === 'Escape' && s?.fullscreen) { void window.cocine.setFullScreen(false) }
       else if (e.key === 'ArrowRight' && s?.mediaName) { void guard(() => window.cocine.seek(pos + 10)) }
       else if (e.key === 'ArrowLeft' && s?.mediaName) { void guard(() => window.cocine.seek(Math.max(0, pos - 10))) }
+      // Fullscreen has no visible composer until it is asked for; this is how
+      // it is asked for. The overlay takes the keyboard and hands it back on
+      // Escape, so the shortcuts here are only dead while someone is typing.
+      else if (e.key === 'Enter' && s?.fullscreen && s?.connected) { e.preventDefault(); void window.cocine.focusChat() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [s?.positionSec, s?.mediaName, s?.fullscreen, togglePlay, guard])
+  }, [s?.positionSec, s?.mediaName, s?.fullscreen, s?.connected, togglePlay, guard])
 
   const onDrop = (e: ReactDragEvent): void => {
     e.preventDefault()
@@ -191,7 +258,23 @@ export function App (): ReactElement {
       onDrop={onDrop}
     >
       <header className="topbar" data-testid="header">
-        <span className="brand"><span className="mark" />coCine</span>
+        <span className="brand">
+          <svg className="mark" viewBox="0 0 40 40" aria-hidden="true">
+            <defs>
+              <linearGradient id="markgrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stopColor="#7B5CFF" />
+                <stop offset="0.55" stopColor="#B053C8" />
+                <stop offset="1" stopColor="#D14FA8" />
+              </linearGradient>
+            </defs>
+            <rect x="1.5" y="6" width="37" height="28" rx="9" fill="url(#markgrad)" />
+            <rect x="4.5" y="9" width="31" height="22" rx="6.5" fill="#0B0812" />
+            {/* Two playheads in step: the whole product in one mark. */}
+            <circle className="m1" cx="15.5" cy="20" r="4.1" fill="url(#markgrad)" />
+            <circle className="m2" cx="25" cy="20" r="4.1" fill="none" stroke="url(#markgrad)" strokeWidth="1.7" />
+          </svg>
+          <span className="wordmark">coCine</span>
+        </span>
         {s?.connected && s.code && (
           <button className="pill code" data-testid="code" onClick={copyCode} title="Copy the room code">
             <span className="live" />{pretty(s.code)}
@@ -212,7 +295,12 @@ export function App (): ReactElement {
         )}
         <span className="grow" />
         <button className="btn" data-testid="open" disabled={busy || !s?.ready}
-          onClick={() => void guard(() => window.cocine.openFile())}>
+          onClick={() => {
+            // The system dialog is only used where it can be trusted to return
+            // what was chosen; on Linux it cannot. See main/browse.ts.
+            if (s?.nativePicker) void guard(() => window.cocine.openFile())
+            else setPicking(true)
+          }}>
           Open film
         </button>
         <button className={view === 'films' ? 'btn on' : 'btn'} data-testid="films"
@@ -229,13 +317,33 @@ export function App (): ReactElement {
             <h2>{s.startupError.message}</h2>
             {s.startupError.howToInstall && (
               <>
-                <p>To fix it:</p>
-                <p className="wall-cmd">{s.startupError.howToInstall}</p>
+                <p>coCine plays films with mpv, which is not on this machine yet. Paste this into a terminal:</p>
+                <p className="wall-cmd" data-testid="installcmd">{s.startupError.howToInstall}</p>
+                <button className="btn" data-testid="copycmd"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(s.startupError!.howToInstall)
+                      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1400) })
+                      .catch(() => setError('Could not copy to the clipboard'))
+                  }}>
+                  {copied ? 'Copied' : 'Copy the command'}
+                </button>
               </>
             )}
-            <p className="quiet">Restart coCine once it is installed.</p>
+            <p className="quiet">Then start coCine again.</p>
           </div>
         </div>
+      )}
+
+      {splash && <Splash />}
+
+      {picking && (
+        <FilmPicker
+          onClose={() => setPicking(false)}
+          onPick={path => {
+            setPicking(false)
+            void guard(() => window.cocine.openPath(path))
+          }}
+        />
       )}
 
       {error && (
@@ -246,9 +354,36 @@ export function App (): ReactElement {
       )}
 
       <main className="body">
-        {/* Intentionally empty. mpv's surface covers this box from launch, so
-            anything rendered inside is never seen. */}
-        <div className="stage" ref={slotRef} data-testid="stage" />
+        {/* mpv's surface covers this box exactly, but only once a film is
+            open -- so this is the one moment anything drawn here can be seen,
+            and it is worth saying what to do rather than showing a black
+            rectangle. Nothing inside may change the box's size. */}
+        <div className="stage" ref={slotRef} data-testid="stage">
+          {!s?.mediaName && !s?.receiving && (
+            <div className="welcome" data-testid="welcome">
+              <svg viewBox="0 0 40 40" aria-hidden="true" className="wl-mark">
+                <defs>
+                  <linearGradient id="wlgrad" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stopColor="#7B5CFF" />
+                    <stop offset="0.55" stopColor="#B053C8" />
+                    <stop offset="1" stopColor="#D14FA8" />
+                  </linearGradient>
+                </defs>
+                <rect x="2.5" y="7" width="35" height="26" rx="8" fill="none"
+                  stroke="url(#wlgrad)" strokeWidth="1.6" />
+                <circle cx="15.5" cy="20" r="4.1" fill="url(#wlgrad)" />
+                <circle cx="25" cy="20" r="4.1" fill="none" stroke="url(#wlgrad)" strokeWidth="1.6" />
+              </svg>
+              <h1>Put a film on</h1>
+              <p>Drag one into this window, or use <b>Open film</b>.</p>
+              <p className="wl-quiet">
+                {s?.connected
+                  ? 'Everyone in the room gets it from you — nobody has to find their own copy.'
+                  : 'Create a room afterwards and share the code; everyone else gets the film from you.'}
+              </p>
+            </div>
+          )}
+        </div>
 
         <aside className="sidebar">
           {view === 'films' ? (
@@ -289,11 +424,47 @@ export function App (): ReactElement {
                     onClick={() => setUrl(DEFAULT_SERVER)}>use default</button>
                 )}
               </label>
+              <div className="opts" data-testid="roomoptions">
+                <h5>Your room</h5>
+                <label className="opt">
+                  How the film is shared
+                  <select className="sel" value={optMode} data-testid="optmode"
+                    onChange={e => setOptMode(e.target.value as 'p2p' | 'origin')}>
+                    <option value="p2p">Between us — peer to peer</option>
+                    <option value="origin">Through the server — relay</option>
+                  </select>
+                </label>
+                <p className="quiet small">
+                  {optMode === 'p2p'
+                    ? 'Everyone shares with everyone. Free, and faster the more people there are — but it needs peers who can reach each other.'
+                    : 'You upload once and everyone downloads from the server. Works when peer to peer cannot, and costs whoever runs the server. If that server has no storage, the room falls back to peer to peer and says so.'}
+                </p>
+                <label className="opt">
+                  Who can control playback
+                  <select className="sel" value={optOpenControl ? 'everyone' : 'host'} data-testid="optcontrol"
+                    onChange={e => setOptOpenControl(e.target.value === 'everyone')}>
+                    <option value="everyone">Everyone in the room</option>
+                    <option value="host">Only me</option>
+                  </select>
+                </label>
+                <label className="toggle">
+                  <input type="checkbox" checked={optWaitLate} data-testid="optlate"
+                    onChange={e => setOptWaitLate(e.target.checked)} />
+                  Pause when someone arrives late
+                </label>
+                <p className="quiet small">All three can be changed later, by whoever is host.</p>
+              </div>
               <button className="btn primary wide" data-testid="create" disabled={busy || !s?.ready || !identityLoaded || !name.trim()}
-                onClick={() => void guard(() => window.cocine.connect({ url, code: null, name }))}>
+                onClick={() => void guard(() => window.cocine.connect({
+                  url,
+                  code: null,
+                  name,
+                  options: { mode: optMode, openControl: optOpenControl, waitForLatecomers: optWaitLate }
+                }))}>
                 Create a room
               </button>
               <div className="or"><span>or join one</span></div>
+              <p className="quiet small">Joining takes the room's settings as the host left them.</p>
               <div className="joinrow">
                 <input value={joinCode} onChange={e => setJoinCode(e.target.value)} placeholder="CODE" spellCheck={false} data-testid="joincode" />
                 <button className="btn" data-testid="join" disabled={busy || !s?.ready || !identityLoaded || !name.trim() || !joinCode.trim()}
@@ -320,18 +491,21 @@ export function App (): ReactElement {
                       {!m.mayControl && !m.isHost && <span className="tag muted" title="Cannot control playback">no control</span>}
                       {s.isHost && !m.isHost && (
                         <span className="rowacts">
+                          {/* Spelled out rather than abbreviated: `take` and
+                              `give` meant nothing without hovering for the
+                              tooltip, and this is the panel a guest reads. */}
                           <button className="mini" data-testid="togglecontrol"
-                            title={m.mayControl ? 'Take playback control' : 'Give playback control'}
+                            title={m.mayControl ? `Stop ${m.name} controlling playback` : `Let ${m.name} control playback`}
                             onClick={() => void guard(() => window.cocine.setControl(m.id, !m.mayControl))}>
-                            {m.mayControl ? 'take' : 'give'}
+                            {m.mayControl ? 'take control' : 'give control'}
                           </button>
-                          <button className="mini" data-testid="makehost" title="Make host"
-                            onClick={() => void guard(() => window.cocine.transferHost(m.id))}>host</button>
+                          <button className="mini" data-testid="makehost" title={`Make ${m.name} the host`}
+                            onClick={() => void guard(() => window.cocine.transferHost(m.id))}>make host</button>
                           {m.inVoice && (
                             <button className="mini" data-testid="mutethem"
                               title="Ask them to mute — advisory, their client chooses to comply"
                               onClick={() => void guard(() => window.cocine.moderateVoice(m.id, m.muted ? 'unmute' : 'mute'))}>
-                              {m.muted ? 'unmute' : 'mute'}
+                              {m.muted ? 'ask to unmute' : 'ask to mute'}
                             </button>
                           )}
                         </span>
@@ -339,7 +513,61 @@ export function App (): ReactElement {
                     </li>
                   ))}
                 </ul>
+                {s.isHost && (
+                  <label className="toggle hostopt">
+                    <input type="checkbox" checked={s.openControl} data-testid="opencontrol"
+                      onChange={e => void guard(() => window.cocine.setOpenControl(e.target.checked))} />
+                    Anyone who joins can control playback
+                  </label>
+                )}
               </div>
+
+              {(s.phase === 'preparing' || s.phase === 'ready') && s.transferStatus && (
+              <div className="sect gate" data-testid="gate">
+                <h4>{s.phase === 'ready' ? 'Everyone is ready' : 'Getting everyone ready'}</h4>
+                {s.phase === 'preparing' && (
+                  <p className="gate-eta" data-testid="eta">
+                    {countdown(s.transferStatus.etaSec)}
+                    {s.transferStatus.bottleneck && <span> · waiting on <b>{s.transferStatus.bottleneck}</b></span>}
+                  </p>
+                )}
+                <ul className="peers">
+                  {s.transferStatus.perPeer.map(p => (
+                    <li key={p.memberId} data-testid="peerstatus" data-name={p.name}>
+                      <span className="pn">{p.name}</span>
+                      <span className={`pv ${p.ready ? 'ok' : ''}`}>{Math.round(p.havePct * 100)}%</span>
+                      <span className="pd">{rate(p.downBps)}</span>
+                      <div className="bar"><span style={{ width: `${Math.round(p.havePct * 100)}%` }} /></div>
+                    </li>
+                  ))}
+                </ul>
+                {s.transferStatus.tMinSec !== null && (
+                  <p className="quiet" data-testid="floor">
+                    fastest possible {countdown(s.transferStatus.tMinSec)} — nothing can beat that
+                  </p>
+                )}
+                <p className={s.transferStatus.safeForSharerToLeave ? 'quiet safe' : 'quiet'} data-testid="durability">
+                  {s.transferStatus.safeForSharerToLeave
+                    ? 'Safe for the sharer to leave — the room has a second full copy'
+                    : `${s.transferStatus.fullCopies} full ${s.transferStatus.fullCopies === 1 ? 'copy' : 'copies'} in the room — the film needs the sharer for now`}
+                </p>
+                {s.isHost && (
+                  <div className="gate-acts">
+                    {s.phase === 'preparing' && (
+                      <button className="btn" data-testid="startanyway"
+                        onClick={() => void guard(() => window.cocine.startAnyway())}>
+                        Start without {s.transferStatus.perPeer.filter(p => !p.ready).map(p => p.name).join(', ')}
+                      </button>
+                    )}
+                    <label className="toggle">
+                      <input type="checkbox" checked={s.waitForLatecomers} data-testid="waitlate"
+                        onChange={e => void guard(() => window.cocine.setWaitForLatecomers(e.target.checked))} />
+                      Pause when someone arrives late
+                    </label>
+                  </div>
+                )}
+              </div>
+            )}
 
               <div className="sect voice" data-testid="voice">
                 <h4>Voice</h4>
@@ -398,52 +626,6 @@ export function App (): ReactElement {
                 </div>
               </div>
             </>
-          )}
-          {view === 'room' && s?.connected && (s.phase === 'preparing' || s.phase === 'ready') && s.transferStatus && (
-            <div className="sect gate" data-testid="gate">
-              <h4>{s.phase === 'ready' ? 'Everyone is ready' : 'Getting everyone ready'}</h4>
-              {s.phase === 'preparing' && (
-                <p className="gate-eta" data-testid="eta">
-                  {countdown(s.transferStatus.etaSec)}
-                  {s.transferStatus.bottleneck && <span> · waiting on <b>{s.transferStatus.bottleneck}</b></span>}
-                </p>
-              )}
-              <ul className="peers">
-                {s.transferStatus.perPeer.map(p => (
-                  <li key={p.memberId} data-testid="peerstatus" data-name={p.name}>
-                    <span className="pn">{p.name}</span>
-                    <span className={`pv ${p.ready ? 'ok' : ''}`}>{Math.round(p.havePct * 100)}%</span>
-                    <span className="pd">{rate(p.downBps)}</span>
-                    <div className="bar"><span style={{ width: `${Math.round(p.havePct * 100)}%` }} /></div>
-                  </li>
-                ))}
-              </ul>
-              {s.transferStatus.tMinSec !== null && (
-                <p className="quiet" data-testid="floor">
-                  fastest possible {countdown(s.transferStatus.tMinSec)} — nothing can beat that
-                </p>
-              )}
-              <p className={s.transferStatus.safeForSharerToLeave ? 'quiet safe' : 'quiet'} data-testid="durability">
-                {s.transferStatus.safeForSharerToLeave
-                  ? 'Safe for the sharer to leave — the room has a second full copy'
-                  : `${s.transferStatus.fullCopies} full ${s.transferStatus.fullCopies === 1 ? 'copy' : 'copies'} in the room — the film needs the sharer for now`}
-              </p>
-              {s.isHost && (
-                <div className="gate-acts">
-                  {s.phase === 'preparing' && (
-                    <button className="btn" data-testid="startanyway"
-                      onClick={() => void guard(() => window.cocine.startAnyway())}>
-                      Start without {s.transferStatus.perPeer.filter(p => !p.ready).map(p => p.name).join(', ')}
-                    </button>
-                  )}
-                  <label className="toggle">
-                    <input type="checkbox" checked={s.waitForLatecomers} data-testid="waitlate"
-                      onChange={e => void guard(() => window.cocine.setWaitForLatecomers(e.target.checked))} />
-                    Pause when someone arrives late
-                  </label>
-                </div>
-              )}
-            </div>
           )}
           {view === 'room' && (
             <div className="sect film">

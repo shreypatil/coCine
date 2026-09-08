@@ -133,8 +133,24 @@ export class SignallingServer {
     if (msg.t === 'hello') {
       if (this.conns.has(ws)) return this.send(ws, { t: 'error', message: 'already in a room' })
       let room: Room
+      /** Told to the creator once they are in the room, not dropped silently. */
+      let optionNote: string | null = null
       if (msg.code === null) {
         room = this.rooms.create(this.startLeadMs)
+        const o = msg.options
+        if (o) {
+          if (o.openControl !== undefined) room.openControl = o.openControl
+          if (o.waitForLatecomers !== undefined) room.waitForLatecomers = o.waitForLatecomers
+          if (o.mode === 'origin') {
+            // Asking for the relay on a server that has no storage is a
+            // reasonable thing for a client to do -- it cannot know until it
+            // has connected. Fall back rather than fail, and say so.
+            if (this.opts.origin) room.mode = 'origin'
+            else optionNote = 'this server has no relay storage, so the film is shared peer to peer'
+          } else if (o.mode === 'p2p') {
+            room.mode = 'p2p'
+          }
+        }
       } else {
         const found = this.rooms.get(normaliseCode(msg.code))
         if (!found) return this.send(ws, { t: 'error', message: 'No room with that code' })
@@ -156,6 +172,7 @@ export class SignallingServer {
       this.send(ws, { t: 'chat.history', messages: room.chat })
       this.send(ws, { t: 'playback.schedule', state: room.state, seq: room.seq })
       this.emitChat(room, 'joined', msg.name, 'joined the room', memberId)
+      if (optionNote) this.emitChat(room, 'system', msg.name, optionNote, memberId)
       this.broadcastState(room)
       this.log(`${msg.name} joined ${room.code} (${room.members.size} present)`)
       return
@@ -285,6 +302,15 @@ export class SignallingServer {
         return
       }
 
+      case 'room.setOpenControl': {
+        if (!me.isHost) return this.send(ws, { t: 'error', message: 'Only the host can change that' })
+        conn.room.openControl = msg.open
+        this.emitChat(conn.room, 'system', me.name,
+          msg.open ? 'let everyone control playback' : 'kept playback control to the host', me.id)
+        this.broadcastState(conn.room)
+        return
+      }
+
       case 'chat.send': {
         const text = msg.text.trim()
         if (!text) return
@@ -344,6 +370,7 @@ export class SignallingServer {
       trackerUrl: this.trackerUrl,
       phase: room.phase(),
       waitForLatecomers: room.waitForLatecomers,
+      openControl: room.openControl,
       mode: room.mode,
       originAvailable: !!this.opts.origin
     })

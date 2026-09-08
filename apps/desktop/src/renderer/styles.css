@@ -96,8 +96,18 @@ body {
 }
 .brand { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
 .brand .mark {
-  width: 21px; height: 21px; border-radius: 7px;
-  background: var(--grad); box-shadow: 0 0 14px rgba(123, 92, 255, .5);
+  width: 26px; height: 26px; flex: 0 0 auto;
+  filter: drop-shadow(0 0 10px rgba(123, 92, 255, .45));
+}
+/* The open playhead pulses gently; the filled one holds. Two heads in step is
+   the mark, and the pulse is the only motion in the top bar. */
+.brand .mark .m2 { transform-origin: 25px 20px; animation: markpulse 3.4s ease-in-out infinite; }
+@keyframes markpulse {
+  0%, 100% { transform: scale(1); opacity: .9; }
+  50% { transform: scale(1.13); opacity: 1; }
+}
+.brand .wordmark {
+  background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .grow { flex: 1; }
 .pill {
@@ -409,49 +419,91 @@ body {
   user-select: text;
 }
 
-/* ---- fullscreen chat overlay -------------------------------------------- */
-/* Its own window, stacked over the video. Opaque because X11 without a
-   compositing manager paints transparent windows black. Fills the window it is
-   given, since that window is sized by the main process. */
-.ov {
-  position: fixed;
-  inset: 0;
+/* ---- fullscreen chat over the film -------------------------------------- */
+/* Its own window, stacked over the video, and then cut down to exactly the
+   bubbles below: the main process shapes the window to the rectangles this page
+   reports, so the film is untouched everywhere else. Nothing here may assume a
+   backdrop -- there isn't one. `.panel` is the fallback for a display server
+   that cannot shape a window, where the old opaque box is still better than
+   nothing at all. */
+body.overlay-body { background: transparent; }
+
+.ov { position: fixed; inset: 0; display: flex; flex-direction: column; font-size: 12.5px; }
+
+.ov.floating {
+  justify-content: flex-end;
+  padding: 22px;
+  gap: 8px;
+  background: transparent;
+  pointer-events: none;
+}
+.ov.floating .ov-list {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 0;
+  overflow: visible;
+}
+/* Each of these is one shape rectangle, which is why they are sized to their
+   content and never stretch: an empty stretch of bubble is an opaque stripe
+   across the film. */
+.ov.floating .ov-msg,
+.ov.floating .ov-sys {
+  max-width: min(460px, 46vw);
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(11, 8, 18, .82);
+  border: 0;
+  animation: ovin .22s cubic-bezier(.2, .8, .3, 1) both;
+}
+.ov.floating .ov-sys { padding-left: 12px; }
+.ov.floating .ov-compose {
+  flex: 0 0 auto;
+  width: min(460px, 46vw);
+  border-radius: 12px;
+  background: rgba(11, 8, 18, .9);
+  box-shadow: inset 0 0 0 1px rgba(123, 92, 255, .55);
+  pointer-events: auto;
+  animation: ovin .18s ease-out both;
+}
+.ov.floating .ov-input { background: transparent; border: 0; border-radius: 12px; }
+
+@keyframes ovin {
+  from { opacity: 0; transform: translateY(6px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.ov.panel {
   background: var(--panel, #0d0f16);
   border: 1px solid var(--line, #2c3040);
   border-radius: 12px;
   overflow: hidden;
-  font-size: 12.5px;
 }
-.ov-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  scrollbar-width: thin;
+.ov.panel .ov-list {
+  flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 8px; scrollbar-width: thin;
 }
+.ov.panel .ov-compose { border-top: 1px solid var(--line, #2c3040); }
+
 .ov-empty { margin: 0; opacity: .5; }
 .ov-msg { display: flex; gap: 8px; align-items: flex-start; }
 .ov-txt { min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
-.ov-txt b { display: block; font-weight: 600; font-size: 11.5px; opacity: .85; }
+.ov-txt b { display: block; font-weight: 600; font-size: 11.5px; opacity: .95; }
 .ov-txt b i { font-style: normal; opacity: .5; margin-left: 6px; font-size: 10.5px; }
-.ov-sys { margin: 0; opacity: .6; font-size: 11.5px; overflow-wrap: anywhere; }
+.ov-sys { margin: 0; opacity: .75; font-size: 11.5px; overflow-wrap: anywhere; }
 .ov-sys b { font-weight: 600; }
 .ov-input {
-  flex: none;
+  display: block; width: 100%;
   border: 0;
-  border-top: 1px solid var(--line, #2c3040);
   background: var(--panel-2, #12141d);
   color: inherit;
   font: inherit;
   padding: 10px 12px;
   outline: none;
 }
-.ov-input:focus { background: var(--s4, #1a1d28); }
+.ov-input::placeholder { color: var(--tx3); }
 
 /* Connection lost, and trying to come back. Deliberately prominent: the failure
    this replaces was an interface that looked entirely healthy while nothing
@@ -472,3 +524,402 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .pill.recon .spin { animation: none; opacity: .6; }
 }
+
+/* ============================================================================
+   Room options, chosen before the room exists
+   ========================================================================= */
+.opts {
+  margin: 4px 0 12px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-panel);
+  background: rgba(23, 29, 40, .5);
+  display: flex; flex-direction: column; gap: 9px;
+  animation: risein .26s cubic-bezier(.2, .8, .3, 1) both;
+}
+.opts h5 {
+  margin: 0; font-size: 10px; font-weight: 600;
+  letter-spacing: .13em; text-transform: uppercase; color: var(--tx3);
+}
+.opts .opt { display: block; margin: 0; font-size: 10px; letter-spacing: .11em; text-transform: uppercase; color: var(--tx3); }
+/* `.join label` is a block of uppercase small caps, which is right for a field
+   label and wrong for a checkbox: it stacked the box above its own sentence and
+   shouted it. More specific, so the toggle stays a row of ordinary prose. */
+.join .toggle, .opts .toggle {
+  display: flex; align-items: center; gap: 8px; margin: 2px 0 0;
+  font-size: 11.5px; letter-spacing: 0; text-transform: none; color: var(--tx2);
+}
+.join .toggle input, .opts .toggle input { display: inline-block; width: auto; margin: 0; }
+.opts .quiet.small { color: var(--tx3); }
+.sel {
+  display: block; width: 100%; margin-top: 5px;
+  background: var(--s3); color: var(--tx);
+  border: 1px solid var(--line); border-radius: var(--r-ctl);
+  padding: 7px 9px; font: inherit; font-size: 12.5px;
+  text-transform: none; letter-spacing: 0;
+  transition: border-color .14s, background .14s;
+}
+.sel:hover { background: var(--s4); }
+.sel:focus { border-color: var(--a); outline: none; }
+.toggle.hostopt { margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+
+/* ============================================================================
+   Motion
+   Every animation is opacity or transform only -- nothing here moves layout,
+   because the native video surface is positioned from measured rectangles and
+   an animated one would drag mpv around with it. All of it is switched off
+   under prefers-reduced-motion at the end of the file.
+   ========================================================================= */
+@keyframes risein {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes slidein {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes dropin {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pop {
+  0% { transform: scale(.9); }
+  60% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+@keyframes sheen {
+  from { background-position: -140% 0; }
+  to { background-position: 240% 0; }
+}
+@keyframes breathe {
+  0%, 100% { opacity: .55; }
+  50% { opacity: 1; }
+}
+
+/* Panels arrive rather than appear. The stagger is small on purpose: a sidebar
+   that takes half a second to assemble is a sidebar you wait for. */
+.sect, .chatwrap { animation: risein .3s cubic-bezier(.2, .8, .3, 1) both; }
+.sect.gate { animation-delay: .04s; }
+.sect.film { animation-delay: .06s; }
+.banner { animation: dropin .2s ease-out both; }
+.wall-card { animation: risein .3s cubic-bezier(.2, .8, .3, 1) both; }
+
+/* A new line slides in from the side it came from. */
+.msg, .sys { animation: slidein .22s cubic-bezier(.2, .8, .3, 1) both; }
+.filmlist li { animation: risein .24s cubic-bezier(.2, .8, .3, 1) both; }
+.people li { transition: background .14s, transform .1s; border-radius: 8px; padding-inline: 4px; margin-inline: -4px; }
+.people li:hover { background: rgba(123, 92, 255, .09); }
+.av { transition: transform .16s cubic-bezier(.2, .8, .3, 1), box-shadow .16s; }
+.people li:hover .av { transform: translateY(-1px) scale(1.04); box-shadow: 0 4px 12px -6px rgba(0, 0, 0, .9); }
+
+/* The live dot is the room breathing; the voice dot is somebody present. */
+.pill .live { animation: breathe 2.6s ease-in-out infinite; }
+.vdot { animation: breathe 2.2s ease-in-out infinite; }
+.vdot.off { animation: none; }
+
+.pill { transition: background .14s, border-color .14s, color .14s, transform .08s; }
+.pill.code:active { transform: translateY(1px); }
+.pill.code .copy { transition: color .14s; }
+.pill.code:hover .copy { color: var(--a); }
+
+/* The primary button carries a slow sheen. It is the one thing on the screen
+   asking to be pressed, and it is the only element that gets this. */
+.btn.primary:not(:disabled) {
+  background-image:
+    linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, .22) 42%, transparent 62%),
+    var(--grad);
+  background-size: 260% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  animation: sheen 5.5s ease-in-out infinite;
+}
+.btn { transition: background .14s, border-color .14s, transform .08s, box-shadow .14s, color .14s; }
+.btn:hover:not(:disabled) { border-color: var(--s4); }
+.btn.primary:hover:not(:disabled) { box-shadow: 0 8px 24px -10px rgba(123, 92, 255, 1); }
+.mini { transition: background .12s, color .12s, border-color .12s, transform .08s; }
+.mini:active { transform: translateY(1px); }
+.rowacts .mini { animation: slidein .16s ease-out both; }
+
+/* Progress that is actually moving should look like it. */
+.bar span { position: relative; overflow: hidden; }
+.bar span::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, .35) 50%, transparent 70%);
+  background-size: 220% 100%;
+  animation: sheen 1.9s linear infinite;
+}
+.peers li { animation: risein .22s ease-out both; }
+
+/* The transport. The thumb grows under the pointer so the scrubber feels
+   grabbable rather than merely draggable. */
+.scrub::-webkit-slider-thumb { transition: transform .12s cubic-bezier(.2, .8, .3, 1), box-shadow .12s; }
+.track:hover .scrub:not(:disabled)::-webkit-slider-thumb {
+  transform: scale(1.25); box-shadow: 0 2px 12px rgba(123, 92, 255, .8);
+}
+.play { transition: filter .12s, transform .08s, box-shadow .14s; }
+.play:hover:not(:disabled) { box-shadow: 0 8px 22px -10px rgba(123, 92, 255, 1); }
+.icon { transition: background .14s, color .14s, transform .08s, border-color .14s; }
+.icon:hover { border-color: var(--s4); transform: translateY(-1px); }
+.icon:active { transform: translateY(1px); }
+
+/* Fields settle rather than snap. */
+.join input, .joinrow input, .composer input {
+  transition: border-color .14s, background .14s, box-shadow .14s;
+}
+.join input:focus, .joinrow input:focus, .composer input:focus,
+.sel:focus {
+  box-shadow: 0 0 0 3px rgba(123, 92, 255, .16);
+}
+
+/* Dropping a file: the frame pulses so it is clear the window will take it. */
+.app.dropping::after { animation: pop .22s cubic-bezier(.2, .8, .3, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* ============================================================================
+   The film picker
+   Not a system dialog: Electron's fallback GTK chooser reports a double-click
+   as a cancellation, so on Linux the application browses for itself. It gets
+   the application's own surfaces rather than the desktop's.
+   ========================================================================= */
+.picker-wrap {
+  position: fixed; inset: 0; z-index: 200;
+  display: grid; place-items: center; padding: 40px;
+  background: rgba(6, 4, 12, .72);
+  backdrop-filter: blur(3px);
+  animation: fadein .16s ease-out both;
+}
+.picker {
+  width: min(860px, 100%); height: min(620px, 100%);
+  display: flex; flex-direction: column; min-height: 0;
+  background: linear-gradient(180deg, #191227 0%, #120E1D 100%);
+  border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 40px 90px -30px rgba(0, 0, 0, .95), 0 0 0 1px rgba(123, 92, 255, .12);
+  outline: none; overflow: hidden;
+  animation: pickerin .22s cubic-bezier(.2, .8, .3, 1) both;
+}
+@keyframes pickerin {
+  from { opacity: 0; transform: translateY(10px) scale(.985); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+.pk-head { display: flex; align-items: center; gap: 12px; padding: 15px 16px 11px; }
+.pk-head h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+.pk-head .mini { margin-left: auto; }
+
+.pk-crumbs {
+  display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+  padding: 0 16px 11px; border-bottom: 1px solid var(--line-soft);
+}
+.pk-crumbs .mini { margin-right: 6px; }
+.crumb {
+  border: 0; background: transparent; color: var(--tx2); cursor: pointer;
+  font: inherit; font-size: 12px; padding: 3px 7px; border-radius: 6px;
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background .12s, color .12s;
+}
+.crumb:hover { background: var(--s3); color: var(--tx); }
+.crumb + .crumb::before { content: "/"; color: var(--tx3); margin-right: 8px; margin-left: -4px; }
+
+.pk-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 172px 1fr; }
+.pk-places {
+  list-style: none; margin: 0; padding: 12px 10px; border-right: 1px solid var(--line-soft);
+  display: flex; flex-direction: column; gap: 2px; overflow-y: auto;
+}
+.pk-places button {
+  width: 100%; text-align: left; border: 0; background: transparent; color: var(--tx2);
+  font: inherit; font-size: 12.5px; padding: 7px 10px; border-radius: 8px; cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.pk-places button:hover { background: var(--s3); color: var(--tx); }
+.pk-places button.on { background: rgba(123, 92, 255, .18); color: var(--tx); }
+
+.pk-list { list-style: none; margin: 0; padding: 8px; overflow-y: auto; min-height: 0; }
+.pk-msg { padding: 18px 12px; color: var(--tx3); font-size: 12.5px; }
+.pk-row {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center;
+  padding: 8px 12px; border-radius: 9px; cursor: pointer; user-select: none;
+  transition: background .1s;
+}
+.pk-row:hover { background: rgba(255, 255, 255, .04); }
+.pk-row.on { background: rgba(123, 92, 255, .2); }
+.pk-icon { color: var(--tx3); font-size: 10px; }
+.pk-row.dir .pk-icon { color: var(--a); }
+.pk-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.pk-row.dir .pk-name { font-weight: 550; }
+.pk-size { font-family: var(--mono); font-size: 11px; color: var(--tx3); }
+
+.pk-foot {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; border-top: 1px solid var(--line-soft);
+  background: rgba(12, 9, 22, .5);
+}
+.pk-foot .toggle { text-transform: none; letter-spacing: 0; }
+
+/* ============================================================================
+   The launch animation
+   One mark, drawn on, held, then gone. It covers the whole window for under a
+   second and a half and is skipped entirely under prefers-reduced-motion,
+   where it would be an obstacle rather than a welcome.
+   ========================================================================= */
+.splash {
+  position: fixed; inset: 0; z-index: 900;
+  display: grid; place-items: center;
+  background: var(--bg-grad) fixed, #0A0713;
+  animation: splashout .55s ease-in .95s both;
+  pointer-events: none;
+}
+.splash-inner { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+.splash svg { width: 118px; height: 118px; filter: drop-shadow(0 0 34px rgba(123, 92, 255, .55)); }
+.splash .frame {
+  animation: draw 1.05s cubic-bezier(.2, .8, .3, 1) both;
+  stroke-dasharray: 112; stroke-dashoffset: 112;
+}
+.splash .m1 { animation: pop .5s cubic-bezier(.2, .9, .3, 1.4) .38s both; transform-origin: 15.5px 20px; }
+.splash .m2 { animation: pop .5s cubic-bezier(.2, .9, .3, 1.4) .52s both; transform-origin: 25px 20px; }
+.splash .word {
+  font-size: 19px; font-weight: 650; letter-spacing: .16em; text-transform: lowercase;
+  background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: risein .5s ease-out .62s both;
+}
+.splash .tag {
+  font-size: 10.5px; letter-spacing: .28em; text-transform: uppercase; color: var(--tx3);
+  animation: risein .5s ease-out .78s both;
+}
+@keyframes draw { to { stroke-dashoffset: 0; } }
+@keyframes splashout {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(1.04); }
+}
+@media (prefers-reduced-motion: reduce) { .splash { display: none; } }
+
+/* ============================================================================
+   A second pass over the surfaces
+   Depth from light rather than from borders: one hairline highlight along the
+   top of each bar, panels that read as glass over the gradient, and type that
+   is quieter where it is structural and brighter where it is content.
+   ========================================================================= */
+.topbar {
+  background: linear-gradient(180deg, rgba(28, 20, 48, .82), rgba(12, 9, 22, .58));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05), 0 1px 0 rgba(0, 0, 0, .35);
+  border-bottom: 1px solid var(--line-soft);
+  backdrop-filter: blur(10px);
+}
+.controls {
+  background: linear-gradient(0deg, rgba(28, 20, 48, .82), rgba(12, 9, 22, .58));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+  border-top: 1px solid var(--line-soft);
+  backdrop-filter: blur(10px);
+}
+.sidebar {
+  background: linear-gradient(180deg, rgba(20, 14, 34, .55), rgba(10, 8, 18, .5));
+  backdrop-filter: blur(10px);
+}
+/* A hairline of accent where the sidebar meets the picture, so the two planes
+   read as deliberate rather than merely adjacent. */
+.sidebar { border-left: 1px solid transparent; border-image: linear-gradient(180deg, rgba(123, 92, 255, .5), rgba(209, 79, 168, .22) 55%, transparent) 1; }
+
+/* The picture gets a frame of its own: black, inset, with the faintest ring. */
+.stage { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .045); }
+
+.sect h4, .chatwrap h4 { display: flex; align-items: center; gap: 8px; }
+.sect h4::after, .chatwrap h4::after {
+  content: ""; flex: 1; height: 1px;
+  background: linear-gradient(90deg, var(--line-soft), transparent);
+}
+
+/* Rows of people, films and peers all share one resting surface. */
+.filmlist li, .opts { background: linear-gradient(180deg, rgba(36, 29, 53, .55), rgba(23, 29, 40, .35)); }
+.filmlist li { transition: border-color .14s, transform .1s, box-shadow .14s; }
+.filmlist li:hover { border-color: var(--line); transform: translateY(-1px); box-shadow: 0 10px 22px -18px #000; }
+
+.tag { padding: 2px 6px; border-radius: 5px; background: rgba(123, 92, 255, .14); }
+.tag.muted { background: rgba(232, 179, 65, .13); }
+
+.fname { letter-spacing: -.01em; }
+.pill.code { font-weight: 600; }
+.btn.primary { letter-spacing: .01em; }
+
+/* An empty conversation should look like an invitation, not a void. */
+.soon { padding: 10px 0 2px; }
+
+/* ============================================================================
+   The stage before there is a film
+   The native surface is off until something is playing, so this is the one
+   thing that can ever be drawn here. It must not change the box's size: the
+   surface is positioned from its measured rectangle.
+   ========================================================================= */
+.stage { display: grid; place-items: center; }
+.welcome {
+  max-width: 30rem; padding: 24px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  animation: risein .45s cubic-bezier(.2, .8, .3, 1) both;
+}
+.wl-mark {
+  width: 74px; height: 74px; margin-bottom: 8px;
+  filter: drop-shadow(0 0 26px rgba(123, 92, 255, .4));
+  animation: float 6s ease-in-out infinite;
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+.welcome h1 {
+  margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -.02em;
+  background: linear-gradient(180deg, #fff, #C9BCEE);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.welcome p { margin: 0; font-size: 12.5px; color: var(--tx2); }
+.welcome p b { color: var(--tx); font-weight: 600; }
+.wl-quiet { margin-top: 8px !important; font-size: 11.5px; color: var(--tx3); line-height: 1.5; max-width: 24rem; }
+
+/* Row actions are words now, not abbreviations, so they need room and wrap
+   under the name rather than squeezing it. */
+.people li { flex-wrap: wrap; }
+.rowacts { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; }
+
+/* Scrollbars, so they read as part of the interface rather than the platform. */
+.sidebar, .pk-list, .pk-places, .library, .chat { scrollbar-width: thin; scrollbar-color: var(--s4) transparent; }
+.sidebar::-webkit-scrollbar, .pk-list::-webkit-scrollbar, .pk-places::-webkit-scrollbar { width: 9px; }
+.sidebar::-webkit-scrollbar-thumb, .pk-list::-webkit-scrollbar-thumb, .pk-places::-webkit-scrollbar-thumb {
+  background: var(--s4); border-radius: 99px; border: 2px solid transparent; background-clip: content-box;
+}
+.sidebar::-webkit-scrollbar-thumb:hover, .pk-list::-webkit-scrollbar-thumb:hover { background: #40355e; background-clip: content-box; }
+
+/* ---------------------------------------------------------------- fixes */
+/* The sidebar is a scrolling column, and a flex child with `flex: 1` in one
+   shrinks to nothing when the sections above it fill the space -- which is how
+   the chat vanished and its composer came to overlap the panel below. A floor
+   keeps the conversation on screen and lets the sidebar scroll instead. */
+.chatwrap { flex: 1 1 auto; min-height: 210px; }
+.chat { min-height: 90px; }
+/* Every other section keeps its natural height rather than being squeezed. */
+.sect, .sect.gate { flex: 0 0 auto; }
+
+/* Folders and films should not be the same shape at a glance. */
+.pk-icon { display: grid; place-items: center; width: 17px; height: 17px; }
+.pk-icon svg { width: 15px; height: 15px; fill: currentColor; opacity: .85; }
+.pk-row.dir .pk-icon { color: #9B8CFF; }
+.pk-row:not(.dir) .pk-icon { color: var(--tx3); }
+.pk-row.on .pk-icon { color: #fff; }
+.pk-hint { font-size: 11px; color: var(--tx3); margin-left: 14px; }
+@media (max-width: 700px) { .pk-hint { display: none; } }
+
+/* An empty stage is a surface of its own rather than an absence. The native
+   video window covers this the moment a film opens, so it is only ever seen
+   when there is nothing to show. */
+.stage:has(.welcome) {
+  background:
+    radial-gradient(680px 420px at 50% 42%, rgba(123, 92, 255, .14), transparent 70%),
+    radial-gradient(520px 380px at 82% 96%, rgba(209, 79, 168, .1), transparent 72%),
+    #07050D;
+}
+
+/* A message scrolled out of view should look cut off on purpose. */
+.chat {
+  mask-image: linear-gradient(180deg, transparent 0, #000 14px);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 14px);
+}
+.wall-card .btn { margin-top: 4px; }

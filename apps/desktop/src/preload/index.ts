@@ -6,26 +6,45 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
  * nothing sits between the renderer and a latency problem.
  */
 const api = {
-  setVideoSlot: (slot: { x: number; y: number; width: number; height: number }) =>
-    ipcRenderer.invoke('video:slot', slot),
+  setVideoSlot: (slot: {
+    x: number; y: number; width: number; height: number
+    viewport?: { width: number; height: number }
+  }) => ipcRenderer.invoke('video:slot', slot),
   getIdentity: () => ipcRenderer.invoke('identity:get'),
   listFilms: () => ipcRenderer.invoke('films:list'),
   removeFilm: (infoHash: string) => ipcRenderer.invoke('films:remove', infoHash),
   receiveFilm: (info: unknown) => ipcRenderer.invoke('film:receive', info),
   openFile: () => ipcRenderer.invoke('file:open'),
+  browseStart: () => ipcRenderer.invoke('browse:start'),
+  browseList: (path: string, showAll?: boolean) => ipcRenderer.invoke('browse:list', path, showAll),
+  browseActive: (active: boolean) => ipcRenderer.invoke('browse:active', active),
   openPath: (path: string) => ipcRenderer.invoke('file:openPath', path),
   /** Electron removed File.path; this is the supported way to recover a real
    *  filesystem path from a dropped file. */
   pathForFile: (f: File): string | null => {
     try { return webUtils.getPathForFile(f) } catch { return null }
   },
-  connect: (o: { url: string; code: string | null; name: string }) => ipcRenderer.invoke('room:connect', o),
+  connect: (o: {
+    url: string; code: string | null; name: string
+    /** Honoured only when creating a room. */
+    options?: { mode?: 'p2p' | 'origin'; openControl?: boolean; waitForLatecomers?: boolean }
+  }) => ipcRenderer.invoke('room:connect', o),
   sendChat: (text: string) => ipcRenderer.invoke('chat:send', text),
   setControl: (memberId: string, mayControl: boolean) => ipcRenderer.invoke('member:setControl', memberId, mayControl),
   transferHost: (memberId: string) => ipcRenderer.invoke('member:transferHost', memberId),
   startAnyway: () => ipcRenderer.invoke('room:startAnyway'),
   setWaitForLatecomers: (wait: boolean) => ipcRenderer.invoke('room:setWaitForLatecomers', wait),
   setMode: (mode: 'p2p' | 'origin') => ipcRenderer.invoke('room:setMode', mode),
+  setOpenControl: (open: boolean) => ipcRenderer.invoke('room:setOpenControl', open),
+  /** Overlay only: the rectangles it wants to exist as, in its own CSS pixels.
+   *  Everything outside them is cut out of the window so the film shows. */
+  setOverlayShape: (rects: Array<{ x: number; y: number; width: number; height: number }>) =>
+    ipcRenderer.invoke('overlay:shape', rects),
+  onOverlayLayout: (h: (layout: 'floating' | 'panel') => void) => {
+    const fn = (_e: unknown, layout: 'floating' | 'panel'): void => h(layout)
+    ipcRenderer.on('overlay:layout', fn)
+    return () => { ipcRenderer.removeListener('overlay:layout', fn) }
+  },
   releaseChatFocus: () => ipcRenderer.invoke('overlay:releaseFocus'),
   focusChat: () => ipcRenderer.invoke('overlay:focus'),
   onFocusChat: (h: () => void) => {

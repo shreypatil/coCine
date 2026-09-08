@@ -16,6 +16,8 @@ export interface Identity {
   name: string
   server: string
   lastCode: string | null
+  /** The folder the last film was opened from, so the picker starts there. */
+  lastFilmDir: string | null
 }
 
 /**
@@ -47,7 +49,7 @@ function suggestedName (): string {
 }
 
 export function blankIdentity (): Identity {
-  return { id: randomUUID(), name: suggestedName(), server: DEFAULT_SERVER, lastCode: null }
+  return { id: randomUUID(), name: suggestedName(), server: DEFAULT_SERVER, lastCode: null, lastFilmDir: null }
 }
 
 export class IdentityStore {
@@ -65,7 +67,8 @@ export class IdentityStore {
         id: typeof raw.id === 'string' && raw.id ? raw.id : randomUUID(),
         name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 40) : suggestedName(),
         server: typeof raw.server === 'string' && raw.server ? raw.server : DEFAULT_SERVER,
-        lastCode: typeof raw.lastCode === 'string' && raw.lastCode ? raw.lastCode : null
+        lastCode: typeof raw.lastCode === 'string' && raw.lastCode ? raw.lastCode : null,
+        lastFilmDir: typeof raw.lastFilmDir === 'string' && raw.lastFilmDir ? raw.lastFilmDir : null
       }
     } catch {
       this.cached = blankIdentity()

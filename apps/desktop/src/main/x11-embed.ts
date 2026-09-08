@@ -109,3 +109,102 @@ export async function raiseEmbedded (win: BrowserWindow): Promise<boolean> {
 export function x11EmbeddingPossible (): boolean {
   return process.platform === 'linux' && !!process.env.DISPLAY
 }
+
+/**
+ * Shaping a window so the film shows through everywhere it has no content.
+ *
+ * The fullscreen chat has to sit over the video, and X11 gives no way to blend
+ * one window over another: a compositing manager composites *top level* windows
+ * only, and the chat window is deliberately a child of the main window so the
+ * whole application behaves as one window. Alpha in a child is simply painted,
+ * not blended.
+ *
+ * The X SHAPE extension solves it from the other direction. Rather than making
+ * pixels translucent, it removes them from the window altogether -- the window
+ * exists only where its shape says it does, and everywhere else the video
+ * sibling underneath is what the screen shows. It needs no compositing manager,
+ * so it behaves the same on a bare i3 session as under picom, and it clips
+ * input as well as output, so a click that lands on the film is not swallowed.
+ */
+
+interface ShapeExt {
+  Kind: { Bounding: number; Clip: number; Input: number }
+  Op: { Set: number; Union: number; Intersect: number; Subtract: number; Invert: number }
+  Ordering: { Unsorted: number; YSorted: number; YXSorted: number; YXBanded: number }
+  Rectangles: (
+    op: number, kind: number, window: number, x: number, y: number,
+    rectangles: number[][], ordering?: number
+  ) => void
+  Mask: (op: number, kind: number, window: number, x: number, y: number, bitmap: number) => void
+}
+
+let shapePromise: Promise<ShapeExt | null> | null = null
+
+/** Loaded once. A server without the extension resolves null and stays null. */
+async function shapeExt (): Promise<ShapeExt | null> {
+  const d = await display()
+  if (!d) return null
+  shapePromise ??= new Promise<ShapeExt | null>(resolve => {
+    try {
+      const client = d.client as unknown as {
+        require: (name: string, cb: (err: unknown, ext: ShapeExt) => void) => void
+      }
+      const timer = setTimeout(() => resolve(null), 3000)
+      client.require('shape', (err, ext) => {
+        clearTimeout(timer)
+        resolve(err ? null : ext)
+      })
+    } catch {
+      resolve(null)
+    }
+  })
+  return shapePromise
+}
+
+/** Whether the shaped overlay is possible at all, before anything is drawn. */
+export async function shapingAvailable (): Promise<boolean> {
+  return (await shapeExt()) !== null
+}
+
+/**
+ * Restrict `win` to `rects`, in device pixels relative to the window's own
+ * origin. An empty list makes the window invisible without hiding it, which is
+ * what an overlay with nothing to say should look like.
+ */
+export async function setWindowShape (
+  win: BrowserWindow, rects: Array<{ x: number; y: number; width: number; height: number }>
+): Promise<boolean> {
+  const ext = await shapeExt()
+  const d = await display()
+  if (!ext || !d || win.isDestroyed()) return false
+  try {
+    const wid = Number(nativeHandleToWid(win.getNativeWindowHandle()))
+    if (!Number.isFinite(wid)) return false
+    const list = rects
+      .filter(r => r.width > 0 && r.height > 0)
+      .map(r => [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)])
+    // Bounding rather than Clip: Clip would leave the window's frame drawn.
+    ext.Rectangles(ext.Op.Set, ext.Kind.Bounding, wid, 0, 0, list)
+    // Input follows the same region, so a click on the film reaches the film.
+    ext.Rectangles(ext.Op.Set, ext.Kind.Input, wid, 0, 0, list)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Give the window its whole rectangle back. */
+export async function clearWindowShape (win: BrowserWindow): Promise<boolean> {
+  const ext = await shapeExt()
+  if (!ext || win.isDestroyed()) return false
+  try {
+    const wid = Number(nativeHandleToWid(win.getNativeWindowHandle()))
+    if (!Number.isFinite(wid)) return false
+    // A mask of None is the documented way to remove a shape entirely.
+    ext.Mask(ext.Op.Set, ext.Kind.Bounding, wid, 0, 0, 0)
+    ext.Mask(ext.Op.Set, ext.Kind.Input, wid, 0, 0, 0)
+    return true
+  } catch {
+    return false
+  }
+}

@@ -1,7 +1,7 @@
 import WebSocket from 'ws'
 import { EventEmitter } from 'node:events'
 import { ClockSync, tick, extrapolatePosition, DEFAULT_SYNC_CONFIG, type SyncConfig, type SyncAction } from '@cocine/sync'
-import { decodeServer, encode, sourceId, type ChatMessage, type ClientMessage, type Media, type Member, type PeerReport, type PeerStatus, type PlaybackState, type RoomPhase, type TorrentInfo, type MediaSource, type RoomMode, type IceServer } from '@cocine/protocol'
+import { decodeServer, encode, sourceId, type ChatMessage, type ClientMessage, type Media, type Member, type PeerReport, type PeerStatus, type PlaybackState, type RoomPhase, type TorrentInfo, type MediaSource, type RoomMode, type RoomOptions, type IceServer } from '@cocine/protocol'
 import type { PlayerController } from '@cocine/player'
 
 export interface RoomClientOptions {
@@ -9,6 +9,9 @@ export interface RoomClientOptions {
   /** null creates a new room; a code joins an existing one. */
   code: string | null
   name: string
+  /** Applied only when creating a room. Ignored when joining one, and ignored
+   *  on a reconnect, which rejoins by code. */
+  options?: RoomOptions
   player: PlayerController
   syncConfig?: SyncConfig
   /** How often the sync engine runs. mpv reports position at ~25 Hz, so there
@@ -42,6 +45,8 @@ export class RoomClient extends EventEmitter {
   media: Media | null = null
   phase: RoomPhase = 'lobby'
   waitForLatecomers = true
+  /** Whether someone joining may drive playback without being handed control. */
+  openControl = true
   /** How the room distributes the film; the host chooses. */
   mode: RoomMode = 'p2p'
   /** Whether the server has relay storage at all. Without it the host is
@@ -97,7 +102,9 @@ export class RoomClient extends EventEmitter {
     ws.on('close', () => this.onSocketClosed(ws))
     ws.on('error', () => { /* close follows, and is where recovery starts */ })
     this.connection = 'connected'
-    this.send({ t: 'hello', code: this.o.code, name: this.o.name })
+    // Options only travel with a creating hello; the server ignores them on a
+    // join, and after a reconnect the code is no longer null anyway.
+    this.send({ t: 'hello', code: this.o.code, name: this.o.name, options: this.o.code === null ? this.o.options : undefined })
 
     // Burst a few pings so the first estimate is usable immediately, then settle.
     for (let i = 0; i < 8; i++) { this.ping(); await new Promise(r => setTimeout(r, 25)) }
@@ -154,6 +161,7 @@ export class RoomClient extends EventEmitter {
         this.trackerUrl = msg.trackerUrl
         this.phase = msg.phase
         this.waitForLatecomers = msg.waitForLatecomers
+        this.openControl = msg.openControl
         this.mode = msg.mode
         this.originAvailable = msg.originAvailable
         if (sourceId(msg.media?.source) !== sourceId(this.media?.source)) {
@@ -320,6 +328,8 @@ export class RoomClient extends EventEmitter {
     this.send({ t: 'voice.moderate', memberId, action })
   }
   setWaitForLatecomers (wait: boolean): void { this.send({ t: 'room.setWaitForLatecomers', wait }) }
+  /** Host only: whether someone arriving may drive playback. */
+  setOpenControl (open: boolean): void { this.send({ t: 'room.setOpenControl', open }) }
 
   /** This client's own membership, once the room state has arrived. */
   me (): Member | undefined { return this.members.find(m => m.id === this.memberId) }

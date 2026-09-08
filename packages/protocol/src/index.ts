@@ -120,6 +120,26 @@ export type Media = z.infer<typeof Media>
 export const RoomMode = z.enum(['p2p', 'origin'])
 export type RoomMode = z.infer<typeof RoomMode>
 
+/**
+ * What the host settles before anybody else arrives.
+ *
+ * Every one of these can also be changed later by the host, so this is not a
+ * separate mechanism -- it is the same set of decisions, offered at the moment
+ * they are actually being made rather than buried in a room that already
+ * exists. Each field is optional and the room's own default stands when it is
+ * absent, so an older client creating a room is not a special case.
+ */
+export const RoomOptions = z.object({
+  /** Peer to peer, or through the server. Falls back to peer to peer when the
+   *  server has no relay storage, with the room told why. */
+  mode: RoomMode,
+  /** Whether everyone may drive playback, or only the host. */
+  openControl: z.boolean(),
+  /** Whether the room pauses when somebody arrives mid-film. */
+  waitForLatecomers: z.boolean()
+}).partial()
+export type RoomOptions = z.infer<typeof RoomOptions>
+
 /** What each client tells the room about itself, once a second. */
 export const PeerReport = z.object({
   /** Fraction of the film held locally, 0 to 1. */
@@ -156,7 +176,13 @@ export type RoomPhase = z.infer<typeof RoomPhase>
 
 export const ClientMessage = z.discriminatedUnion('t', [
   /** No code creates a room and returns one; a code joins an existing room. */
-  z.object({ t: z.literal('hello'), code: z.string().nullable(), name: z.string().min(1).max(40) }),
+  z.object({
+    t: z.literal('hello'),
+    code: z.string().nullable(),
+    name: z.string().min(1).max(40),
+    /** Honoured only when creating a room; joining one never changes it. */
+    options: RoomOptions.optional()
+  }),
   z.object({ t: z.literal('time.ping'), c1: z.number() }),
   z.object({
     t: z.literal('media.announce'),
@@ -205,7 +231,9 @@ export const ClientMessage = z.discriminatedUnion('t', [
   /** Host only: start even though somebody is not ready. */
   z.object({ t: z.literal('room.startAnyway') }),
   /** Host only: whether the room pauses when someone arrives mid-film. */
-  z.object({ t: z.literal('room.setWaitForLatecomers'), wait: z.boolean() })
+  z.object({ t: z.literal('room.setWaitForLatecomers'), wait: z.boolean() }),
+  /** Host only: whether someone joining may drive playback by default. */
+  z.object({ t: z.literal('room.setOpenControl'), open: z.boolean() })
 ])
 export type ClientMessage = z.infer<typeof ClientMessage>
 
@@ -240,6 +268,8 @@ export const ServerMessage = z.discriminatedUnion('t', [
     trackerUrl: z.string(),
     phase: RoomPhase,
       waitForLatecomers: z.boolean(),
+      /** Whether someone arriving may drive playback without being given it. */
+      openControl: z.boolean(),
       mode: RoomMode,
       /** Whether the server has origin storage configured at all. Without it the
        *  host is offered no toggle, rather than a toggle that fails. */

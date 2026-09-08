@@ -5,6 +5,38 @@ import { embedWindow, x11EmbeddingPossible } from './x11-embed.js'
 export interface Rect { x: number; y: number; width: number; height: number }
 
 /**
+ * A rectangle plus the size of the viewport it was measured in.
+ *
+ * The viewport is what makes the two coordinate systems reconcilable. Electron
+ * counts a Linux menu bar as part of the window's *content*, while the page's
+ * own coordinates start below it, so placing a native surface from the page's
+ * rectangle alone put the video roughly thirty pixels too high -- over the
+ * application's own top bar, hiding the room code.
+ */
+export interface Slot extends Rect { viewport?: { width: number; height: number } }
+
+/**
+ * How far the page's origin sits inside the window's content area.
+ *
+ * Derived rather than assumed, so it is right whether the window has a menu
+ * bar, gains one, or never had one. Anything absurd is treated as zero: a bad
+ * measurement must not move the video.
+ */
+export function chromeOffset (
+  content: { width: number; height: number },
+  viewport: { width: number; height: number } | undefined,
+  scale: number
+): { x: number; y: number } {
+  if (!viewport || viewport.width <= 0 || viewport.height <= 0) return { x: 0, y: 0 }
+  const y = Math.round(content.height - viewport.height * scale)
+  const x = Math.round(content.width - viewport.width * scale)
+  return {
+    x: x > 0 && x < 200 ? x : 0,
+    y: y > 0 && y < 200 ? y : 0
+  }
+}
+
+/**
  * mpv reparented into a frameless child window that is kept exactly over the
  * video area of the main window.
  *
@@ -28,10 +60,20 @@ function mpvBinary (): string {
 export class VideoWindow {
   private win: BrowserWindow | null = null
   player: EmbeddedMpv | ExternalMpv | null = null
-  private slot: Rect | null = null
+  private slot: Slot | null = null
   /** True once the surface is a real child of the main window, after which its
    *  coordinates are relative to the parent rather than to the screen. */
   private embedded = false
+  /**
+   * Whether the surface belongs on screen at all.
+   *
+   * It used to appear the moment the renderer reported a rectangle, which meant
+   * a black box sat where the picture goes from launch until a film was opened
+   * -- and nothing could be drawn there to say what to do next, because this
+   * window covers it. Off until there is something to play, and the interface
+   * owns that space in the meantime.
+   */
+  private wanted = false
 
   constructor (private readonly parent: BrowserWindow) {}
 
@@ -85,15 +127,23 @@ export class VideoWindow {
     this.parent.on('enter-full-screen', follow)
     this.parent.on('leave-full-screen', follow)
     this.parent.on('minimize', () => this.win?.hide())
-    this.parent.on('restore', () => { if (this.slot) this.win?.show() })
+    this.parent.on('restore', () => { if (this.slot && this.wanted) this.win?.show() })
     this.parent.on('closed', () => { void this.close() })
     return player
   }
 
   /** Called from the renderer whenever the video slot moves or resizes. */
-  setSlot (slot: Rect): void {
+  setSlot (slot: Slot): void {
     this.slot = slot
     if (this.win) this.reposition()
+  }
+
+  /** Whether a film is open. Nothing else decides if the surface is shown. */
+  setFilmOpen (open: boolean): void {
+    this.wanted = open
+    if (!this.win || this.win.isDestroyed()) return
+    if (open) this.reposition()
+    else this.win.hide()
   }
 
   private reposition (): void {
@@ -103,8 +153,9 @@ export class VideoWindow {
     const scale = screen.getDisplayMatching(content).scaleFactor || 1
     // Once embedded the window sits inside the parent, so its origin is the
     // parent's content origin and adding the screen position would double it.
-    const originX = this.embedded ? 0 : content.x
-    const originY = this.embedded ? 0 : content.y
+    const chrome = chromeOffset(content, this.slot.viewport, scale)
+    const originX = (this.embedded ? 0 : content.x) + chrome.x
+    const originY = (this.embedded ? 0 : content.y) + chrome.y
     const bounds = {
       x: Math.round(originX + this.slot.x * scale),
       y: Math.round(originY + this.slot.y * scale),
@@ -119,7 +170,7 @@ export class VideoWindow {
         ` asked=${bounds.width}x${bounds.height}@${bounds.x},${bounds.y}` +
         ` got=${got.width}x${got.height}@${got.x},${got.y}`)
     }
-    if (!this.win.isVisible()) this.win.showInactive()
+    if (this.wanted && !this.win.isVisible()) this.win.showInactive()
   }
 
   /**
@@ -132,7 +183,7 @@ export class VideoWindow {
   }
 
   resume (): void {
-    if (this.win && !this.win.isDestroyed() && this.slot) {
+    if (this.win && !this.win.isDestroyed() && this.slot && this.wanted) {
       this.reposition()
       this.win.showInactive()
     }

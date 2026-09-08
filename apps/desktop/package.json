@@ -30,6 +30,7 @@
     "react-dom": "^19.2.0"
   },
   "description": "Watch a film with friends, in sync",
+  "license": "MIT",
   "author": {
     "name": "coCine"
   },

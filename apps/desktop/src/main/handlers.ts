@@ -1,8 +1,9 @@
-import { basename } from 'node:path'
+import { basename, dirname } from 'node:path'
+import { listDirectory, placesFor, startDirectory, type Listing } from './browse.js'
 import type { ChatMessage, Member } from '@cocine/protocol'
 import type { Identity } from './identity.js'
 import type { StoredFilm, TransferProgress } from '@cocine/client'
-import { sourceId, type MediaSource, type RoomMode } from '@cocine/protocol'
+import { sourceId, type MediaSource, type RoomMode, type RoomOptions } from '@cocine/protocol'
 
 /**
  * Every IPC handler, as plain functions over injected dependencies.
@@ -27,12 +28,16 @@ export interface VideoLike {
   player: PlayerLike | null
   suspend: () => void
   resume: () => void
-  setSlot: (slot: Rect) => void
+  setFilmOpen?: (open: boolean) => void
+  setSlot: (slot: Slot) => void
   bounds: () => Rect | null
 }
 
 export interface OverlayLike {
-  setSlot: (slot: Rect) => void
+  setSlot: (slot: Slot) => void
+  /** The parts of the overlay window that should exist at all; everything
+   *  else is cut away so the film shows through. */
+  setShape: (rects: Rect[]) => void
   focus: () => void
   releaseFocus: () => void
 }
@@ -54,7 +59,9 @@ export interface FilmStoreLike {
 export interface RoomLike {
   announceMedia: (name: string, durationSec: number, source?: MediaSource | null) => void
   setMode: (mode: RoomMode) => void
+  setOpenControl: (open: boolean) => void
   mode: RoomMode
+  openControl: boolean
   originAvailable: boolean
   requestPlay: (positionSec?: number) => void
   requestPause: (positionSec?: number) => void
@@ -76,16 +83,23 @@ export interface RoomLike {
 }
 
 export interface Rect { x: number; y: number; width: number; height: number }
+/** The video rectangle, plus the viewport it was measured in. */
+export interface Slot extends Rect { viewport?: { width: number; height: number } }
 
 export interface OpenDialogResult { canceled: boolean; filePaths: string[] }
 
 export interface HandlerDeps {
+  /** Where the picker's shortcuts point. Injected so tests need no real home. */
+  getHome?: () => string
   showOpenDialog: (parent: unknown, options: Record<string, unknown>) => Promise<OpenDialogResult>
   getWindow: () => unknown | null
   getVideo: () => VideoLike | null
   getRoom: () => RoomLike | null
   setRoom: (room: RoomLike | null) => void
-  createRoom: (o: { url: string; code: string | null; name: string; player: PlayerLike }) => Promise<RoomLike>
+  createRoom: (o: {
+    url: string; code: string | null; name: string; player: PlayerLike
+    options?: RoomOptions
+  }) => Promise<RoomLike>
   getMediaPath: () => string | null
   setMediaPath: (path: string | null) => void
   setFullScreen: (on: boolean) => void
@@ -116,6 +130,13 @@ export function explainConnectError (err: unknown, url: string): Error {
   const code = (err as { code?: string })?.code
   const message = err instanceof Error ? err.message : String(err)
   if (code === 'ECONNREFUSED') {
+    // A fresh install points at this machine until it is told otherwise, and
+    // "connection refused" tells someone who was sent a link nothing at all.
+    if (/^wss?:\/\/(127\.0\.0\.1|localhost|\[?::1\]?)([:/]|$)/i.test(url)) {
+      return new Error(
+        `Nothing is listening at ${url}, which is this machine. If a friend invited you, put the server address they gave you in the Server box.`
+      )
+    }
     return new Error(`Nothing is listening at ${url}. Is the server running? Check the address, or reset it to the default.`)
   }
   if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
@@ -175,17 +196,29 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       }
     }
     deps.getRoom()?.announceMedia(basename(path), durationSec ?? 0, source)
+    // Next time the picker opens, open where this came from.
+    deps.saveIdentity({ lastFilmDir: dirname(path) })
     return { path, name: basename(path), durationSec, infoHash: sourceId(source) }
   }
 
   return {
-    'video:slot': (slot: Rect) => {
+    'video:slot': (slot: Slot) => {
       const video = deps.getVideo()
       video?.setSlot(slot)
       // The overlay is positioned inside the video rectangle, so it needs the
       // same measurement.
       deps.getOverlay?.()?.setSlot(slot)
       return video?.bounds() ?? null
+    },
+
+    /**
+     * The overlay reporting what it wants drawn, in its own CSS pixels. It is
+     * measured in the renderer because only the renderer knows where the
+     * bubbles ended up after layout.
+     */
+    'overlay:shape': (rects: Rect[]) => {
+      deps.getOverlay?.()?.setShape(Array.isArray(rects) ? rects : [])
+      return { ok: true }
     },
 
     /** Fullscreen only: hand the keyboard to the chat overlay. */
@@ -237,6 +270,35 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
 
     'identity:get': () => deps.getIdentity(),
 
+    /**
+     * The application's own film browser, used wherever the system dialog
+     * cannot be trusted. See browse.ts for why that is Linux.
+     */
+    'browse:start': (): { places: Array<{ label: string; path: string }>; path: string } => {
+      const home = deps.getHome?.() ?? '/'
+      return {
+        places: placesFor(home),
+        path: startDirectory(deps.getIdentity().lastFilmDir, home)
+      }
+    },
+
+    'browse:list': async (path: string, showAll = false): Promise<Listing> =>
+      await listDirectory(path, { showAll }),
+
+    /**
+     * The native video surface floats above the window's own content, so a
+     * panel drawn over the video area cannot be seen until it is out of the
+     * way -- the same reason the system dialog needs it.
+     */
+    'browse:active': (active: boolean) => {
+      const video = deps.getVideo()
+      if (active) video?.suspend()
+      // resume() only brings it back if a film is open, so closing the picker
+      // on an empty room leaves the welcome panel where it is.
+      else video?.resume()
+      return { ok: true }
+    },
+
     'films:list': async () => {
       const store = deps.getFilmStore()
       if (!store) return { films: [], usedBytes: 0, freeBytes: 0 }
@@ -268,7 +330,7 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     },
 
     /** A null code creates a room; a code joins one. */
-    'room:connect': async (o: { url: string; code: string | null; name: string }) => {
+    'room:connect': async (o: { url: string; code: string | null; name: string; options?: RoomOptions }) => {
       const player = deps.getVideo()?.player
       if (!player) throw new Error('player not ready')
       await deps.getRoom()?.close()
@@ -361,6 +423,18 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       return { ok: true }
     },
 
+    /**
+     * Whether someone arriving may drive playback, or only the host. Chosen
+     * when the room is created and changeable afterwards, because a host who
+     * wants the remote back should not have to take it from people one by one.
+     */
+    'room:setOpenControl': (open: boolean) => {
+      const room = deps.getRoom()
+      if (!room) throw new Error('not in a room')
+      if (!room.me()?.isHost) throw new Error('only the host can change that')
+      room.setOpenControl(open)
+    },
+
     /** Whether the room pauses when someone arrives mid-film. */
     'room:setWaitForLatecomers': (wait: boolean) => {
       const room = deps.getRoom()
@@ -400,7 +474,7 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       deps.setFullScreen(next)
       if (next) {
         await deps.getVideo()?.player
-          ?.showText('Space play · ← → seek · Esc exit', 2600)
+          ?.showText('Space play · ← → seek · Enter chat · Esc exit', 2600)
           .catch(() => {})
       }
       return next

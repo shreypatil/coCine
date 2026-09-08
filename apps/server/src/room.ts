@@ -29,6 +29,16 @@ export class Room {
   waitForLatecomers = true
 
   /**
+   * Whether somebody arriving may drive playback without being handed it.
+   *
+   * True is the sociable default and what the room has always done. A host who
+   * wants the remote to themselves sets it false at creation, and everyone who
+   * joins afterwards arrives without control rather than having it taken off
+   * them one at a time.
+   */
+  openControl = true
+
+  /**
    * How the film is distributed. `p2p` is the default and the product; `origin`
    * is relay mode, for the room where the swarm cannot deliver at all. The host
    * chooses, and the choice is per room rather than per person -- a room cannot
@@ -119,8 +129,11 @@ export class Room {
   }
 
   add (id: string, name: string): Member {
+    // The host always keeps control, whatever the room's policy: a room whose
+    // only member cannot start the film is a room nobody can watch.
+    const isHost = this.members.size === 0
     const member: Member = {
-      id, name, isHost: this.members.size === 0, mayControl: true,
+      id, name, isHost, mayControl: isHost || this.openControl,
       inVoice: false, muted: false, deafened: false
     }
     this.members.set(id, member)

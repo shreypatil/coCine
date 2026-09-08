@@ -1,4 +1,4 @@
-import { existsSync, accessSync, constants } from 'node:fs'
+import { existsSync, accessSync, constants, readFileSync } from 'node:fs'
 import { join, delimiter } from 'node:path'
 
 /**
@@ -65,7 +65,29 @@ function onPath (platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string | nu
 export const INSTALL_HINTS: Record<string, string> = {
   darwin: 'brew install mpv',
   win32: 'download it from https://mpv.io/installation/',
-  linux: 'install the mpv package — apt install mpv, dnf install mpv, or pacman -S mpv'
+  linux: 'sudo apt install mpv     # or dnf, pacman, zypper — whichever your system uses'
+}
+
+/**
+ * The command for *this* Linux, not a list of three to choose between.
+ *
+ * Whoever reads this is the least technical person in the room -- they followed
+ * a link, and now they need a terminal command they did not write. Naming the
+ * wrong package manager makes it useless, so it is read from /etc/os-release
+ * rather than guessed.
+ */
+export function linuxInstallHint (osRelease: string | null): string {
+  const field = (name: string): string => {
+    const m = osRelease?.match(new RegExp(`^${name}=\\"?([^\\"\n]*)\\"?`, 'm'))
+    return (m?.[1] ?? '').toLowerCase()
+  }
+  const family = `${field('ID')} ${field('ID_LIKE')}`
+  if (/\b(debian|ubuntu|linuxmint|pop|elementary|raspbian)\b/.test(family)) return 'sudo apt install mpv'
+  if (/\b(fedora|rhel|centos|almalinux|rocky)\b/.test(family)) return 'sudo dnf install mpv'
+  if (/\b(arch|manjaro|endeavouros|garuda)\b/.test(family)) return 'sudo pacman -S mpv'
+  if (/\b(opensuse|suse|sles)\b/.test(family)) return 'sudo zypper install mpv'
+  if (/\b(alpine)\b/.test(family)) return 'sudo apk add mpv'
+  return INSTALL_HINTS.linux!
 }
 
 /**
@@ -95,7 +117,12 @@ export function locateMpv (opts: LocateOptions = {}): string {
   const found = onPath(platform, env)
   if (found) return found
 
-  const hint = INSTALL_HINTS[platform] ?? INSTALL_HINTS.linux!
+  let hint = INSTALL_HINTS[platform] ?? INSTALL_HINTS.linux!
+  if (platform === 'linux') {
+    let osRelease: string | null = null
+    try { osRelease = readFileSync('/etc/os-release', 'utf8') } catch { /* not every Linux has one */ }
+    hint = linuxInstallHint(osRelease)
+  }
   throw new MpvNotFoundError(
     'coCine needs the mpv media player, and could not find it.',
     hint

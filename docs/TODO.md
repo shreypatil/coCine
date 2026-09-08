@@ -87,7 +87,13 @@ virtual-display path for headless GUI testing is unavailable, and Electron tests
 currently run on the real display with `COCINE_HEADLESS=1` (which never shows a
 window). Reinstalling `xorg-server-xvfb` should fix it.
 
-### A public signalling server for the default build
+### A public signalling server for the default build — now the last blocker
+
+Everything else needed for a stranger to install and use coCine is in place: the
+`.deb` pulls mpv in through apt, the AppImage names the exact install command for
+the distribution it finds itself on, the picker no longer depends on the desktop's
+dialog, and the installers are built. What is missing is somewhere to point them.
+
 
 An installed copy points at whatever `COCINE_DEFAULT_SERVER` was set to at build
 time. Until an instance is running somewhere your friends can reach, a release
@@ -159,21 +165,22 @@ so the app forces `--ozone-platform=x11` and runs under XWayland on a Wayland
 desktop. The cost is native fractional scaling. A real fix needs either a
 different embedding strategy or rendering frames through the app itself.
 
-### Chat in fullscreen does not actually appear yet
+### Chat in fullscreen — done, by shaping the window rather than stacking it
 
-The overlay window is built, embedded and covered by seven tests, but it cannot
-be seen: **nothing can be stacked above the mpv surface.** Raising the overlay,
-lowering the video, `setAlwaysOnTop`, `moveTop`, `xdotool windowraise` and a
-direct X `ConfigureWindow` with a forced round trip were all tried against the
-running application, and the video window stays topmost regardless.
+Previously recorded here as impossible: nothing could be stacked above the mpv
+surface, and raising the overlay, lowering the video, `setAlwaysOnTop`,
+`moveTop`, `xdotool windowraise` and a direct X `ConfigureWindow` all failed.
 
-That confirms the note already in `video-window.ts`: the one real cost of
-reparenting mpv into its own window is that nothing can be drawn over the video.
+What works is the X SHAPE extension. The overlay window covers the whole video
+and is then cut down to exactly the message bubbles the renderer measures, so
+the film is untouched everywhere else and clicks outside a bubble reach the film.
+It needs no compositing manager, which matters on a bare i3 session where a
+translucent window paints black. Windows and macOS use an ordinary transparent
+window instead; an X server without SHAPE falls back to the old opaque panel.
 
-The route that avoids the problem entirely is mpv's own OSD, which composites
-text into the video rather than over it — no second window and no stacking. Input
-can still come from the main window, which keeps keyboard focus in fullscreen.
-The `Overlay` component and its tests carry over as the content model.
+`apps/desktop/test/overlay-window.e2e.test.ts` asserts it against a real X
+server: the overlay is a child of the main window, covers nothing while the room
+is quiet, and covers only the bubble once somebody speaks.
 
 ### Phase 9 — interface overhaul
 
@@ -194,9 +201,8 @@ frontend turned up, to go alongside it.
    hard-coded one.
 3. **The durability line lies in relay mode**, saying the film "needs the sharer"
    when the origin holds it and the sharer is irrelevant.
-4. **There is no chat in fullscreen.** `.app.fullscreen .sidebar { display: none }`
-   hides it entirely, so the overlaid-in-a-corner chat that was asked for during
-   the phase 2.5 redesign does not exist.
+4. ~~**There is no chat in fullscreen.**~~ Done: bubbles over the film, with the
+   composer opening on Enter. See the section above.
 5. **Push-to-talk only binds lowercase `v`.** Holding Shift, or Caps Lock being
    on, silently stops the microphone opening while the interface still says
    "Hold V to talk".
@@ -232,6 +238,31 @@ frontend turned up, to go alongside it.
     them and nothing for the other.
 
 ---
+
+## Findings worth keeping
+
+### Electron's own file dialog cannot open a film on Linux
+
+Reproduced in a twelve-line Electron application, so it is neither this
+project's code nor its window handling: on a desktop with **no
+`xdg-desktop-portal` installed**, Electron falls back to its own GTK file
+chooser, and there an *activate* gesture is reported to the application as a
+cancellation.
+
+| gesture | result |
+| --- | --- |
+| double-click a file | `{ canceled: true, filePaths: [] }` |
+| select, then Enter | `{ canceled: true, filePaths: [] }` |
+| select, then click **Open** | works |
+
+Double-click is how almost everyone picks a file, so "Open film" silently did
+nothing on i3, and the log filled with `dialog dismissed without a selection`.
+
+The fix is `apps/desktop/src/main/browse.ts` and `renderer/FilmPicker.tsx`: on
+Linux the application browses for itself, with the same look as the rest of the
+interface and no dependency on what the desktop has installed. Windows and macOS
+keep their native dialogs, which people know and which work. `COCINE_NATIVE_DIALOG=1`
+forces the system dialog back on for anyone who prefers it.
 
 ## Smaller loose ends
 

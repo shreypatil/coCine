@@ -449,3 +449,71 @@ describe('starting the server', () => {
     }
   })
 })
+
+describe('the options a host chooses while creating a room', () => {
+  /** Creating peer plus the code, since every case here needs both. */
+  const create = async (options?: Record<string, unknown>): Promise<{ a: Peer; code: string }> => {
+    const a = await Peer.connect()
+    a.send({ t: 'hello', code: null, name: 'anjali', ...(options ? { options } : {}) } as ClientMessage)
+    const w = await a.next('welcome')
+    return { a, code: w.code }
+  }
+
+  it('withholds playback control from arrivals when the host asked to keep it', async () => {
+    const { a, code } = await create({ openControl: false })
+    const b = await Peer.connect()
+    b.send({ t: 'hello', code, name: 'dev' })
+    const state = await b.nextWhere('room.state', m => m.members.length === 2)
+    expect(state.openControl).toBe(false)
+    expect(state.members.find(m => m.name === 'dev')!.mayControl).toBe(false)
+    // The host always keeps it, whatever the policy says.
+    expect(state.members.find(m => m.name === 'anjali')!.mayControl).toBe(true)
+    b.send({ t: 'playback.request', intent: 'play' })
+    expect((await b.next('error')).message).toMatch(/playback control/)
+    void a
+  })
+
+  it('gives arrivals control by default', async () => {
+    const { code } = await create()
+    const b = await Peer.connect()
+    b.send({ t: 'hello', code, name: 'dev' })
+    const state = await b.nextWhere('room.state', m => m.members.length === 2)
+    expect(state.openControl).toBe(true)
+    expect(state.members.find(m => m.name === 'dev')!.mayControl).toBe(true)
+  })
+
+  it('carries the latecomer choice into the room', async () => {
+    const { a } = await create({ waitForLatecomers: false })
+    expect((await a.next('room.state')).waitForLatecomers).toBe(false)
+  })
+
+  it('falls back to peer to peer when the server has no relay storage, and says why', async () => {
+    // The client cannot know before it connects, so asking is reasonable and
+    // being refused outright would not be.
+    const { a } = await create({ mode: 'origin' })
+    expect((await a.next('room.state')).mode).toBe('p2p')
+    const note = await a.nextWhere('chat.message', m => m.message.text.includes('relay storage'))
+    expect(note.message.text).toContain('peer to peer')
+  })
+
+  it('ignores options from somebody merely joining', async () => {
+    const { code } = await create()
+    const b = await Peer.connect()
+    b.send({ t: 'hello', code, name: 'dev', options: { openControl: false } } as ClientMessage)
+    const state = await b.nextWhere('room.state', m => m.members.length === 2)
+    expect(state.openControl).toBe(true)
+  })
+
+  it('lets only the host change control policy afterwards', async () => {
+    const { a, code } = await create()
+    const b = await Peer.connect()
+    b.send({ t: 'hello', code, name: 'dev' })
+    await b.nextWhere('room.state', m => m.members.length === 2)
+    b.seen.length = 0
+    b.send({ t: 'room.setOpenControl', open: false })
+    expect((await b.next('error')).message).toMatch(/Only the host/)
+
+    a.send({ t: 'room.setOpenControl', open: false })
+    expect((await a.nextWhere('room.state', m => !m.openControl)).openControl).toBe(false)
+  })
+})
