@@ -14,6 +14,10 @@ const api = {
   listFilms: () => ipcRenderer.invoke('films:list'),
   removeFilm: (infoHash: string) => ipcRenderer.invoke('films:remove', infoHash),
   receiveFilm: (info: unknown) => ipcRenderer.invoke('film:receive', info),
+  /** Hand the open film to the room. Nothing leaves this machine before it. */
+  shareFilm: () => ipcRenderer.invoke('film:share'),
+  setSharingPaused: (paused: boolean) => ipcRenderer.invoke('film:setSharingPaused', paused),
+  unloadFilm: () => ipcRenderer.invoke('film:unload'),
   openFile: () => ipcRenderer.invoke('file:open'),
   browseStart: () => ipcRenderer.invoke('browse:start'),
   browseList: (path: string, showAll?: boolean) => ipcRenderer.invoke('browse:list', path, showAll),

@@ -180,6 +180,16 @@ export class ExternalMpv implements PlayerController {
     await this.ipc.command('show-text', text, durationMs)
   }
 
+  /**
+   * Put the film away without shutting mpv down.
+   *
+   * `stop` returns mpv to the idle state it was started in, so the same process
+   * -- and the same window it is drawing into -- is ready for the next film.
+   */
+  async unload (): Promise<void> {
+    await this.ipc.command('stop')
+  }
+
   /** Kill mpv immediately, without waiting on IPC. For process teardown. */
   kill (): void { this.ipc.kill() }
 }

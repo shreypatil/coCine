@@ -17,6 +17,7 @@ const stubPlayer = (): PlayerController => ({
   seek: async () => {}, setRate: async () => {},
   position: () => 0, isPaused: () => true, positionObservedAt: () => Date.now(),
   duration: () => null, showText: async () => {}, setVolume: async () => {},
+  unload: async () => {},
   on: () => {}, close: async () => {}
 }) as PlayerController
 

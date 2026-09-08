@@ -30,7 +30,7 @@ const STATE = {
   fullscreen: false,
   code: 'BCDFGHJK', messages: [] as unknown[], isHost: true, mayControl: true,
   transfers: [] as unknown[], receiving: null as unknown,
-  phase: 'playing', waitForLatecomers: true, openControl: true, nativePicker: true, transferStatus: null as unknown,
+  phase: 'playing', waitForLatecomers: true, openControl: true, nativePicker: true, windowShown: true, sharing: 'off', sharedInfoHash: null, transferStatus: null as unknown,
     memberId: 'me',
     mode: 'p2p', originAvailable: false, voiceIce: [] as unknown[],
     startupError: null as unknown
@@ -98,6 +98,9 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
       setWaitForLatecomers: rec('setWaitForLatecomers'),
         setMode: rec('setMode'),
         setOpenControl: rec('setOpenControl'),
+        shareFilm: rec('shareFilm'),
+        setSharingPaused: rec('setSharingPaused'),
+        unloadFilm: rec('unloadFilm'),
         focusChat: rec('focusChat'),
       sendSignal: rec('sendSignal'),
       setVoiceState: rec('setVoiceState'),
@@ -431,10 +434,15 @@ describe('the readiness gate', () => {
     await page.close()
   })
 
-  it('drops the gate out of the way once the film is playing', async () => {
+  it('drops the waiting-for-people parts once the film is playing, and keeps the numbers', async () => {
+    // The countdown and the override belong to the wait. What the transfer is
+    // doing is worth seeing for as long as it is happening.
     await open()
-    await push({ phase: 'playing', transferStatus: status({ bottleneck: null }) })
-    expect(await page.locator('[data-testid="gate"]').count()).toBe(0)
+    await push({ phase: 'playing', transferStatus: status({ bottleneck: null }), isHost: true })
+    expect(await page.locator('[data-testid="eta"]').count()).toBe(0)
+    expect(await page.locator('[data-testid="startanyway"]').count()).toBe(0)
+    expect(await page.locator('[data-testid="gate"]').count()).toBe(1)
+    expect(await page.locator('[data-testid="peerstatus"]').count()).toBe(2)
     await page.close()
   })
 })
@@ -1114,17 +1122,62 @@ describe('choosing a film without the system dialog', () => {
 })
 
 describe('the launch animation', () => {
+  it('waits for the window to be on screen before it starts', async () => {
+    // A hidden window has its animations frozen and its timers throttled, so a
+    // mark started at mount was missed entirely or caught half-finished.
+    await open()
+    await push({ windowShown: false })
+    expect(await page.locator('[data-testid="splash"]').count()).toBe(0)
+    await push({ windowShown: true })
+    expect(await page.locator('[data-testid="splash"]').count()).toBe(1)
+    await page.close()
+  })
+
   it('shows the mark and then gets out of the way', async () => {
     await open()
+    await push()
     expect(await page.locator('[data-testid="splash"]').count()).toBe(1)
-    await expect.poll(async () => await page.locator('[data-testid="splash"]').count(), { timeout: 5000 }).toBe(0)
+    await expect.poll(async () => await page.locator('[data-testid="splash"]').count(), { timeout: 6000 }).toBe(0)
+    await page.close()
+  })
+
+  it('starts anyway if the window never reports itself', async () => {
+    // Nothing may leave the interface behind a mark that will not finish.
+    await open()
+    await expect.poll(async () => await page.locator('[data-testid="splash"]').count(), { timeout: 6000 }).toBe(1)
+    await expect.poll(async () => await page.locator('[data-testid="splash"]').count(), { timeout: 6000 }).toBe(0)
     await page.close()
   })
 
   it('never blocks a click, even while it is on screen', async () => {
     await open()
+    await push()
     expect(await page.evaluate(() =>
       getComputedStyle(document.querySelector('[data-testid="splash"]')!).pointerEvents)).toBe('none')
+    await page.close()
+  })
+
+  it('gets out of the way when the picker opens, rather than hiding it', async () => {
+    // The picker used to open behind the mark: the screen dimmed, no picker was
+    // visible, and a film opened into a window nobody could see.
+    await open()
+    await page.evaluate(t => { (window as unknown as Record<string, unknown>).__tree = t }, TREE)
+    await push({ nativePicker: false })
+    expect(await page.locator('[data-testid="splash"]').count()).toBe(1)
+    await page.click('[data-testid="open"]')
+    await page.waitForSelector('[data-testid="picker"]')
+    expect(await page.locator('[data-testid="splash"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('keeps the picker above the mark even so', async () => {
+    await open()
+    await page.evaluate(t => { (window as unknown as Record<string, unknown>).__tree = t }, TREE)
+    await push({ nativePicker: false })
+    await page.click('[data-testid="open"]')
+    await page.waitForSelector('[data-testid="picker"]')
+    const z = await page.evaluate(() => getComputedStyle(document.querySelector('.picker-wrap')!).zIndex)
+    expect(Number(z)).toBeGreaterThan(900)
     await page.close()
   })
 })
@@ -1158,6 +1211,134 @@ describe('the stage before a film is open', () => {
     await page.waitForSelector('[data-testid="welcome"]')
     const empty = await page.evaluate(() => document.querySelector('[data-testid="stage"]')!.getBoundingClientRect().height)
     expect(empty).toBe(withFilm)
+    await page.close()
+  })
+})
+
+const WITH_PIECES = {
+  perPeer: [
+    { memberId: 'me', name: 'anjali', havePct: 1, bufferEndSec: 7200, downBps: 0, upBps: 6.2e6, peers: 2, ready: true,
+      pieces: 'f'.repeat(64), sharer: true },
+    { memberId: 'b', name: 'dev', havePct: 0.5, bufferEndSec: 120, downBps: 3.1e6, upBps: 1e5, peers: 2, ready: true,
+      pieces: 'f'.repeat(32) + '0'.repeat(32) },
+    { memberId: 'c', name: 'priya', havePct: 0.1, bufferEndSec: 4, downBps: 4e5, upBps: 0, peers: 1, ready: false,
+      pieces: 'f'.repeat(6) + '0'.repeat(58), paused: true }
+  ],
+  etaSec: 300, tMinSec: 120, bottleneck: 'priya', fullCopies: 1, safeForSharerToLeave: false
+}
+
+describe('putting a film on, which is now separate from sharing it', () => {
+  it('will not open a film before there is a room to watch it with', async () => {
+    await open()
+    await push({ connected: false, mediaName: null })
+    expect(await page.isDisabled('[data-testid="open"]')).toBe(true)
+    expect(await page.textContent('[data-testid="welcome"]')).toContain('Start with a room')
+    await push({ connected: true, mediaName: null })
+    expect(await page.isDisabled('[data-testid="open"]')).toBe(false)
+    await page.close()
+  })
+
+  it('says the film is playing here only, and offers to share it', async () => {
+    await open()
+    await push({ mediaName: 'dune.mkv', sharing: 'off' })
+    expect(await page.textContent('[data-testid="sharestate"]')).toContain('this machine only')
+    await page.click('[data-testid="startsharing"]')
+    expect(await calls('shareFilm')).toHaveLength(1)
+    await page.close()
+  })
+
+  it('offers to pause while sharing, and to resume once paused', async () => {
+    await open()
+    await push({ mediaName: 'dune.mkv', sharing: 'sharing' })
+    expect(await page.locator('[data-testid="startsharing"]').count()).toBe(0)
+    await page.click('[data-testid="pausesharing"]')
+    expect((await calls('setSharingPaused'))[0]).toEqual([true])
+
+    await push({ mediaName: 'dune.mkv', sharing: 'paused' })
+    expect(await page.textContent('[data-testid="sharestate"]')).toContain('nobody is receiving')
+    await page.click('[data-testid="resumesharing"]')
+    expect((await calls('setSharingPaused'))[1]).toEqual([false])
+    await page.close()
+  })
+
+  it('unloads a film so another can be opened', async () => {
+    await open()
+    await push({ mediaName: 'dune.mkv', sharing: 'sharing' })
+    await page.click('[data-testid="unloadfilm"]')
+    expect(await calls('unloadFilm')).toHaveLength(1)
+    await page.close()
+  })
+
+  it('offers none of that with no film open', async () => {
+    await open()
+    await push({ mediaName: null })
+    expect(await page.locator('[data-testid="filmacts"]').count()).toBe(0)
+    await page.close()
+  })
+})
+
+describe('what the transfer is doing', () => {
+  it('shows this machine\'s own upload rate and peer count', async () => {
+    // The number whoever is sharing actually wants, and could not see anywhere.
+    await open()
+    await push({ phase: 'playing', mediaName: 'dune.mkv', transferStatus: WITH_PIECES, memberId: 'me' })
+    const mine = await page.textContent('[data-testid="mytransfer"]')
+    expect(mine).toContain('5.9 MB/s')
+    expect(mine).toContain('2 peers')
+    await page.close()
+  })
+
+  it('shows every peer\'s share, rates and whether they are keeping up', async () => {
+    await open()
+    await push({ phase: 'playing', mediaName: 'dune.mkv', transferStatus: WITH_PIECES, memberId: 'me' })
+    const priya = await page.textContent('[data-testid="peerstatus"][data-name="priya"]')
+    expect(priya).toContain('10%')
+    expect(priya).toContain('furthest behind')
+    expect(priya).toContain('paused')
+    const dev = await page.textContent('[data-testid="peerstatus"][data-name="dev"]')
+    expect(dev).toContain('50%')
+    expect(dev).toContain('2 min ahead of the playhead')
+    // Somebody holding all of it is described that way rather than by a buffer.
+    expect(await page.textContent('[data-testid="peerstatus"][data-name="anjali"]')).toContain('has the whole film')
+    await page.close()
+  })
+
+  it('marks who put the film on, and which row is you', async () => {
+    await open()
+    await push({ phase: 'playing', mediaName: 'dune.mkv', transferStatus: WITH_PIECES, memberId: 'me' })
+    const mine = await page.textContent('[data-testid="peerstatus"][data-name="anjali"]')
+    expect(mine).toContain('source')
+    expect(mine).toContain('you')
+    await page.close()
+  })
+
+  it('draws which parts of the film each person holds', async () => {
+    // Not just how much: somebody missing the stretch about to be watched looks
+    // different from somebody missing the credits.
+    await open()
+    await push({ phase: 'playing', mediaName: 'dune.mkv', transferStatus: WITH_PIECES, memberId: 'me' })
+    const strips = await page.$$eval('[data-testid="piecestrip"]', els => els.map(e => ({
+      map: e.getAttribute('data-map'),
+      slices: e.children.length,
+      full: [...e.children].filter(c => c.className === 'full').length
+    })))
+    expect(strips).toHaveLength(3)
+    expect(strips[0]!.slices).toBe(64)
+    expect(strips[0]!.full).toBe(64)          // the sharer holds all of it
+    expect(strips[1]!.full).toBe(32)          // dev has the first half
+    expect(strips[2]!.full).toBe(6)           // priya has the opening only
+    await page.close()
+  })
+
+  it('leaves the strip out when a transport cannot say', async () => {
+    // Relay mode fetches byte ranges, not pieces, and says so by omission.
+    await open()
+    await push({
+      phase: 'playing', mediaName: 'dune.mkv', memberId: 'me',
+      transferStatus: { ...WITH_PIECES, perPeer: WITH_PIECES.perPeer.map(p => ({ ...p, pieces: undefined })) }
+    })
+    expect(await page.locator('[data-testid="peerstatus"]').count()).toBe(3)
+    expect(await page.locator('[data-testid="piecestrip"]').count()).toBe(0)
     await page.close()
   })
 })

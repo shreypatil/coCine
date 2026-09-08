@@ -14,6 +14,7 @@ const player = (over: Partial<PlayerLike> = {}): PlayerLike => ({
   seek: vi.fn(async () => {}),
   duration: () => 120,
   showText: vi.fn(async () => {}),
+  unload: vi.fn(async () => {}),
   ...over
 })
 
@@ -22,15 +23,28 @@ const video = (p: PlayerLike | null = player()): VideoLike => ({
   suspend: vi.fn(),
   resume: vi.fn(),
   setSlot: vi.fn(),
+  setFilmOpen: vi.fn(),
+  ensureVisible: vi.fn(),
   bounds: () => ({ x: 0, y: 0, width: 10, height: 10 })
 })
 
-const TORRENT = { infoHash: 'a'.repeat(40), magnet: 'magnet:?xt=urn:btih:' + 'a'.repeat(40), bytes: 4_000_000_000, pieceLength: 262144 }
+// `kind` matters: it is what sourceId() reads to identify the film, so a
+// fixture without it silently produced an undefined info hash.
+const TORRENT = {
+  kind: 'p2p' as const,
+  infoHash: 'a'.repeat(40),
+  magnet: 'magnet:?xt=urn:btih:' + 'a'.repeat(40),
+  bytes: 4_000_000_000,
+  pieceLength: 262144
+}
 
 const transfer = (over: Partial<TransferLike> = {}): TransferLike => ({
   share: vi.fn(async () => TORRENT),
   receive: vi.fn(async () => ({ path: '/films/aaa/dune.mkv' })),
+  stop: vi.fn(async () => {}),
   progress: () => [],
+  pieceMap: () => 'f'.repeat(64),
+  setPaused: vi.fn(() => true),
   ...over
 })
 
@@ -47,6 +61,7 @@ const filmStore = (over: Partial<FilmStoreLike> = {}): FilmStoreLike => ({
 
 const room = (): RoomLike => ({
   announceMedia: vi.fn(),
+  clearMedia: vi.fn(),
   requestPlay: vi.fn(),
   requestPause: vi.fn(),
   requestSeek: vi.fn(),
@@ -63,6 +78,9 @@ function build (over: Partial<HandlerDeps> = {}): {
   let mediaPath: string | null = null
   let currentRoom: RoomLike | null = null
   let fullscreen = false
+  let sharing: 'off' | 'sharing' | 'paused' = 'off'
+  let sharedInfoHash: string | null = null
+  let announced = false
   let identity = {
     id: 'local-1', name: 'me', server: 'ws://127.0.0.1:8787',
     lastCode: null as string | null, lastFilmDir: null as string | null
@@ -81,6 +99,12 @@ function build (over: Partial<HandlerDeps> = {}): {
     getIdentity: () => identity,
     saveIdentity: patch => { identity = { ...identity, ...patch }; return identity },
     getTransfer: () => null,
+    getSharing: () => sharing,
+    setSharing: state => { sharing = state },
+    getSharedInfoHash: () => sharedInfoHash,
+    setSharedInfoHash: h => { sharedInfoHash = h },
+    getAnnouncedByUs: () => announced,
+    setAnnouncedByUs: v => { announced = v },
     getFilmStore: () => filmStore(),
     ...over
   }
@@ -143,41 +167,113 @@ describe('file:open', () => {
     await expect(call(h, 'file:open')).rejects.toThrow('unsupported codec')
   })
 
-  it('announces the film to the room once one is connected', async () => {
+  it('tells the room nothing until sharing is asked for', async () => {
+    // Opening a film and pushing gigabytes at other people are different
+    // decisions, and used to be one action.
     const r = room()
     const { h } = build({ getVideo: () => video(), getRoom: () => r })
     await call(h, 'file:open')
-    expect(r.announceMedia).toHaveBeenCalledWith('dune.mkv', 120, null)
+    expect(r.announceMedia).not.toHaveBeenCalled()
   })
 })
 
-describe('sharing what you open', () => {
-  it('shares the film and tells the room where to get it', async () => {
-    const tx = transfer()
+describe('sharing a film with the room, as a separate act', () => {
+  /** Opening a film, then handing it over, which is now two steps. */
+  const openThenShare = async (over: Partial<HandlerDeps> = {}): Promise<{
+    h: Record<string, (...a: never[]) => unknown>; r: RoomLike; tx: TransferLike
+  }> => {
     const r = room()
-    const { h } = build({ getVideo: () => video(), getRoom: () => r, getTransfer: () => tx })
+    const tx = transfer()
+    const { h } = build({ getVideo: () => video(), getRoom: () => r, getTransfer: () => tx, ...over })
     await call(h, 'file:openPath', '/films/dune.mkv')
+    return { h, r, tx }
+  }
+
+  it('hashes the film and tells the room where to get it', async () => {
+    const { h, r, tx } = await openThenShare()
+    expect(tx.share).not.toHaveBeenCalled()
+    await call(h, 'film:share')
     expect(tx.share).toHaveBeenCalledWith('/films/dune.mkv')
     expect(r.announceMedia).toHaveBeenCalledWith('dune.mkv', 120, TORRENT)
   })
 
-  it('still lets you watch when sharing fails', async () => {
-    // Whoever opened the film should not lose it because hashing broke.
+  it('keeps the film playing here when hashing fails, and says so', async () => {
+    // Whoever opened the film should not lose it because sharing broke.
     const tx = transfer({ share: vi.fn(async () => { throw new Error('disk went away') }) })
     const r = room()
     const p = player()
     const { h } = build({ getVideo: () => video(p), getRoom: () => r, getTransfer: () => tx })
-    const res = await call(h, 'file:openPath', '/films/dune.mkv') as { infoHash: string | null }
+    await call(h, 'file:openPath', '/films/dune.mkv')
+    await expect(call(h, 'film:share')).rejects.toThrow('disk went away')
     expect(p.load).toHaveBeenCalled()
-    expect(res.infoHash).toBeNull()
-    expect(r.announceMedia).toHaveBeenCalledWith('dune.mkv', 120, null)
+    expect(r.announceMedia).not.toHaveBeenCalled()
   })
 
   it('announces without a torrent when there is nothing to share through', async () => {
     const r = room()
     const { h } = build({ getVideo: () => video(), getRoom: () => r, getTransfer: () => null })
     await call(h, 'file:openPath', '/films/dune.mkv')
+    await call(h, 'film:share')
     expect(r.announceMedia).toHaveBeenCalledWith('dune.mkv', 120, null)
+  })
+
+  it('refuses to share outside a room, in words rather than a crash', async () => {
+    const { h } = build({ getVideo: () => video(), getRoom: () => null })
+    await call(h, 'file:openPath', '/films/dune.mkv')
+    await expect(call(h, 'film:share')).rejects.toThrow(/room/i)
+  })
+
+  it('refuses to share when no film is open', async () => {
+    const { h } = build({ getVideo: () => video(), getRoom: () => room() })
+    await expect(call(h, 'film:share')).rejects.toThrow(/No film/i)
+  })
+
+  it('pauses and resumes this machine\'s part in the swarm', async () => {
+    const setPaused = vi.fn(() => true)
+    const tx = transfer({ setPaused })
+    const { h } = build({ getVideo: () => video(), getRoom: () => room(), getTransfer: () => tx })
+    await call(h, 'file:openPath', '/films/dune.mkv')
+    await call(h, 'film:share')
+    await call(h, 'film:setSharingPaused', true)
+    expect(setPaused).toHaveBeenCalledWith(TORRENT.infoHash, true)
+    await call(h, 'film:setSharingPaused', false)
+    expect(setPaused).toHaveBeenLastCalledWith(TORRENT.infoHash, false)
+  })
+
+  it('will not pause what is not being shared', async () => {
+    const { h } = build({ getVideo: () => video(), getRoom: () => room(), getTransfer: () => transfer() })
+    await call(h, 'file:openPath', '/films/dune.mkv')
+    await expect(call(h, 'film:setSharingPaused', true)).rejects.toThrow(/not being shared/)
+  })
+
+  it('unloading stops the transfer and takes the film off the room', async () => {
+    const tx = transfer()
+    const r = room()
+    const p = player()
+    const { h, deps } = build({ getVideo: () => video(p), getRoom: () => r, getTransfer: () => tx })
+    await call(h, 'file:openPath', '/films/dune.mkv')
+    await call(h, 'film:share')
+    await call(h, 'film:unload')
+    expect(tx.stop).toHaveBeenCalledWith(TORRENT.infoHash)
+    expect(r.clearMedia).toHaveBeenCalledOnce()
+    expect(p.unload).toHaveBeenCalledOnce()
+    expect(deps.getMediaPath()).toBeNull()
+  })
+
+  it('leaves the room\'s film alone when unloading one merely received', async () => {
+    // Somebody who was receiving a film does not get to take it off everybody
+    // else's room by closing their own copy.
+    const tx = transfer()
+    const r = room()
+    const { h } = build({
+      getVideo: () => video(), getRoom: () => r, getTransfer: () => tx,
+      getAnnouncedByUs: () => false,
+      getSharedInfoHash: () => TORRENT.infoHash,
+      getSharing: () => 'sharing'
+    })
+    await call(h, 'film:unload')
+    expect(tx.stop).toHaveBeenCalledWith(TORRENT.infoHash)
+    expect(r.clearMedia).not.toHaveBeenCalled()
   })
 })
 
@@ -541,5 +637,30 @@ describe('explaining a connection that failed', () => {
     const e = explainConnectError({ code: 'ECONNREFUSED' }, 'ws://cocine.example:8787')
     expect(e.message).toContain('Is the server running?')
     expect(e.message).not.toContain('this machine')
+  })
+})
+
+describe('showing the video surface', () => {
+  it('shows it before mpv opens the file, not after', async () => {
+    // mpv draws into that window. Loading into one that is still hidden is a
+    // film with sound and no picture.
+    const order: string[] = []
+    const p = player({ load: vi.fn(async () => { order.push('load') }) })
+    const v = video(p)
+    v.setFilmOpen = vi.fn(() => { order.push('show') })
+    const { h } = build({ getVideo: () => v })
+    await call(h, 'file:openPath', '/films/dune.mkv')
+    expect(order).toEqual(['show', 'load'])
+  })
+
+  it('puts it away again when the film will not open', async () => {
+    const p = player({ load: vi.fn(async () => { throw new Error('not a film') }) })
+    const v = video(p)
+    const { h } = build({ getVideo: () => v })
+    await expect(call(h, 'file:openPath', '/films/broken.mkv')).rejects.toThrow('not a film')
+    // Last word: hidden, so the interface shows its empty state rather than a
+    // black rectangle over nothing.
+    const calls = (v.setFilmOpen as ReturnType<typeof vi.fn>).mock.calls
+    expect(calls.at(-1)).toEqual([false])
   })
 })

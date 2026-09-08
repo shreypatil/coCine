@@ -5,6 +5,8 @@ import { mkdtempSync, mkdirSync, copyFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, basename } from 'node:path'
 import { ensureTestVideo } from '@cocine/player'
+import { startServer, createRoom, waitForPlayer } from './support/room.js'
+import type { SignallingServer } from '../../server/src/server.js'
 
 /**
  * Opening a film through the application's own picker, in the real app.
@@ -22,6 +24,7 @@ let app: ElectronApplication
 let page: Page
 let home: string
 let film: string
+let server: SignallingServer
 
 beforeAll(async () => {
   const fixture = ensureTestVideo(30, join(process.cwd(), '.fixtures'))
@@ -37,17 +40,16 @@ beforeAll(async () => {
   })
   page = await app.firstWindow()
   await page.waitForSelector('[data-testid="stage"]', { timeout: 20_000 })
-  // expect.poll only works inside a test, so the wait for mpv is by hand.
-  const ready = Date.now() + 30_000
-  for (;;) {
-    if (!(await page.isDisabled('[data-testid="open"]'))) break
-    if (Date.now() > ready) throw new Error('the player never became ready')
-    await new Promise(r => setTimeout(r, 250))
-  }
+  // A film is opened inside a room, so there has to be one first.
+  const started = await startServer()
+  server = started.server
+  await createRoom(page, started.port)
+  await waitForPlayer(page)
 }, 240_000)
 
 afterAll(async () => {
   await Promise.race([app?.close(), new Promise(r => setTimeout(r, 15_000))])
+  await server?.close()
   rmSync(home, { recursive: true, force: true })
 }, 30_000)
 

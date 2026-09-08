@@ -3,6 +3,8 @@ import { _electron as electron, type ElectronApplication, type Page } from 'play
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { ensureTestVideo } from '@cocine/player'
+import { startServer, createRoom, waitForPlayer } from './support/room.js'
+import type { SignallingServer } from '../../server/src/server.js'
 
 /**
  * The whole application: real Electron, real preload bridge, real IPC, real
@@ -17,6 +19,7 @@ import { ensureTestVideo } from '@cocine/player'
 let app: ElectronApplication
 let page: Page
 let film: string
+let server: SignallingServer
 
 beforeAll(async () => {
   film = ensureTestVideo(30, join(process.cwd(), '.fixtures'))
@@ -30,16 +33,23 @@ beforeAll(async () => {
   })
   page = await app.firstWindow()
   await page.waitForSelector('[data-testid="stage"]', { timeout: 20_000 })
+  // A film needs a room now: watching alone is not what this is for, and the
+  // two used to look like unrelated features.
+  const started = await startServer()
+  server = started.server
+  await createRoom(page, started.port)
+  await waitForPlayer(page)
 }, 180_000)
 
 afterAll(async () => {
   // Bounded: a hang here should fail loudly rather than time the suite out.
   await Promise.race([app?.close(), new Promise(r => setTimeout(r, 15_000))])
+  await server?.close()
 }, 30_000)
 
 describe('the real application', () => {
-  it('starts with a player ready and no film', async () => {
-    await expect.poll(async () => await page.isDisabled('[data-testid="open"]'), { timeout: 15_000 }).toBe(false)
+  it('starts with a player ready, a room, and no film', async () => {
+    expect(await page.isDisabled('[data-testid="open"]')).toBe(false)
     expect(await page.isDisabled('[data-testid="playpause"]')).toBe(true)
   })
 

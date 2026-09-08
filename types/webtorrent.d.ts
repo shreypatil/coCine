@@ -52,6 +52,10 @@ declare module 'webtorrent' {
     /** Fetch these pieces as soon as possible. */
     critical: (start: number, end: number) => void
     destroy: (cb?: () => void) => void
+    /** Stop talking to peers entirely -- neither fetching nor serving. */
+    pause: () => void
+    resume: () => void
+    paused: boolean
   }
 
   export interface TorrentOptions {

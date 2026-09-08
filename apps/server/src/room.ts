@@ -97,7 +97,12 @@ export class Room {
         downBps: r.downBps,
         upBps: r.upBps,
         peers: r.peers,
-        ready: isReady(r, this.readiness)
+        ready: isReady(r, this.readiness),
+        // Passed through untouched: the room does not interpret a piece map,
+        // it only forwards what each client says about itself.
+        pieces: r.pieces,
+        paused: r.paused,
+        sharer: m.id === this.sharerId
       }
     })
   }
@@ -182,6 +187,26 @@ export class Room {
     target.isHost = true
     target.mayControl = true
     return target
+  }
+
+  /**
+   * Take the film off.
+   *
+   * Whoever put it on, or the host. A room still advertising a film nobody is
+   * sharing sends everyone chasing bytes that will never arrive.
+   */
+  clearMedia (actorId: string): void {
+    const actor = this.members.get(actorId)
+    if (!actor) throw new Error('no such member')
+    if (!actor.isHost && this.sharerId !== actorId) {
+      throw new Error('only the host, or whoever put the film on, can take it off')
+    }
+    this.media = null
+    this.sharerId = null
+    this.reports.clear()
+    this.startOverridden = false
+    this.state = { kind: 'idle' }
+    this.seq++
   }
 
   addChat (kind: ChatMessage['kind'], name: string, text: string, memberId: string | null, nowMs: number): ChatMessage {

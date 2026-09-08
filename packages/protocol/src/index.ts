@@ -140,6 +140,20 @@ export const RoomOptions = z.object({
 }).partial()
 export type RoomOptions = z.infer<typeof RoomOptions>
 
+/**
+ * How much of the film a peer holds, and roughly where.
+ *
+ * Sixty-four hexadecimal digits, one per sixty-fourth of the film, each saying
+ * how full that slice is from 0 to 15. Coarse on purpose: it is 64 bytes on the
+ * wire once a second per peer, which is affordable, where a real bitfield for a
+ * 4 GB film would be kilobytes. It is enough to show *which part* somebody has
+ * rather than only how much, which is the difference between "they are behind"
+ * and "they are missing the bit we are about to watch".
+ */
+export const PIECE_MAP_BUCKETS = 64
+export const PieceMap = z.string().regex(/^[0-9a-f]{64}$/)
+export type PieceMap = z.infer<typeof PieceMap>
+
 /** What each client tells the room about itself, once a second. */
 export const PeerReport = z.object({
   /** Fraction of the film held locally, 0 to 1. */
@@ -149,7 +163,11 @@ export const PeerReport = z.object({
   downBps: z.number().min(0),
   upBps: z.number().min(0),
   /** Swarm peers this client is connected to. */
-  peers: z.number().int().min(0)
+  peers: z.number().int().min(0),
+  /** Which parts of the film this client holds. Absent while unknown. */
+  pieces: PieceMap.optional(),
+  /** Whether this client has deliberately stopped sharing for now. */
+  paused: z.boolean().optional()
 })
 export type PeerReport = z.infer<typeof PeerReport>
 
@@ -161,7 +179,13 @@ export const PeerStatus = z.object({
   downBps: z.number(),
   upBps: z.number(),
   peers: z.number(),
-  ready: z.boolean()
+  ready: z.boolean(),
+  /** Which parts of the film this member holds; see PieceMap. */
+  pieces: PieceMap.optional(),
+  /** Whether they have paused their own sharing. */
+  paused: z.boolean().optional(),
+  /** Whether this is the member who put the film on. */
+  sharer: z.boolean().optional()
 })
 export type PeerStatus = z.infer<typeof PeerStatus>
 
@@ -233,7 +257,13 @@ export const ClientMessage = z.discriminatedUnion('t', [
   /** Host only: whether the room pauses when someone arrives mid-film. */
   z.object({ t: z.literal('room.setWaitForLatecomers'), wait: z.boolean() }),
   /** Host only: whether someone joining may drive playback by default. */
-  z.object({ t: z.literal('room.setOpenControl'), open: z.boolean() })
+  z.object({ t: z.literal('room.setOpenControl'), open: z.boolean() }),
+  /**
+   * Take the film off. Sent by whoever put it on, or by the host: a room left
+   * advertising a film nobody is sharing any more sends everyone chasing bytes
+   * that will never arrive.
+   */
+  z.object({ t: z.literal('media.clear') })
 ])
 export type ClientMessage = z.infer<typeof ClientMessage>
 

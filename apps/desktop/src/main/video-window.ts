@@ -1,6 +1,6 @@
 import { BrowserWindow, screen } from 'electron'
 import { EmbeddedMpv, ExternalMpv, locateMpv } from '@cocine/player'
-import { embedWindow, x11EmbeddingPossible } from './x11-embed.js'
+import { embedWindow, setEmbeddedMapped, x11EmbeddingPossible } from './x11-embed.js'
 
 export interface Rect { x: number; y: number; width: number; height: number }
 
@@ -74,6 +74,13 @@ export class VideoWindow {
    * owns that space in the meantime.
    */
   private wanted = false
+  /**
+   * Set while something is deliberately covering the video area -- the film
+   * picker, or a system dialog. Kept separate from `wanted` because
+   * repositioning used to re-show the surface underneath whatever had just
+   * hidden it, which is how a dialog ended up behind the video.
+   */
+  private suspended = false
 
   constructor (private readonly parent: BrowserWindow) {}
 
@@ -116,6 +123,8 @@ export class VideoWindow {
     if (x11EmbeddingPossible()) {
       this.embedded = await embedWindow(this.parent, this.win, 0, 0)
       if (!this.embedded) console.log('[video] could not embed the surface; it stays a separate window')
+      // Whatever the reparent did, X and Electron agree from here on.
+      this.setShown(this.wanted)
     }
 
     // The child has to follow the parent everywhere, or it detaches visibly.
@@ -126,10 +135,25 @@ export class VideoWindow {
     this.parent.on('unmaximize', follow)
     this.parent.on('enter-full-screen', follow)
     this.parent.on('leave-full-screen', follow)
-    this.parent.on('minimize', () => this.win?.hide())
-    this.parent.on('restore', () => { if (this.slot && this.wanted) this.win?.show() })
+    this.parent.on('minimize', () => this.setShown(false))
+    this.parent.on('restore', () => { if (this.slot && this.wanted) this.setShown(true) })
     this.parent.on('closed', () => { void this.close() })
     return player
+  }
+
+  /**
+   * Show or hide the surface in both worlds at once.
+   *
+   * Electron's own show and hide are not enough: once the window has been
+   * reparented, the window manager no longer tracks it, and its X map state
+   * drifted away from what Electron believed. That drift is what left a black
+   * rectangle over the interface that nothing would clear.
+   */
+  private setShown (shown: boolean): void {
+    if (!this.win || this.win.isDestroyed()) return
+    if (shown) this.win.showInactive()
+    else this.win.hide()
+    if (this.embedded) void setEmbeddedMapped(this.win, shown)
   }
 
   /** Called from the renderer whenever the video slot moves or resizes. */
@@ -142,8 +166,10 @@ export class VideoWindow {
   setFilmOpen (open: boolean): void {
     this.wanted = open
     if (!this.win || this.win.isDestroyed()) return
-    if (open) this.reposition()
-    else this.win.hide()
+    // Position first, then show: a surface that appears before it has been
+    // placed flashes black over whatever it lands on.
+    if (open) { this.reposition(); this.setShown(true) }
+    else this.setShown(false)
   }
 
   private reposition (): void {
@@ -170,7 +196,18 @@ export class VideoWindow {
         ` asked=${bounds.width}x${bounds.height}@${bounds.x},${bounds.y}` +
         ` got=${got.width}x${got.height}@${got.x},${got.y}`)
     }
-    if (this.wanted && !this.win.isVisible()) this.win.showInactive()
+    if (this.wanted && !this.suspended && !this.win.isVisible()) this.setShown(true)
+  }
+
+  /**
+   * Put the surface back on screen if it belongs there and something has left
+   * it hidden. Called on the status tick: no sequence of window events, IPC
+   * ordering or dialogs should be able to leave a film playing with no picture.
+   */
+  ensureVisible (): void {
+    if (!this.win || this.win.isDestroyed()) return
+    if (!this.wanted || this.suspended || !this.slot) return
+    if (!this.win.isVisible()) this.reposition()
   }
 
   /**
@@ -179,13 +216,15 @@ export class VideoWindow {
    * video surface. Hiding it for the duration is the only reliable fix.
    */
   suspend (): void {
-    if (this.win && !this.win.isDestroyed()) this.win.hide()
+    this.suspended = true
+    this.setShown(false)
   }
 
   resume (): void {
+    this.suspended = false
     if (this.win && !this.win.isDestroyed() && this.slot && this.wanted) {
       this.reposition()
-      this.win.showInactive()
+      this.setShown(true)
     }
   }
 

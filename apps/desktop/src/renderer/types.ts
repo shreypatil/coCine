@@ -31,6 +31,11 @@ export interface Library { films: StoredFilm[]; usedBytes: number; freeBytes: nu
 export interface PeerStatus {
   memberId: string; name: string; havePct: number; bufferEndSec: number
   downBps: number; upBps: number; peers: number; ready: boolean
+  /** Sixty-four hex digits, one per sixty-fourth of the film: how full that
+   *  slice is, 0 to 15. Absent when the transport cannot say. */
+  pieces?: string
+  paused?: boolean
+  sharer?: boolean
 }
 export interface TransferStatus {
   perPeer: PeerStatus[]
@@ -65,6 +70,11 @@ export interface State {
   openControl: boolean
   /** Whether the system file dialog can be trusted here; see main/browse.ts. */
   nativePicker: boolean
+  /** Whether the window is on screen. Nothing animates before it is. */
+  windowShown: boolean
+  /** Whether this machine is feeding the room, and whether that is paused. */
+  sharing: 'off' | 'sharing' | 'paused'
+  sharedInfoHash: string | null
   transferStatus: TransferStatus | null
 }
 
@@ -102,6 +112,10 @@ declare global {
       getIdentity: () => Promise<{ id: string; name: string; server: string; lastCode: string | null }>
       listFilms: () => Promise<Library>
       removeFilm: (infoHash: string) => Promise<void>
+      /** Hand the open film to the room; nothing leaves this machine before it. */
+      shareFilm: () => Promise<{ infoHash: string | null }>
+      setSharingPaused: (paused: boolean) => Promise<{ paused: boolean }>
+      unloadFilm: () => Promise<unknown>
       connect: (o: { url: string; code: string | null; name: string; options?: RoomOptions }) => Promise<{ memberId: string; code: string }>
       disconnect: () => Promise<void>
       sendChat: (text: string) => Promise<void>

@@ -27,6 +27,7 @@ import type { BrowserWindow } from 'electron'
 interface X11Client {
   ReparentWindow: (child: number, parent: number, x: number, y: number) => void
   MapWindow: (win: number) => void
+  UnmapWindow: (win: number) => void
   RaiseWindow: (win: number) => void
 }
 interface X11Display { client: X11Client }
@@ -77,8 +78,36 @@ export async function embedWindow (
     const childId = Number(nativeHandleToWid(child.getNativeWindowHandle()))
     if (!Number.isFinite(parentId) || !Number.isFinite(childId)) return false
     d.client.ReparentWindow(childId, parentId, Math.round(x), Math.round(y))
-    // Reparenting unmaps the window, so it has to be put back on screen.
-    d.client.MapWindow(childId)
+    // Reparenting unmaps the window. Putting it back on screen unconditionally
+    // was a real bug: the video surface is created hidden and belongs hidden
+    // until a film is open, so mapping it here left a black rectangle over the
+    // top-left of the interface -- over the launch animation and over the film
+    // picker -- while Electron went on reporting the window as hidden and
+    // therefore never corrected it. Only what is meant to be seen is mapped.
+    if (child.isVisible()) d.client.MapWindow(childId)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Map or unmap an embedded window in X directly.
+ *
+ * Electron's show() and hide() are the source of truth for what *should* be on
+ * screen, but a reparented window is no longer one the window manager tracks,
+ * and the two states drifted apart. These are called alongside show and hide so
+ * that what X does always matches what Electron believes.
+ */
+export async function setEmbeddedMapped (win: BrowserWindow, mapped: boolean): Promise<boolean> {
+  const d = await display()
+  if (!d) return false
+  try {
+    if (win.isDestroyed()) return false
+    const wid = Number(nativeHandleToWid(win.getNativeWindowHandle()))
+    if (!Number.isFinite(wid)) return false
+    if (mapped) d.client.MapWindow(wid)
+    else d.client.UnmapWindow(wid)
     return true
   } catch {
     return false

@@ -517,3 +517,77 @@ describe('the options a host chooses while creating a room', () => {
     expect((await a.nextWhere('room.state', m => !m.openControl)).openControl).toBe(false)
   })
 })
+
+describe('what the room can say about the transfer', () => {
+  const full = 'f'.repeat(64)
+
+  it('passes a peer\'s piece map through untouched, so the room can show which parts they hold', async () => {
+    const a = await Peer.connect()
+    a.send({ t: 'hello', code: null, name: 'anjali' })
+    const w = await a.next('welcome')
+    // A source is what makes the room broadcast transfer status at all.
+    a.send({
+      t: 'media.announce',
+      name: 'dune.mkv',
+      durationSec: 7200,
+      source: {
+        kind: 'p2p', infoHash: 'a'.repeat(40),
+        magnet: `magnet:?xt=urn:btih:${'a'.repeat(40)}`, bytes: 4_000_000_000, pieceLength: 262_144
+      }
+    })
+    a.send({
+      t: 'peer.report',
+      report: { havePct: 0.5, bufferEndSec: 60, downBps: 1e6, upBps: 2e6, peers: 3, pieces: 'f'.repeat(32) + '0'.repeat(32), paused: true }
+    })
+    const status = await a.nextWhere('transfer.status', m => m.perPeer.some(p => p.pieces !== undefined), 4000)
+    const me = status.perPeer.find(p => p.memberId === w.memberId)!
+    expect(me.pieces).toBe('f'.repeat(32) + '0'.repeat(32))
+    expect(me.paused).toBe(true)
+    // And it names whoever put the film on, which the interface marks.
+    expect(me.sharer).toBe(true)
+  }, 20_000)
+
+  it('rejects a piece map that is not one', async () => {
+    const a = await Peer.connect()
+    a.send({ t: 'hello', code: null, name: 'anjali' })
+    await a.next('welcome')
+    a.ws.send(JSON.stringify({
+      t: 'peer.report',
+      report: { havePct: 1, bufferEndSec: 0, downBps: 0, upBps: 0, peers: 0, pieces: 'not a map' }
+    }))
+    expect((await a.next('error')).message).toMatch(/bad message/)
+    void full
+  }, 20_000)
+
+  it('lets whoever put the film on take it off again', async () => {
+    const a = await Peer.connect()
+    a.send({ t: 'hello', code: null, name: 'anjali' })
+    const w = await a.next('welcome')
+    const b = await Peer.connect()
+    b.send({ t: 'hello', code: w.code, name: 'dev' })
+    await b.nextWhere('room.state', m => m.members.length === 2)
+
+    a.send({ t: 'media.announce', name: 'dune.mkv', durationSec: 7200, source: null })
+    await b.nextWhere('room.state', m => m.media?.name === 'dune.mkv')
+    a.send({ t: 'media.clear' })
+    const cleared = await b.nextWhere('room.state', m => m.media === null, 4000)
+    expect(cleared.media).toBe(null)
+    const note = await b.nextWhere('chat.message', m => m.message.text.includes('took the film off'))
+    expect(note.message.name).toBe('anjali')
+  }, 20_000)
+
+  it('refuses to let a bystander take the film off', async () => {
+    const a = await Peer.connect()
+    a.send({ t: 'hello', code: null, name: 'anjali' })
+    const w = await a.next('welcome')
+    const b = await Peer.connect()
+    b.send({ t: 'hello', code: w.code, name: 'dev' })
+    await b.nextWhere('room.state', m => m.members.length === 2)
+    // The host announced it; dev is neither host nor sharer.
+    a.send({ t: 'media.announce', name: 'dune.mkv', durationSec: 7200, source: null })
+    await b.nextWhere('room.state', m => m.media?.name === 'dune.mkv')
+    b.seen.length = 0
+    b.send({ t: 'media.clear' })
+    expect((await b.next('error')).message).toMatch(/host, or whoever put the film on/)
+  }, 20_000)
+})

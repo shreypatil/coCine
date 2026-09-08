@@ -16,6 +16,7 @@ import { sourceId, type MediaSource, type RoomMode, type RoomOptions } from '@co
 
 export interface PlayerLike {
   load: (path: string) => Promise<void>
+  unload?: () => Promise<void>
   play: () => Promise<void>
   pause: () => Promise<void>
   seek: (seconds: number) => Promise<void>
@@ -29,6 +30,7 @@ export interface VideoLike {
   suspend: () => void
   resume: () => void
   setFilmOpen?: (open: boolean) => void
+  ensureVisible?: () => void
   setSlot: (slot: Slot) => void
   bounds: () => Rect | null
 }
@@ -47,6 +49,9 @@ export interface TransferLike {
   receive: (source: MediaSource) => Promise<{ path: string }>
   stop: (id: string) => Promise<void>
   progress: () => TransferProgress[]
+  /** Swarm only: which parts are held, and whether to take part at all. */
+  pieceMap?: (id: string) => string | null
+  setPaused?: (id: string, paused: boolean) => boolean
 }
 
 export interface FilmStoreLike {
@@ -58,6 +63,7 @@ export interface FilmStoreLike {
 
 export interface RoomLike {
   announceMedia: (name: string, durationSec: number, source?: MediaSource | null) => void
+  clearMedia: () => void
   setMode: (mode: RoomMode) => void
   setOpenControl: (open: boolean) => void
   mode: RoomMode
@@ -107,6 +113,17 @@ export interface HandlerDeps {
   getIdentity: () => Identity
   saveIdentity: (patch: Partial<Omit<Identity, 'id'>>) => Identity
   getTransfer: () => TransferLike | null
+  /**
+   * Whether this machine is currently feeding the room, and whether that has
+   * been paused. Opening a film no longer implies sharing it: a film plays
+   * locally until somebody says to share it.
+   */
+  getSharing?: () => 'off' | 'sharing' | 'paused'
+  setSharing?: (state: 'off' | 'sharing' | 'paused') => void
+  getSharedInfoHash?: () => string | null
+  /** Whether the room's film is the one this machine put on. */
+  getAnnouncedByUs?: () => boolean
+  setAnnouncedByUs?: (v: boolean) => void
   getOverlay?: () => OverlayLike | null
   getFilmStore: () => FilmStoreLike | null
   setSharedInfoHash?: (infoHash: string | null) => void
@@ -166,13 +183,26 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     await deps.getVideo()?.player?.showText(text, 1200).catch(() => {})
   }
 
-  /** Shared by the dialog and by drag-and-drop, so both behave identically. */
+  /**
+   * Open a film, for this machine only.
+   *
+   * Opening and sharing used to be one action, which made two quite different
+   * things look like one: putting a film on your own screen, and pushing
+   * gigabytes at everybody else. They are separate now -- nothing leaves this
+   * machine until `film:share`.
+   */
   const loadInto = async (path: string): Promise<{ path: string; name: string; durationSec: number | null; infoHash: string | null }> => {
     const video = deps.getVideo()
     if (!video?.player) throw new Error('player not ready')
+    // Before the load, not after: mpv draws into this window, and a window that
+    // is still hidden when the file opens is a film with sound and no picture.
+    video.setFilmOpen?.(true)
     try {
       await video.player.load(path)
     } catch (err) {
+      // Nothing is playing, so the surface goes away again and the interface
+      // gets its empty state back rather than a black rectangle.
+      video.setFilmOpen?.(!!deps.getMediaPath())
       log(`[film] failed to load: ${String(err)}`)
       throw err instanceof Error ? err : new Error(String(err))
     }
@@ -180,25 +210,14 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     const durationSec = video.player.duration()
     log(`[film] loaded ${basename(path)} · duration ${durationSec ?? 'unknown'}`)
 
-    // Sharing is what makes the film available to everyone else. Hashing runs
-    // in chunks and measured at roughly 780 MB/s, so it does not need a worker
-    // -- but it is still seconds on a large film, and a failure to share must
-    // not stop the person who opened it from watching.
-    let source: MediaSource | null = null
-    const transfer = deps.getTransfer()
-    if (transfer) {
-      try {
-        source = await transfer.share(path)
-        deps.setSharedInfoHash?.(sourceId(source)!)
-        log(`[film] sharing as ${sourceId(source)}`)
-      } catch (err) {
-        log(`[film] could not share: ${String(err)}`)
-      }
-    }
-    deps.getRoom()?.announceMedia(basename(path), durationSec ?? 0, source)
+    // Nothing is announced and nothing is hashed: this film is on one screen
+    // until somebody presses Start sharing.
+    deps.setSharing?.('off')
+    deps.setSharedInfoHash?.(null)
+    deps.setAnnouncedByUs?.(false)
     // Next time the picker opens, open where this came from.
     deps.saveIdentity({ lastFilmDir: dirname(path) })
-    return { path, name: basename(path), durationSec, infoHash: sourceId(source) }
+    return { path, name: basename(path), durationSec, infoHash: null }
   }
 
   return {
@@ -266,6 +285,71 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     'file:openPath': async (path: string) => {
       log(`[film] loading (dropped) ${path}`)
       return await loadInto(path)
+    },
+
+    /**
+     * Hand the film to the room.
+     *
+     * Hashing runs in chunks -- measured at roughly 780 MB/s, so seconds on a
+     * large film and no need for a worker thread -- and only then is the film
+     * announced, because announcing a source nobody can fetch yet sends the
+     * room chasing bytes that are not there.
+     */
+    'film:share': async () => {
+      const room = deps.getRoom()
+      if (!room) throw new Error('A film is shared with a room. Create or join one first.')
+      const path = deps.getMediaPath()
+      if (!path) throw new Error('No film is open')
+      const transfer = deps.getTransfer()
+      let source: MediaSource | null = null
+      if (transfer) {
+        source = await transfer.share(path)
+        deps.setSharedInfoHash?.(sourceId(source))
+        log(`[film] sharing as ${sourceId(source)}`)
+      }
+      room.announceMedia(basename(path), deps.getVideo()?.player?.duration() ?? 0, source)
+      deps.setSharing?.('sharing')
+      deps.setAnnouncedByUs?.(true)
+      return { infoHash: sourceId(source) }
+    },
+
+    /**
+     * Stop feeding the room without giving the film up. Paused means paused for
+     * everyone: the swarm stops serving as well as fetching, which is what the
+     * words have to mean if they are to describe the effect on other people.
+     */
+    'film:setSharingPaused': (paused: boolean) => {
+      const id = deps.getSharedInfoHash?.()
+      if (!id) throw new Error('This film is not being shared')
+      const ok = deps.getTransfer()?.setPaused?.(id, paused)
+      if (ok === false) throw new Error('This film could not be paused')
+      deps.setSharing?.(paused ? 'paused' : 'sharing')
+      log(`[film] sharing ${paused ? 'paused' : 'resumed'}`)
+      return { paused }
+    },
+
+    /**
+     * Put the film away. Takes it off the room too when this machine is the one
+     * sharing it, so nobody is left fetching from somebody who has moved on.
+     */
+    'film:unload': async () => {
+      const id = deps.getSharedInfoHash?.()
+      const sharing = deps.getSharing?.() ?? 'off'
+      if (id && sharing !== 'off') {
+        try { await deps.getTransfer()?.stop(id) } catch { /* going away regardless */ }
+      }
+      // Only whoever put the film on takes it off the room. Somebody who was
+      // merely receiving it leaves the room's film where it is.
+      if (deps.getAnnouncedByUs?.()) {
+        try { deps.getRoom()?.clearMedia() } catch { /* the room may have gone */ }
+      }
+      deps.setSharedInfoHash?.(null)
+      deps.setSharing?.('off')
+      deps.setAnnouncedByUs?.(false)
+      try { await deps.getVideo()?.player?.unload?.() } catch { /* nothing playing */ }
+      deps.setMediaPath(null)
+      log('[film] unloaded')
+      return { ok: true }
     },
 
     'identity:get': () => deps.getIdentity(),

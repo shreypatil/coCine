@@ -49,5 +49,16 @@ export interface MediaTransport {
    */
   stop (id: string): Promise<void>
   progress (): TransferProgress[]
+  /**
+   * Which parts of the film are held, as a piece map, when the transport can
+   * say. The origin transport fetches byte ranges rather than pieces and does
+   * not answer.
+   */
+  pieceMap?: (id: string) => string | null
+  /**
+   * Stop or restart taking part. Only the swarm has anything to pause: in relay
+   * mode nobody depends on this client at all.
+   */
+  setPaused?: (id: string, paused: boolean) => boolean
   destroy (): Promise<void>
 }

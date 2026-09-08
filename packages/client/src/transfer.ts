@@ -3,11 +3,11 @@ import { EventEmitter } from 'node:events'
 import { basename, dirname } from 'node:path'
 import type { Server } from 'node:http'
 import { stat } from 'node:fs/promises'
-import type { MediaSource, TorrentInfo } from '@cocine/protocol'
+import { PIECE_MAP_BUCKETS, type MediaSource, type TorrentInfo } from '@cocine/protocol'
 import type { MediaTransport, TransferReport } from './transport.js'
 import { installWebRtc, DEFAULT_ICE_SERVERS } from './webrtc.js'
 import { FilmStore } from './storage.js'
-import { PieceScheduler, contiguousSecondsFrom, type WindowConfig } from './pieces.js'
+import { PieceScheduler, contiguousSecondsFrom, pieceMapOf, type WindowConfig } from './pieces.js'
 
 export interface TransferOptions {
   store: FilmStore
@@ -221,6 +221,39 @@ export class TransferManager extends EventEmitter implements MediaTransport {
       downBps: t.downloadSpeed,
       upBps: t.uploadSpeed,
       peers: t.numPeers
+    }
+  }
+
+  /**
+   * Which parts of the film are held, as sixty-four hexadecimal digits.
+   *
+   * One digit per sixty-fourth of the film, 0 to 15, so a glance says not only
+   * how much somebody has but *where* -- a peer missing the stretch about to be
+   * watched looks different from one missing the end credits. Null when this
+   * client is not carrying this film at all.
+   */
+  pieceMap (infoHash: string, buckets = PIECE_MAP_BUCKETS): string | null {
+    const t = this.torrents.get(infoHash.toLowerCase())
+    if (!t || t.pieces.length === 0) return null
+    return pieceMapOf(t.pieces.length, i => t.bitfield.get(i), buckets)
+  }
+
+  /**
+   * Stop or restart this client's part in the swarm.
+   *
+   * Paused means paused for everybody: WebTorrent stops serving as well as
+   * fetching, which is what "pause sharing" has to mean if it is to be honest
+   * about its effect on the room.
+   */
+  setPaused (id: string, paused: boolean): boolean {
+    const t = this.torrents.get(id.toLowerCase())
+    if (!t) return false
+    try {
+      if (paused) t.pause()
+      else t.resume()
+      return true
+    } catch {
+      return false
     }
   }
 

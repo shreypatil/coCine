@@ -29,6 +29,8 @@ export interface PlayerController {
   duration(): number | null
   /** Transient on-screen text drawn by the player itself. */
   showText(text: string, durationMs?: number): Promise<void>
+  /** Close the current file and go back to idle, keeping the player alive. */
+  unload(): Promise<void>
   /** 0 to 100, for ducking the film while someone speaks. */
   setVolume(percent: number): Promise<void>
   on(event: 'position', fn: (seconds: number, atMs: number) => void): void

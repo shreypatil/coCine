@@ -684,7 +684,10 @@ body.overlay-body { background: transparent; }
    the application's own surfaces rather than the desktop's.
    ========================================================================= */
 .picker-wrap {
-  position: fixed; inset: 0; z-index: 200;
+  /* Above the launch mark, which covers the whole window: a picker opened while
+     that is still on screen was invisible behind it, and the film opened into a
+     window nobody could see. */
+  position: fixed; inset: 0; z-index: 1200;
   display: grid; place-items: center; padding: 40px;
   background: rgba(6, 4, 12, .72);
   backdrop-filter: blur(3px);
@@ -923,3 +926,38 @@ body.overlay-body { background: transparent; }
   -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 14px);
 }
 .wall-card .btn { margin-top: 4px; }
+
+/* ============================================================================
+   Sharing, and what the transfer is doing
+   Opening a film and sharing it are separate actions, so the panel has to say
+   which state it is in without being read twice.
+   ========================================================================= */
+.filmacts { margin-top: 12px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.filmacts .btn.wide { margin-top: 0; }
+.quiet.small.sharing-on { color: var(--ok); }
+.pausedtag { color: var(--warn); }
+.quiet.mine { margin: 0 0 12px; font-size: 12px; color: var(--tx2); font-variant-numeric: tabular-nums; }
+.quiet.mine b { color: var(--ok); font-family: var(--mono); }
+
+.peers li.behind .pn { color: var(--tx); }
+.peers .pn { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.peers .pn em { font-style: normal; color: var(--tx3); font-size: 11px; }
+.peers .tag { margin-left: 0; }
+.peers .tag.src { color: var(--a); background: rgba(123, 92, 255, .16); }
+.pw { grid-column: 1 / -1; font-size: 10.5px; color: var(--tx3); }
+.peers li.behind .pw { color: var(--warn); }
+
+/* Which parts of the film somebody holds: sixty-four slices, in order. */
+.strip {
+  grid-column: 1 / -1;
+  display: grid; grid-template-columns: repeat(64, 1fr);
+  /* No gaps: it reads as one bar whose fill varies along the film, which is
+     what it is, rather than as sixty-four separate things. */
+  height: 8px; margin: 5px 0 1px;
+  border-radius: 99px; overflow: hidden;
+  background: rgba(255, 255, 255, .05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .04);
+}
+.strip span { background: var(--s4); }
+.strip span.part { background: linear-gradient(180deg, #7B5CFF, #5B44C8); }
+.strip span.full { background: linear-gradient(180deg, #B053C8, #7B5CFF); }

@@ -302,6 +302,14 @@ export class SignallingServer {
         return
       }
 
+      case 'media.clear': {
+        conn.room.clearMedia(me.id)
+        this.emitChat(conn.room, 'system', me.name, 'took the film off', me.id)
+        this.broadcastState(conn.room)
+        this.broadcast(conn.room, { t: 'playback.schedule', state: conn.room.state, seq: conn.room.seq })
+        return
+      }
+
       case 'room.setOpenControl': {
         if (!me.isHost) return this.send(ws, { t: 'error', message: 'Only the host can change that' })
         conn.room.openControl = msg.open

@@ -29,22 +29,28 @@ beforeAll(async () => {
 
   app = await electron.launch({
     args: [join(process.cwd(), 'apps/desktop')],
-    env: { ...process.env, COCINE_HEADLESS: '1' }
+    // The film is put on through the stubbed system dialog here, so the system
+    // dialog has to be the one in use. Linux would otherwise open the
+    // application's own picker, which picker.e2e.test.ts covers.
+    env: { ...process.env, COCINE_HEADLESS: '1', COCINE_NATIVE_DIALOG: '1' }
   })
   page = await app.firstWindow()
   await page.waitForSelector('[data-testid="stage"]', { timeout: 20_000 })
+
+  // The room comes first: a film cannot be opened without one.
+  await page.fill('[data-testid="server"]', `ws://127.0.0.1:${port}`)
+  await page.fill('[data-testid="name"]', 'anjali')
+  await page.click('[data-testid="create"]')
+  await page.waitForSelector('[data-testid="code"]', { timeout: 20_000 })
+  code = (await page.textContent('[data-testid="code"]'))!.replace(/[^A-Z0-9]/g, '').replace(/COPY|COPIED/, '')
 
   await app.evaluate(async ({ dialog }, chosen) => {
     ;(dialog as unknown as { showOpenDialog: unknown }).showOpenDialog = async () => ({ canceled: false, filePaths: [chosen] })
   }, film)
   await page.click('[data-testid="open"]')
   await page.waitForFunction(() => !!document.querySelector('.fname')?.textContent?.includes('.mp4'), null, { timeout: 20_000 })
-
-  await page.fill('[data-testid="server"]', `ws://127.0.0.1:${port}`)
-  await page.fill('[data-testid="name"]', 'anjali')
-  await page.click('[data-testid="create"]')
-  await page.waitForSelector('[data-testid="code"]', { timeout: 20_000 })
-  code = (await page.textContent('[data-testid="code"]'))!.replace(/[^A-Z0-9]/g, '').replace(/COPY|COPIED/, '')
+  // And opening it no longer shares it, so that is a second step.
+  await page.click('[data-testid="startsharing"]')
 
   guestPlayer = new ExternalMpv({ headless: true })
   await guestPlayer.start(); await guestPlayer.load(film)

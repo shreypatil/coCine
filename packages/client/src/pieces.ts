@@ -174,3 +174,32 @@ export class PieceScheduler {
     return w
   }
 }
+
+
+/**
+ * Which parts of a film are held, as sixty-four hexadecimal digits.
+ *
+ * One digit per sixty-fourth of the film, 0 to 15, so a peer's report says not
+ * only how much they have but *where* -- somebody missing the stretch about to
+ * be watched is in different trouble from somebody missing the credits, and a
+ * percentage cannot tell them apart. Coarse deliberately: 64 bytes once a
+ * second per peer, where a real bitfield for a 4 GB film would be kilobytes.
+ */
+export function pieceMapOf (
+  pieceCount: number,
+  held: (index: number) => boolean,
+  buckets = 64
+): string {
+  let out = ''
+  for (let b = 0; b < buckets; b++) {
+    const from = Math.floor((b * pieceCount) / buckets)
+    const to = Math.max(from + 1, Math.floor(((b + 1) * pieceCount) / buckets))
+    let have = 0
+    let counted = 0
+    for (let i = from; i < to && i < pieceCount; i++) { counted++; if (held(i)) have++ }
+    const fraction = counted ? have / counted : 0
+    // Only a full slice reaches 15, so one piece short never reads as complete.
+    out += (fraction >= 1 ? 15 : Math.floor(fraction * 15)).toString(16)
+  }
+  return out
+}

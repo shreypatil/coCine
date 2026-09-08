@@ -221,7 +221,7 @@
         <text class="dg-m" x="298" y="228" text-anchor="middle">time.pong { c1, s1, s2 }  →  clock offset</text>
 
         <path class="dg-arrow-2" d="M850 280 H486" marker-end="url(#ar4)"/>
-        <text class="dg-m" x="668" y="272" text-anchor="middle">media.announce { name, duration, source }</text>
+        <text class="dg-m" x="668" y="272" text-anchor="middle">media.announce { name, duration, source }  ← Start sharing</text>
         <path class="dg-arrow" d="M480 316 H116" marker-end="url(#ar3)"/>
         <text class="dg-m" x="298" y="308" text-anchor="middle">room.state { media, trackerUrl, phase: preparing }</text>
 
@@ -262,6 +262,8 @@
       hashes a room has actually announced, so it cannot be used as a public tracker.
     </p>
     <ol>
+      <li>Somebody presses <b>Start sharing</b>. Until then the film is open on their machine
+      and nothing about it has crossed the wire.</li>
       <li>The sharer hashes the file in chunks — measured at roughly 780 MB/s, so it costs
       seconds on a large film and needs no worker thread.</li>
       <li>The resulting magnet plus piece length goes to the room in
@@ -272,6 +274,22 @@
       wherever a piece has not arrived; the stream blocks instead and honours byte ranges, so
       mpv can still seek.</li>
     </ol>
+    <p>
+      Opening a film and sharing it are separate actions. Opening loads it into mpv on that
+      machine and nothing else: no hashing, no announcement, nothing on the wire. Only
+      <code>film:share</code> hashes the file, and only then is <code>media.announce</code>
+      sent — announcing a source before it can be fetched sends the room chasing bytes that
+      are not there. Sharing can be paused, which pauses serving as well as fetching, and
+      taking the film off sends <code>media.clear</code> so nobody keeps waiting on it.
+    </p>
+    <p>
+      Each client also reports a <strong>piece map</strong> once a second: sixty-four
+      hexadecimal digits, one per sixty-fourth of the film, each saying how full that slice is
+      from 0 to 15. Coarse on purpose — 64 bytes per peer per second, where a real bitfield for
+      a 4 GB film would be kilobytes — and enough to show <em>which</em> part somebody is
+      missing rather than only how much, which is the difference between a peer who is behind
+      and one who is about to run out mid-scene.
+    </p>
     <p>
       Piece selection runs in three zones — an urgent window just ahead of the playhead, a
       readahead band after it, and the rest as backfill — which is what makes watching before
@@ -303,6 +321,15 @@
       that collectively holds every piece in fragments still reads as unsafe. Deliberate: a
       wrong “yes” loses the film.</li>
     </ul>
+
+    <h3>What the room is told, and what it shows</h3>
+    <p>
+      <code>transfer.status</code> carries, per member: the fraction held, contiguous seconds
+      from the playhead, download and upload rates, peer count, whether they are ready, whether
+      they have paused their own sharing, whether they are the one who put the film on, and
+      the piece map. The interface renders all of it — the sharer's own upload rate included,
+      which is the number they most want and could not otherwise see anywhere.
+    </p>
 
     <h2 id="relay">Relay mode</h2>
     <p>

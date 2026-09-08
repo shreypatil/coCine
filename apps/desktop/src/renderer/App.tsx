@@ -32,6 +32,13 @@ const countdown = (s: number | null): string => {
   return m < 60 ? `about ${m} min` : `about ${(m / 60).toFixed(1)} hours`
 }
 
+/** A buffer, in the units a person would use for it. */
+const buffered = (sec: number): string => {
+  if (sec < 60) return `${Math.round(sec)}s`
+  const m = Math.round(sec / 60)
+  return m < 60 ? `${m} min` : `${(m / 60).toFixed(1)} hours`
+}
+
 const clock = (s: number | null | undefined): string => {
   if (s == null || !isFinite(s)) return '--:--:--'
   const t = Math.max(0, Math.floor(s))
@@ -40,8 +47,19 @@ const clock = (s: number | null | undefined): string => {
 }
 const pretty = (code: string): string => code.length > 4 ? `${code.slice(0, 4)}-${code.slice(4)}` : code
 
-/** How long the launch mark is on screen before the interface takes over. */
+/**
+ * How long the launch mark is on screen once it has started, and how long to
+ * wait for the window before starting anyway.
+ *
+ * The timeline cannot begin at mount. Chromium throttles a window that is not
+ * on screen yet -- CSS animations freeze and timers slow to roughly one a
+ * second -- so an animation started then plays to an empty desktop, or worse,
+ * is still frozen mid-way when the window finally appears. The main process
+ * says when the window has been mapped; the fallback covers a state push that
+ * never arrives, so a stuck mark can never hold the interface hostage.
+ */
 const SPLASH_MS = 1550
+const SPLASH_ARM_FALLBACK_MS = 2500
 
 /**
  * The mark, drawn on and then gone.
@@ -51,9 +69,14 @@ const SPLASH_MS = 1550
  * be swallowed. Someone who has asked for reduced motion never sees it -- the
  * stylesheet hides it outright -- so it is decoration in the honest sense.
  */
-function Splash (): ReactElement {
+function Splash ({ onDone }: { onDone: () => void }): ReactElement {
   return (
-    <div className="splash" data-testid="splash" aria-hidden="true">
+    <div
+      className="splash" data-testid="splash" aria-hidden="true"
+      // The mark's own pieces animate too and their events bubble; only the
+      // container's fade-out means the thing is finished.
+      onAnimationEnd={e => { if (e.target === e.currentTarget) onDone() }}
+    >
       <div className="splash-inner">
         <svg viewBox="0 0 40 40">
           <defs>
@@ -71,6 +94,26 @@ function Splash (): ReactElement {
         <div className="word">coCine</div>
         <div className="tag">watch together</div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * Which parts of the film somebody holds.
+ *
+ * Sixty-four slices, each 0 to 15 full, straight from the peer's own report.
+ * "How much" is a percentage; this is "which bits", which is the difference
+ * between somebody who is merely behind and somebody who is missing the stretch
+ * about to be watched.
+ */
+function PieceStrip ({ map, title }: { map?: string; title: string }): ReactElement | null {
+  if (!map) return null
+  return (
+    <div className="strip" data-testid="piecestrip" data-map={map} title={title} aria-hidden="true">
+      {[...map].map((c, i) => {
+        const held = parseInt(c, 16) / 15
+        return <span key={i} className={held >= 1 ? 'full' : held > 0 ? 'part' : ''} style={{ opacity: 0.16 + held * 0.84 }} />
+      })}
     </div>
   )
 }
@@ -95,6 +138,7 @@ export function App (): ReactElement {
   const [optWaitLate, setOptWaitLate] = useState(true)
   const [picking, setPicking] = useState(false)
   const [splash, setSplash] = useState(true)
+  const [armed, setArmed] = useState(false)
   const [library, setLibrary] = useState<Library | null>(null)
   const slotRef = useRef<HTMLDivElement>(null)
   const chatRef = useRef<HTMLDivElement>(null)
@@ -104,12 +148,23 @@ export function App (): ReactElement {
 
   useEffect(() => window.cocine.onState(setS), [])
 
-  // Taken off the page once it has faded, so nothing is left over the interface
-  // holding a compositing layer for the rest of the session.
+  // Start the mark only once the window is really on screen. Until then a
+  // hidden window's animations are frozen, so it would either be missed or be
+  // caught half-finished.
   useEffect(() => {
-    const t = setTimeout(() => setSplash(false), SPLASH_MS)
+    const t = setTimeout(() => setArmed(true), SPLASH_ARM_FALLBACK_MS)
     return () => clearTimeout(t)
   }, [])
+  useEffect(() => { if (s?.windowShown) setArmed(true) }, [s?.windowShown])
+
+  // Taken off the page once it has faded, so nothing is left over the interface
+  // holding a compositing layer for the rest of the session. The animation's own
+  // end event is the primary signal; the timer is the guarantee.
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => setSplash(false), SPLASH_MS)
+    return () => clearTimeout(t)
+  }, [armed])
 
   // Who you were last time. Loaded once, before anything is typed, so the join
   // panel is filled in rather than asking for the same three answers every launch.
@@ -294,8 +349,12 @@ export function App (): ReactElement {
           </span>
         )}
         <span className="grow" />
-        <button className="btn" data-testid="open" disabled={busy || !s?.ready}
+        <button className="btn" data-testid="open" disabled={busy || !s?.ready || !s?.connected}
+          title={s?.connected ? undefined : 'Create or join a room first — a film is always watched with somebody'}
           onClick={() => {
+            // Whatever the mark is still doing, it stops here: it covers the
+            // whole window, and what comes next has to be reachable.
+            setSplash(false)
             // The system dialog is only used where it can be trusted to return
             // what was chosen; on Linux it cannot. See main/browse.ts.
             if (s?.nativePicker) void guard(() => window.cocine.openFile())
@@ -334,7 +393,7 @@ export function App (): ReactElement {
         </div>
       )}
 
-      {splash && <Splash />}
+      {splash && armed && <Splash onDone={() => setSplash(false)} />}
 
       {picking && (
         <FilmPicker
@@ -374,12 +433,14 @@ export function App (): ReactElement {
                 <circle cx="15.5" cy="20" r="4.1" fill="url(#wlgrad)" />
                 <circle cx="25" cy="20" r="4.1" fill="none" stroke="url(#wlgrad)" strokeWidth="1.6" />
               </svg>
-              <h1>Put a film on</h1>
-              <p>Drag one into this window, or use <b>Open film</b>.</p>
+              <h1>{s?.connected ? 'Put a film on' : 'Start with a room'}</h1>
+              {s?.connected
+                ? <p>Drag one into this window, or use <b>Open film</b>.</p>
+                : <p>Create one and send the code to whoever is watching. Then put a film on.</p>}
               <p className="wl-quiet">
                 {s?.connected
-                  ? 'Everyone in the room gets it from you — nobody has to find their own copy.'
-                  : 'Create a room afterwards and share the code; everyone else gets the film from you.'}
+                  ? 'It plays here first, on your machine only. When you are ready, Start sharing sends it to the room — nobody else has to find their own copy.'
+                  : 'A film is always watched with somebody, so the room comes first.'}
               </p>
             </div>
           )}
@@ -522,52 +583,84 @@ export function App (): ReactElement {
                 )}
               </div>
 
-              {(s.phase === 'preparing' || s.phase === 'ready') && s.transferStatus && (
-              <div className="sect gate" data-testid="gate">
-                <h4>{s.phase === 'ready' ? 'Everyone is ready' : 'Getting everyone ready'}</h4>
-                {s.phase === 'preparing' && (
-                  <p className="gate-eta" data-testid="eta">
-                    {countdown(s.transferStatus.etaSec)}
-                    {s.transferStatus.bottleneck && <span> · waiting on <b>{s.transferStatus.bottleneck}</b></span>}
+              {s.transferStatus && s.transferStatus.perPeer.length > 0 && (s.mediaName ?? s.receiving) && (
+                <div className="sect gate" data-testid="gate">
+                  <h4>{s.phase === 'preparing' ? 'Getting everyone ready' : s.phase === 'ready' ? 'Everyone is ready' : 'Transfer'}</h4>
+                  {s.phase === 'preparing' && (
+                    <p className="gate-eta" data-testid="eta">
+                      {countdown(s.transferStatus.etaSec)}
+                      {s.transferStatus.bottleneck && <span> · waiting on <b>{s.transferStatus.bottleneck}</b></span>}
+                    </p>
+                  )}
+                  {/* Everything this machine is doing, in one line: the number
+                      the person sharing actually wants, and cannot otherwise
+                      see anywhere. */}
+                  {(() => {
+                    const me = s.transferStatus!.perPeer.find(p => p.memberId === s.memberId)
+                    if (!me) return null
+                    return (
+                      <p className="quiet mine" data-testid="mytransfer">
+                        you: <b>↑ {rate(me.upBps)}</b> · ↓ {rate(me.downBps)} · {me.peers} {me.peers === 1 ? 'peer' : 'peers'}
+                        {s.sharing === 'paused' && <span className="pausedtag"> · sharing paused</span>}
+                      </p>
+                    )
+                  })()}
+                  <ul className="peers">
+                    {s.transferStatus.perPeer.map(p => (
+                      <li key={p.memberId} data-testid="peerstatus" data-name={p.name}
+                        className={p.ready ? 'ok' : 'behind'}>
+                        <span className="pn">
+                          {p.name}
+                          {p.memberId === s.memberId && <em> · you</em>}
+                          {p.sharer && <span className="tag src" title="Put this film on">source</span>}
+                          {p.paused && <span className="tag muted" title="They have paused their sharing">paused</span>}
+                        </span>
+                        <span className={`pv ${p.ready ? 'ok' : ''}`}>{Math.round(p.havePct * 100)}%</span>
+                        <span className="pd" title="Their download rate, then upload">
+                          ↓{rate(p.downBps)} ↑{rate(p.upBps)}
+                        </span>
+                        {/* The strip says how much *and* where, so a plain
+                            progress bar beside it would only repeat half of it. */}
+                        {p.pieces
+                          ? <PieceStrip map={p.pieces} title={`Which parts of the film ${p.name} holds`} />
+                          : <div className="bar"><span style={{ width: `${Math.round(p.havePct * 100)}%` }} /></div>}
+                        <span className="pw" data-testid="peerwhen">
+                          {p.havePct >= 0.999
+                            ? 'has the whole film'
+                            : p.ready
+                              ? `${buffered(p.bufferEndSec)} ahead of the playhead`
+                              : s.transferStatus!.bottleneck === p.name ? 'furthest behind' : 'still filling up'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  {s.phase === 'preparing' && s.transferStatus.tMinSec !== null && (
+                    <p className="quiet" data-testid="floor">
+                      fastest possible {countdown(s.transferStatus.tMinSec)} — nothing can beat that
+                    </p>
+                  )}
+                  <p className={s.transferStatus.safeForSharerToLeave ? 'quiet safe' : 'quiet'} data-testid="durability">
+                    {s.transferStatus.safeForSharerToLeave
+                      ? 'Safe for the sharer to leave — the room has a second full copy'
+                      : `${s.transferStatus.fullCopies} full ${s.transferStatus.fullCopies === 1 ? 'copy' : 'copies'} in the room — the film needs the sharer for now`}
                   </p>
-                )}
-                <ul className="peers">
-                  {s.transferStatus.perPeer.map(p => (
-                    <li key={p.memberId} data-testid="peerstatus" data-name={p.name}>
-                      <span className="pn">{p.name}</span>
-                      <span className={`pv ${p.ready ? 'ok' : ''}`}>{Math.round(p.havePct * 100)}%</span>
-                      <span className="pd">{rate(p.downBps)}</span>
-                      <div className="bar"><span style={{ width: `${Math.round(p.havePct * 100)}%` }} /></div>
-                    </li>
-                  ))}
-                </ul>
-                {s.transferStatus.tMinSec !== null && (
-                  <p className="quiet" data-testid="floor">
-                    fastest possible {countdown(s.transferStatus.tMinSec)} — nothing can beat that
-                  </p>
-                )}
-                <p className={s.transferStatus.safeForSharerToLeave ? 'quiet safe' : 'quiet'} data-testid="durability">
-                  {s.transferStatus.safeForSharerToLeave
-                    ? 'Safe for the sharer to leave — the room has a second full copy'
-                    : `${s.transferStatus.fullCopies} full ${s.transferStatus.fullCopies === 1 ? 'copy' : 'copies'} in the room — the film needs the sharer for now`}
-                </p>
-                {s.isHost && (
-                  <div className="gate-acts">
-                    {s.phase === 'preparing' && (
-                      <button className="btn" data-testid="startanyway"
-                        onClick={() => void guard(() => window.cocine.startAnyway())}>
-                        Start without {s.transferStatus.perPeer.filter(p => !p.ready).map(p => p.name).join(', ')}
-                      </button>
-                    )}
-                    <label className="toggle">
-                      <input type="checkbox" checked={s.waitForLatecomers} data-testid="waitlate"
-                        onChange={e => void guard(() => window.cocine.setWaitForLatecomers(e.target.checked))} />
-                      Pause when someone arrives late
-                    </label>
-                  </div>
-                )}
-              </div>
-            )}
+                  {s.isHost && (s.phase === 'preparing' || s.phase === 'ready') && (
+                    <div className="gate-acts">
+                      {s.phase === 'preparing' && (
+                        <button className="btn" data-testid="startanyway"
+                          onClick={() => void guard(() => window.cocine.startAnyway())}>
+                          Start without {s.transferStatus.perPeer.filter(p => !p.ready).map(p => p.name).join(', ')}
+                        </button>
+                      )}
+                      <label className="toggle">
+                        <input type="checkbox" checked={s.waitForLatecomers} data-testid="waitlate"
+                          onChange={e => void guard(() => window.cocine.setWaitForLatecomers(e.target.checked))} />
+                        Pause when someone arrives late
+                      </label>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="sect voice" data-testid="voice">
                 <h4>Voice</h4>
@@ -666,7 +759,54 @@ export function App (): ReactElement {
               ) : (
                 <>
                   <p className="fname">{s?.mediaName ?? 'Nothing open'}</p>
-                  <p className="quiet">{duration > 0 ? `${clock(duration)} long` : 'Drop a file anywhere, or use Open film'}</p>
+                  <p className="quiet">
+                    {s?.mediaName
+                      ? (duration > 0 ? `${clock(duration)} long` : 'measuring…')
+                      : s?.connected ? 'Drop a file anywhere, or use Open film' : 'Create or join a room first'}
+                  </p>
+
+                  {s?.connected && s.mediaName && (
+                    <div className="filmacts" data-testid="filmacts">
+                      {s.sharing === 'off' && (
+                        <>
+                          <p className="quiet small" data-testid="sharestate">
+                            Playing on this machine only. Nobody else has it yet.
+                          </p>
+                          <button className="btn primary wide" data-testid="startsharing" disabled={busy}
+                            onClick={() => void guard(() => window.cocine.shareFilm())}>
+                            Start sharing
+                          </button>
+                        </>
+                      )}
+                      {s.sharing === 'sharing' && (
+                        <>
+                          <p className="quiet small sharing-on" data-testid="sharestate">
+                            Sharing with the room.
+                          </p>
+                          <button className="btn wide" data-testid="pausesharing" disabled={busy}
+                            onClick={() => void guard(() => window.cocine.setSharingPaused(true))}>
+                            Pause sharing
+                          </button>
+                        </>
+                      )}
+                      {s.sharing === 'paused' && (
+                        <>
+                          <p className="quiet small vwarn" data-testid="sharestate">
+                            Sharing paused — nobody is receiving from you.
+                          </p>
+                          <button className="btn primary wide" data-testid="resumesharing" disabled={busy}
+                            onClick={() => void guard(() => window.cocine.setSharingPaused(false))}>
+                            Resume sharing
+                          </button>
+                        </>
+                      )}
+                      <button className="mini" data-testid="unloadfilm" disabled={busy}
+                        title="Close this film so another can be opened"
+                        onClick={() => void guard(() => window.cocine.unloadFilm())}>
+                        unload film
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>

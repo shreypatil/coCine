@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { pieceAt, secondsToPieces, windowsFor, indexRanges, DEFAULT_WINDOWS, type PieceGeometry } from '../src/pieces.js'
+import { pieceAt, secondsToPieces, windowsFor, indexRanges, pieceMapOf, DEFAULT_WINDOWS, type PieceGeometry } from '../src/pieces.js'
 
 /** A 4 GB film, two hours, 1 MB pieces -- the shape the plan is written around. */
 const FILM: PieceGeometry = {
@@ -195,5 +195,33 @@ describe('PieceScheduler', () => {
     const selects = t.calls.filter(c => c.fn === 'select').length
     const deselects = t.calls.filter(c => c.fn === 'deselect').length
     expect(selects - deselects).toBe(1)
+  })
+})
+
+describe('the piece map a peer reports', () => {
+  // Sixty-four hex digits, one per sixty-fourth of the film. It is what lets a
+  // room show *which* parts somebody holds rather than only how much.
+  it('is all f when everything is held, and all zeros when nothing is', () => {
+    expect(pieceMapOf(1000, () => true)).toBe('f'.repeat(64))
+    expect(pieceMapOf(1000, () => false)).toBe('0'.repeat(64))
+  })
+
+  it('says where the gap is, not just how big it is', () => {
+    // Two peers at 50% can be in very different trouble; this tells them apart.
+    const map = pieceMapOf(1000, i => i < 500)
+    expect(map.slice(0, 32)).toBe('f'.repeat(32))
+    expect(map.slice(32)).toBe('0'.repeat(32))
+  })
+
+  it('never calls a slice complete when it is one piece short', () => {
+    // Reading "full" off a slice that is missing a piece is how a room decides
+    // somebody can start watching when they cannot.
+    expect(pieceMapOf(64 * 4, i => i % 4 !== 0)).not.toContain('f')
+  })
+
+  it('is always sixty-four digits, whatever the film', () => {
+    expect(pieceMapOf(10, i => i < 5)).toHaveLength(64)
+    expect(pieceMapOf(1, () => true)).toBe('f'.repeat(64))
+    expect(pieceMapOf(100_000, i => i < 50_000)).toHaveLength(64)
   })
 })

@@ -2,7 +2,7 @@ import { BrowserWindow, screen } from 'electron'
 import { join } from 'node:path'
 import { chromeOffset, type Rect, type Slot } from './video-window.js'
 import {
-  embedWindow, raiseEmbedded, x11EmbeddingPossible,
+  embedWindow, raiseEmbedded, x11EmbeddingPossible, setEmbeddedMapped,
   setWindowShape, clearWindowShape, shapingAvailable
 } from './x11-embed.js'
 
@@ -136,7 +136,12 @@ export class ChatOverlay {
   async setVisible (visible: boolean): Promise<void> {
     this.wanted = visible
     if (!visible) {
-      if (this.win && !this.win.isDestroyed()) this.win.hide()
+      if (this.win && !this.win.isDestroyed()) {
+        this.win.hide()
+        // A reparented window is not one the window manager tracks, so hiding
+        // it in Electron alone can leave it mapped in X.
+        if (this.embedded) void setEmbeddedMapped(this.win, false)
+      }
       return
     }
     const win = await this.ensure()
@@ -145,6 +150,7 @@ export class ChatOverlay {
     // showInactive keeps the keyboard with the main window, so space still
     // pauses and Escape still leaves fullscreen until chat is deliberately used.
     win.showInactive()
+    if (this.embedded) await setEmbeddedMapped(win, true)
     // Both children sit above the parent; this is what puts chat above video
     // rather than behind it.
     // setAlwaysOnTop and moveTop both go through the window manager, which does

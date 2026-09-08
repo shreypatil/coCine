@@ -308,6 +308,9 @@ export class RoomClient extends EventEmitter {
   announceMedia (name: string, durationSec: number, source: MediaSource | null = null): void {
     this.send({ t: 'media.announce', name, durationSec, source })
   }
+
+  /** Take the film off the room. Whoever put it on, or the host. */
+  clearMedia (): void { this.send({ t: 'media.clear' }) }
   sendChat (text: string): void {
     const t = text.trim()
     if (t) this.send({ t: 'chat.send', text: t.slice(0, 800) })

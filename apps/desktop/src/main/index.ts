@@ -45,8 +45,19 @@ let transfer: MediaTransport | null = null
 /** Which transport `transfer` currently is, so a mode change rebuilds it. */
 let transferMode: 'p2p' | 'origin' | null = null
 let sharedId: string | null = null
+/**
+ * Whether this machine is feeding the room. Opening a film no longer implies
+ * sharing it: it plays locally until somebody says otherwise, and can be paused
+ * without giving it up.
+ */
+let sharing: 'off' | 'sharing' | 'paused' = 'off'
+/** Whether the room's current film is the one this machine put on. Only the
+ *  announcer takes it off again. */
+let announcedByUs = false
 let startupError: { message: string; howToInstall: string } | null = null
 let receiving: { name: string; infoHash: string } | null = null
+/** False until the window has been mapped, so nothing animates unseen. */
+let windowShown = false
 
 /**
  * The transport for the room's current mode.
@@ -112,6 +123,8 @@ const state = (): Record<string, unknown> => {
     lastAction: room?.lastSyncAction()?.type ?? null,
     fullscreen: mainWin?.isFullScreen() ?? false,
     transfers: transfer?.progress() ?? [],
+    /** Whether the window is actually on screen; see the 'show' handler. */
+    windowShown,
     phase: room?.phase ?? 'lobby',
     waitForLatecomers: room?.waitForLatecomers ?? true,
     openControl: room?.openControl ?? true,
@@ -119,6 +132,8 @@ const state = (): Record<string, unknown> => {
     receiving,
     roomTorrent: room?.media?.source?.kind === 'p2p' ? room.media.source : null,
     mode: room?.mode ?? 'p2p',
+    sharing,
+    sharedInfoHash: sharedId,
     originAvailable: room?.originAvailable ?? false,
     /**
      * Whether the system's own file dialog can be trusted to return what was
@@ -164,6 +179,12 @@ function createWindow (): void {
   mainWin.webContents.on('render-process-gone', (_e, d) => console.error('[renderer] gone:', d.reason))
 
   mainWin.on('ready-to-show', () => { if (!process.env.COCINE_HEADLESS) mainWin?.show() })
+  // Chromium throttles a hidden window: CSS animations freeze and timers slow to
+  // about one a second. The launch animation therefore began before anyone could
+  // see it and was sometimes still frozen on screen once the window appeared --
+  // which also left the film picker stranded behind it. The renderer waits for
+  // this before starting anything.
+  mainWin.on('show', () => { windowShown = true; pushState() })
   // The renderer relayouts on this, which resizes the video surface via the
   // existing slot reporting -- no separate fullscreen handling for the video.
   // Both windows render from this. The overlay was left out of the first
@@ -246,6 +267,11 @@ function createWindow (): void {
       // Keep the fetch windows on the playhead. Uses the room's position rather
       // than the local player's, because while a film is still arriving the
       // local player may not have opened it yet.
+      // If a film is open and nothing has deliberately hidden the surface, it
+      // belongs on screen. Cheap to assert, and it means no sequence of window
+      // events or IPC ordering can leave someone listening to a film they
+      // cannot see.
+      video?.ensureVisible()
       const id = sourceId(room?.media?.source)
       if (id && transfer) {
         const at = room?.expectedPosition() ?? 0
@@ -275,14 +301,28 @@ const handlers = createHandlers({
       options: o.options,
       player: o.player as never,
       // What this machine can honestly say about the film it is fetching.
-      getReport: (): { havePct: number; bufferEndSec: number; downBps: number; upBps: number; peers: number } | null => {
+      getReport: () => {
         const id = sourceId(client.media?.source)
         if (!id || !transfer) return null
-        // The sharer, and anyone who already had the file, hold all of it.
+        const pieces = transfer.pieceMap?.(id) ?? undefined
+        const paused = sharing === 'paused'
+        // The sharer, and anyone who already had the file, hold all of it --
+        // but their upload rate is the interesting number, so it comes from the
+        // transport rather than being assumed to be zero.
         if (id === sharedId) {
-          return { havePct: 1, bufferEndSec: client.media?.durationSec ?? 0, downBps: 0, upBps: 0, peers: 0 }
+          const own = transfer.reportFor(id, client.expectedPosition() ?? 0, client.media?.durationSec ?? 0)
+          return {
+            havePct: 1,
+            bufferEndSec: client.media?.durationSec ?? 0,
+            downBps: own?.downBps ?? 0,
+            upBps: own?.upBps ?? 0,
+            peers: own?.peers ?? 0,
+            pieces,
+            paused
+          }
         }
-        return transfer.reportFor(id, client.expectedPosition() ?? 0, client.media?.durationSec ?? 0)
+        const base = transfer.reportFor(id, client.expectedPosition() ?? 0, client.media?.durationSec ?? 0)
+        return base ? { ...base, pieces, paused } : null
       }
     })
     // Attached before connect: room.state arrives while connecting, so a
@@ -301,7 +341,10 @@ const handlers = createHandlers({
       void (async () => {
         const source = media?.source
         const id = sourceId(source)
-          if (!source || !id || id === sharedId) return
+        // The film came off the room. Whatever is open locally stays open, but
+        // this machine is no longer part of a swarm for it.
+        if (!source) { sharing = 'off'; sharedId = null; return }
+          if (!id || id === sharedId) return
         try {
           const tm = ensureTransfer()
             if (!tm) throw new Error('no transport for this room yet')
@@ -317,6 +360,11 @@ const handlers = createHandlers({
           await video?.player?.load(url)
           mediaPath = path
           receiving = null
+          // Whoever receives a film also serves it, so the interface should say
+          // so rather than showing them as a bystander.
+          sharedId = id
+          sharing = 'sharing'
+          announcedByUs = false
           console.log(`[film] streaming ${media?.name} from ${url}`)
         } catch (err) {
           receiving = null
@@ -342,6 +390,11 @@ const handlers = createHandlers({
   getIdentity: () => identity.get(),
   saveIdentity: patch => identity.save(patch),
   getTransfer: () => transfer,
+  getSharing: () => sharing,
+  setSharing: state => { sharing = state },
+  getSharedInfoHash: () => sharedId,
+  getAnnouncedByUs: () => announcedByUs,
+  setAnnouncedByUs: v => { announcedByUs = v },
   getFilmStore: () => films,
   setSharedInfoHash: h => { sharedId = h },
   log: m => console.log(m)

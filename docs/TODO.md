@@ -206,14 +206,12 @@ frontend turned up, to go alongside it.
 5. **Push-to-talk only binds lowercase `v`.** Holding Shift, or Caps Lock being
    on, silently stops the microphone opening while the interface still says
    "Hold V to talk".
-6. **A stray `console.log('open film clicked')`** ships in the Open film handler.
+6. ~~**A stray `console.log('open film clicked')`**~~ Gone.
 
 **Robustness**
 
-7. **A dropped connection is never noticed.** Nothing handles the socket closing,
-   so after a wifi blip or a server restart the interface still shows the room
-   code and a drift reading while nothing works. No reconnect, and no indication
-   anything is wrong.
+7. ~~**A dropped connection is never noticed.**~~ Done: the client reconnects by
+   room code with backoff, and the interface says *reconnecting* while it does.
 8. **Keyboard shortcuts ignore permissions.** Space and the arrow keys call
    playback for someone without control, who gets an error banner rather than the
    keypress doing nothing.
@@ -227,12 +225,14 @@ frontend turned up, to go alongside it.
 
 **Design and information architecture**
 
-12. The readiness gate — the most time-sensitive thing on screen — renders below
-    the chat in the sidebar.
+12. ~~The readiness gate renders below the chat.~~ Done: it sits directly under
+    the member list, and has grown into a full transfer panel — per-peer rates,
+    buffers, who is furthest behind, and a piece map showing which parts of the
+    film each person holds.
 13. Every heading is an `<h4>`; there is no `<h1>`, and the video stage is an
     empty `<div>` with nothing for assistive technology.
-14. The per-member actions are four ambiguous words (`take`, `give`, `host`,
-    `mute`) with meaning only in the title attribute.
+14. ~~The per-member actions are four ambiguous words.~~ Done: they are spelled
+    out — *give control*, *take control*, *make host*, *ask to mute*.
 15. Two unrelated things are both called relaying: the TURN relay for voice and
     origin mode for films. The interface says "through the server" for one of
     them and nothing for the other.
@@ -263,6 +263,25 @@ Linux the application browses for itself, with the same look as the rest of the
 interface and no dependency on what the desktop has installed. Windows and macOS
 keep their native dialogs, which people know and which work. `COCINE_NATIVE_DIALOG=1`
 forces the system dialog back on for anyone who prefers it.
+
+### The film flow, as it now stands
+
+Reworked after manual testing, because opening a film and sharing it looked like
+two unrelated features when they are one pipeline:
+
+1. A room comes first. **Open film** is disabled until there is one.
+2. Opening a film loads it into mpv on that machine only — no hashing, nothing
+   announced, nothing on the wire.
+3. **Start sharing** hashes it, announces it, and the room begins fetching.
+4. **Pause sharing** stops serving as well as fetching, and other members see the
+   peer marked *paused*.
+5. **Unload film** closes it, and takes it off the room (`media.clear`) when this
+   machine is the one that put it there.
+
+Each client also reports a 64-digit **piece map** with its once-a-second report,
+so the room can show which parts of the film each person holds rather than only
+how much. Relay mode fetches byte ranges rather than pieces and reports none, so
+the interface falls back to a plain progress bar there.
 
 ## Smaller loose ends
 
