@@ -110,7 +110,18 @@ export class TransferManager extends EventEmitter implements MediaTransport {
     if (source.kind !== 'p2p') throw new Error('the swarm transport was given an origin source')
     const info: TorrentInfo = source
     const existing = this.torrents.get(info.infoHash.toLowerCase())
-    if (existing) return { path: existing.files[0]?.path ?? '', torrent: existing }
+    if (existing) {
+      // The same absolute path the first call returned. `file.path` is the path
+      // *inside* the torrent -- a bare "film.mp4" -- so returning it here made
+      // the second call answer differently from the first. receive() is called
+      // again on every re-announce, which every reconnect causes, and whatever
+      // treats the answer as a filesystem path then resolves it against the
+      // working directory instead of the film's own folder.
+      return {
+        path: `${this.o.store.dirFor(info.infoHash)}/${existing.name}`,
+        torrent: existing
+      }
+    }
 
     await this.o.store.ensureRoomFor(info.bytes)
     await this.ensureStreamServer()
@@ -241,9 +252,23 @@ export class TransferManager extends EventEmitter implements MediaTransport {
   /**
    * Stop or restart this client's part in the swarm.
    *
-   * Paused means paused for everybody: WebTorrent stops serving as well as
-   * fetching, which is what "pause sharing" has to mean if it is to be honest
-   * about its effect on the room.
+   * **This does less than it appears to, and less than the interface promises.**
+   * WebTorrent consults `paused` only when admitting a new peer or draining its
+   * connect queue, so wires that are already open keep sending and receiving at
+   * full rate. Measured: a shaped receiver still took thirty per cent of a film
+   * in the two and a half seconds after being paused. What pausing actually
+   * does today is stop *new* peers connecting.
+   *
+   * Closing the open wires was tried and is worse: it does stop the bytes, but
+   * the peers go with them, and `resume()` then has nothing to reconnect to
+   * until the next tracker announce -- over a minute in testing. A real fix has
+   * to stop the data without losing the peers, which means choking every wire
+   * and dropping the piece selections, then restoring both on resume, and that
+   * has to be reconciled with PieceScheduler, which owns the selections.
+   *
+   * `transfer-swarm.test.ts` carries a failing-on-purpose test for the intended
+   * behaviour, so this cannot be forgotten and will announce itself the moment
+   * somebody fixes it.
    */
   setPaused (id: string, paused: boolean): boolean {
     const t = this.torrents.get(id.toLowerCase())

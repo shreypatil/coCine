@@ -327,8 +327,9 @@ two unrelated features when they are one pipeline:
 2. Opening a film loads it into mpv on that machine only — no hashing, nothing
    announced, nothing on the wire.
 3. **Start sharing** hashes it, announces it, and the room begins fetching.
-4. **Pause sharing** stops serving as well as fetching, and other members see the
-   peer marked *paused*.
+4. **Pause sharing** marks the peer *paused* for the other members and stops new
+   peers connecting — but see the loose end below: it does not stop a transfer
+   that is already under way.
 5. **Unload film** closes it, and takes it off the room (`media.clear`) when this
    machine is the one that put it there.
 
@@ -445,6 +446,33 @@ the average, which is wrong for any real encode — a high-motion scene occupies
 more bytes per second than a static one. It decides when playback may start, so
 being approximate costs a slightly early or late gate rather than a wrong
 picture. The swarm path has the same approximation.
+
+### Pausing a transfer does not actually pause it
+
+Found by the swarm harness rather than by using the application, which is the
+first time that has happened round this way.
+
+`setPaused` calls WebTorrent's `torrent.pause()`, and the code claimed that
+stopped serving as well as fetching. It does not. WebTorrent consults `paused`
+only when admitting a new peer or draining its connect queue, so every wire
+already open keeps sending and receiving at full rate. Measured: a receiver
+shaped to 250 kB/s still took about **thirty per cent of the film in the two and
+a half seconds after being paused**. What pausing does today is stop *new* peers
+connecting, which is not nothing but is not what the button says.
+
+Closing the open wires was tried and is worse. The bytes do stop, but the peers
+go with them, and `resume()` then has nothing to reconnect to until the next
+tracker announce — over a minute in testing, during which the film simply does
+not arrive.
+
+A real fix has to stop the data without losing the peers: choke every wire and
+drop the piece selections on pause, restore both on resume. The complication is
+that `PieceScheduler` owns the selections, so the two have to be reconciled
+rather than fought over — which is why this is written down rather than done.
+
+`packages/client/test/transfer-swarm.test.ts` carries the intended behaviour as
+an `it.fails` test. It is green today because the behaviour is wrong, and it
+will turn red the moment somebody fixes it, which is the point.
 
 ### Piece scheduler measured no better than stock WebTorrent
 
