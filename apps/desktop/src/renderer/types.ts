@@ -62,6 +62,15 @@ export interface State {
    *  keeps the native surface in a child window. Both are supported while the
    *  two are being compared -- see main/player-engine.ts. */
   playerEngine: 'mpv' | 'html'
+  /** A film being converted so the <video> engine can open it, or null. */
+  converting: {
+    name: string
+    /** Why it needs converting, in words that can be shown as they are. */
+    reason: string
+    /** Whether this is a real transcode rather than a repack. */
+    slow: boolean
+    progress: number | null
+  } | null
   ready: boolean; connected: boolean
   /** Whether the room is actually reachable, as opposed to merely joined. */
   connection: 'connected' | 'reconnecting' | 'closed'

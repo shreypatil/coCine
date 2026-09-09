@@ -13,6 +13,7 @@ import { sourceId, type Media } from '@cocine/protocol'
 import { MpvNotFoundError } from '@cocine/player'
 import { startUpdates } from './updates.js'
 import { ChatOverlay } from './chat-overlay.js'
+import { ensurePlayable, conversionDir } from './convert.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -33,6 +34,20 @@ if (process.env.COCINE_HEADLESS) {
 let mainWin: BrowserWindow | null = null
 let video: VideoWindow | null = null
 let overlay: ChatOverlay | null = null
+/**
+ * Push the current state to the renderer.
+ *
+ * A module-level hook because the real pushState is created with the window,
+ * and things outside that scope -- a conversion running while a film is opened
+ * -- still have to report progress. A no-op before the window exists, which is
+ * the right behaviour rather than something to guard at every call site.
+ */
+let notifyState: () => void = () => {}
+
+/** A film being made playable by the <video> engine, or null. */
+let converting: {
+  name: string; reason: string; slow: boolean; progress: number | null
+} | null = null
 let room: RoomClient | null = null
 let mediaPath: string | null = null
 let statusTimer: NodeJS.Timeout | null = null
@@ -159,6 +174,8 @@ const state = (): Record<string, unknown> => {
     ready: !!player,
     /** Which player is running; the renderer mounts a <video> for 'html'. */
     playerEngine: video?.engine ?? 'mpv',
+    /** A film being converted so the <video> engine can open it. */
+    converting,
     connected: !!room,
     connection: room?.connection ?? 'closed',
     members: room?.members ?? [],
@@ -271,6 +288,8 @@ function createWindow (): void {
     if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('state', s)
     overlay?.send('state', s)
   }
+  // Everything outside this scope reports progress through here.
+  notifyState = pushState
   // Chat is hidden with the rest of the sidebar in fullscreen, so it comes back
   // as an overlay over the film. Only while in a room -- there is nothing to
   // show otherwise.
@@ -499,6 +518,35 @@ const handlers = createHandlers({
     return client as unknown as RoomLike
   },
   getMediaPath: () => mediaPath,
+  /**
+   * Make a film the <video> engine can open, converting it if it cannot.
+   *
+   * Progress is pushed into the interface rather than logged: a repack is over
+   * before anybody wonders, but a transcode of a feature-length film is
+   * minutes, and doing that silently looks exactly like the application having
+   * hung.
+   */
+  makePlayable: async (path: string) => {
+    const result = await ensurePlayable({
+      input: path,
+      outputDir: conversionDir(app.getPath('userData')),
+      onProgress: p => {
+        converting = {
+          name: basename(p.path),
+          reason: p.compatibility.reason,
+          slow: p.compatibility.slow,
+          progress: p.progress
+        }
+        notifyState()
+      }
+    })
+    converting = null
+    if (result.converted) {
+      console.log(`[film] converted ${basename(path)} (${result.compatibility?.action})`)
+    }
+    notifyState()
+    return result.path
+  },
   setMediaPath: p => {
     mediaPath = p
     // The surface only belongs on screen once there is a picture for it; until

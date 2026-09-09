@@ -6,6 +6,8 @@ export type { HtmlVideoOptions } from './html-video.js'
 export {
   parseSubtitles, parseTimestamp, cuesAt, isSubtitleFile, isUnsupportedSubtitleFile
 } from './subtitles.js'
+export { compatibilityOf, parseProbe, conversionArgs } from './compat.js'
+export type { Probed, ProbedStream, Compatibility, CompatAction } from './compat.js'
 export type { Cue } from './subtitles.js'
 export { ensureTestVideo } from './fixture.js'
 export type { FixtureOptions } from './fixture.js'

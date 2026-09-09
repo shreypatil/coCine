@@ -1093,3 +1093,21 @@ body.overlay-body { background: transparent; }
 .subs-style label input[type="color"] {
   width: 28px; height: 20px; padding: 0; border: 0; background: none;
 }
+
+
+/* A film being made playable by the <video> engine (B1.5). */
+.converting {
+  position: absolute; inset: 0; z-index: 4;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; padding: 24px; text-align: center; background: #000;
+}
+.converting h1 { margin: 0; font-size: 17px; font-weight: 600; }
+.convbar {
+  width: min(320px, 60%); height: 4px; margin-top: 10px;
+  background: rgba(255, 255, 255, .12); border-radius: 2px; overflow: hidden;
+}
+.convbar span {
+  display: block; height: 100%; border-radius: 2px;
+  background: linear-gradient(90deg, #7B5CFF, #D14FA8);
+  transition: width .3s ease;
+}

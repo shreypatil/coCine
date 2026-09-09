@@ -572,7 +572,25 @@ export function App (): ReactElement {
               controls={false}
             />
           )}
-          {!s?.mediaName && !s?.receiving && (
+          {s?.converting && (
+            // A repack is over before anybody wonders what happened, but a
+            // transcode of a feature-length film is minutes -- and doing that
+            // silently looks exactly like the application having hung.
+            <div className="converting" data-testid="converting">
+              <h1>Preparing {s.converting.name}</h1>
+              <p className="quiet">{s.converting.reason}.</p>
+              {s.converting.slow && (
+                <p className="quiet small">
+                  This one has to be re-encoded, which takes a few minutes. mpv
+                  plays this format without converting it.
+                </p>
+              )}
+              <div className="convbar">
+                <span style={{ width: `${Math.round((s.converting.progress ?? 0) * 100)}%` }} />
+              </div>
+            </div>
+          )}
+          {!s?.mediaName && !s?.receiving && !s?.converting && (
             <div className="welcome" data-testid="welcome">
               <svg viewBox="0 0 40 40" aria-hidden="true" className="wl-mark">
                 <defs>

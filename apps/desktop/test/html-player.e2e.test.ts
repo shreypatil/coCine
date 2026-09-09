@@ -3,6 +3,7 @@ import { _electron as electron, type ElectronApplication, type Page } from 'play
 import { execFileSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { writeFileSync, rmSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { ensureTestVideo, ExternalMpv } from '@cocine/player'
 import { RoomClient } from '@cocine/client'
 import { SignallingServer } from '../../server/src/server.js'
@@ -347,4 +348,61 @@ describe('subtitles drawn over the film', () => {
       { timeout: 20_000 }
     ).toBe(0)
   }, 60_000)
+})
+
+describe('a format Chromium refuses (B1.5)', () => {
+  /**
+   * The real check. An AVI carrying Xvid fails in Chromium with
+   * DEMUXER_ERROR_COULD_NOT_OPEN -- measured, not assumed -- so the application
+   * has to notice and convert it before handing it to the element. Everything
+   * up to here has used files that play directly.
+   */
+  let avi = ''
+  const haveFfmpeg = (): boolean => {
+    try { execFileSync('ffmpeg', ['-version'], { stdio: 'ignore' }); return true } catch { return false }
+  }
+
+  beforeAll(() => {
+    if (!haveFfmpeg()) return
+    avi = join(dirname(film), 'legacy-rip.avi')
+    execFileSync('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=24:duration=6',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=6',
+      '-c:v', 'mpeg4', '-vtag', 'XVID', '-c:a', 'libmp3lame', '-shortest', avi
+    ], { stdio: 'ignore' })
+  }, 120_000)
+  afterAll(() => { try { if (avi) rmSync(avi, { force: true }) } catch { /* gone */ } })
+
+  it.skipIf(!haveFfmpeg())('converts it and plays it, rather than showing a black rectangle', async () => {
+    await app.evaluate(async ({ dialog }, chosen) => {
+      ;(dialog as unknown as { showOpenDialog: unknown }).showOpenDialog =
+        async () => ({ canceled: false, filePaths: [chosen] })
+    }, avi)
+    await page.click('[data-testid="unloadfilm"]').catch(() => { /* nothing open */ })
+    await page.click('[data-testid="open"]')
+
+    // It decodes, which an unconverted Xvid AVI never would.
+    await expect.poll(async () => page.evaluate(() => {
+      const v = document.querySelector('[data-testid="film"]') as HTMLVideoElement | null
+      return v?.videoWidth ?? 0
+    }), { timeout: 120_000 }).toBeGreaterThan(0)
+
+    // And what is playing is the converted copy, not the AVI itself.
+    const src = await page.getAttribute('[data-testid="film"]', 'src')
+    expect(src ?? '').not.toMatch(/\.avi$/)
+    expect(src ?? '').toMatch(/\.mkv$/)
+  }, 180_000)
+
+  it.skipIf(!haveFfmpeg())('plays the converted copy rather than converting it twice', async () => {
+    // Keyed on the source's path, size and modification time, so opening the
+    // same film again is instant.
+    const before = await page.getAttribute('[data-testid="film"]', 'src')
+    await page.click('[data-testid="unloadfilm"]')
+    await page.click('[data-testid="open"]')
+    await expect.poll(
+      async () => page.getAttribute('[data-testid="film"]', 'src'),
+      { timeout: 60_000 }
+    ).toBe(before)
+  }, 120_000)
 })

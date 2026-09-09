@@ -33,6 +33,8 @@ export interface VideoLike {
   resume: () => void
   setFilmOpen?: (open: boolean) => void
   ensureVisible?: () => void
+  /** Which player is running; only the <video> one needs conversion. */
+  engine?: 'mpv' | 'html'
   setSlot: (slot: Slot) => void
   bounds: () => Rect | null
 }
@@ -110,6 +112,11 @@ export interface HandlerDeps {
   }) => Promise<RoomLike>
   getMediaPath: () => string | null
   setMediaPath: (path: string | null) => void
+  /**
+   * Convert a film the <video> engine cannot open, returning the path to play.
+   * Absent under the mpv engine, which needs none of it.
+   */
+  makePlayable?: (path: string) => Promise<string>
   setFullScreen: (on: boolean) => void
   isFullScreen: () => boolean
   getIdentity: () => Identity
@@ -202,11 +209,28 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
   const loadInto = async (path: string): Promise<{ path: string; name: string; durationSec: number | null; infoHash: string | null }> => {
     const video = deps.getVideo()
     if (!video?.player) throw new Error('player not ready')
+
+    // Phase B1.5. The <video> engine cannot open every container -- AVI and
+    // MPEG-2 do not demux -- so a file is inspected and, where needed, made
+    // playable first. Most films need nothing and this costs one ffprobe.
+    // Never on the mpv path, which decodes all of it natively; that is an
+    // answer in itself for a library of old rips.
+    let toPlay = path
+    if (video.engine === 'html' && deps.makePlayable) {
+      try {
+        toPlay = await deps.makePlayable(path)
+      } catch (err) {
+        video.setFilmOpen?.(!!deps.getMediaPath())
+        log(`[film] could not make ${basename(path)} playable: ${String(err)}`)
+        throw err instanceof Error ? err : new Error(String(err))
+      }
+    }
+
     // Before the load, not after: mpv draws into this window, and a window that
     // is still hidden when the file opens is a film with sound and no picture.
     video.setFilmOpen?.(true)
     try {
-      await video.player.load(path)
+      await video.player.load(toPlay)
     } catch (err) {
       // Nothing is playing, so the surface goes away again and the interface
       // gets its empty state back rather than a black rectangle.

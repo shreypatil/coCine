@@ -190,7 +190,7 @@ rest, and stop if any of them fails.
 without dropping frames, and a stream that recovers from a missing piece. All
 three met; see the table above.
 
-### B1.1 — The player, behind a flag
+### B1.1 — The player, behind a flag — **DONE**
 
 `HtmlVideoPlayer` implementing `PlayerController`, selected by an environment
 variable so mpv stays the default until it is better. Playback, pause, exact
@@ -202,7 +202,7 @@ step revertible.
 **Exit:** a film plays in a room, in sync, with the sync tests passing against
 both implementations.
 
-### B1.2 — One window, alongside the other one
+### B1.2 — One window, alongside the other one — **DONE**
 
 **Revised: nothing is deleted.** The earlier version of this step removed the
 second `BrowserWindow`, `x11-embed.ts`, the SHAPE overlay machinery and the
@@ -233,7 +233,7 @@ self-heal and no foreign surface to keep in position.
 **Exit:** a film plays in a room under either engine, chosen at launch, with the
 existing overlay and video-output suites still passing on the mpv path.
 
-### B1.3 — Transfer-aware seeking
+### B1.3 — Transfer-aware seeking — **DONE**
 
 Requirement 3, and the one that is genuinely new rather than a repair.
 
@@ -252,7 +252,7 @@ Requirement 3, and the one that is genuinely new rather than a repair.
 **Exit:** a test with a deliberately lagging peer proves the clamp holds, and a
 late joiner cannot seek backwards past what they hold.
 
-### B1.4 — Subtitles
+### B1.4 — Subtitles — **DONE** (except ASS)
 
 - External `.srt` and `.ass` alongside the film, and drag-and-drop.
 - Embedded tracks: `textTracks` is empty, so they have to be extracted. FFmpeg
@@ -263,7 +263,7 @@ late joiner cannot seek backwards past what they hold.
 - Controls for colour, size, position and delay, which requirement 6 asks for
   and which libass supports directly.
 
-### B1.5 — The formats Chromium refuses
+### B1.5 — The formats Chromium refuses — **DONE** (except bundling ffmpeg)
 
 Only AVI and MPEG-2 among the things tested, so this is a fallback path rather
 than a pipeline everything goes through.
@@ -274,7 +274,27 @@ than a pipeline everything goes through.
 - FFmpeg has to be bundled, which is the same packaging problem `fetch-mpv.mjs`
   already solves for mpv and can be adapted from.
 
-### B1.6 — Decide what ships where
+### B1.6 — Decide what ships where — **the open question, and yours**
+
+Everything above is built and both engines run. What is left is a judgement
+that needs a person and a real film, on each platform that matters:
+
+    COCINE_PLAYER=html npm run desktop     # the <video> engine
+    COCINE_PLAYER=mpv  npm run desktop     # today's behaviour
+
+What the numbers say, so the comparison starts from something: the `<video>`
+engine seeks exactly where mpv needs `--hr-seek` to land within a frame, decodes
+4K HEVC without dropping a frame, and holds a five-peer room to a p99 drift of
+48.7 ms; mpv holds the same room to 26.9 ms. Both are inside the 100 ms budget.
+Everything the numbers cannot answer -- whether it *feels* right -- is what the
+manual comparison is for.
+
+Two things still outstanding under the `<video>` engine, both listed rather than
+hidden: Advanced SubStation subtitles need libass, and ffmpeg has to be bundled
+for a shipped build the way mpv already is.
+
+### B1.6 — the original scope
+
 
 **Revised: a decision, not a removal.** This was "retire mpv from the shipped
 app". It is now the point at which both engines have been used by hand, on each
