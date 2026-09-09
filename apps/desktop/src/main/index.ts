@@ -157,6 +157,8 @@ const state = (): Record<string, unknown> => {
   const actual = player ? room?.actualPosition(now) ?? player.position() : 0
   return {
     ready: !!player,
+    /** Which player is running; the renderer mounts a <video> for 'html'. */
+    playerEngine: video?.engine ?? 'mpv',
     connected: !!room,
     connection: room?.connection ?? 'closed',
     members: room?.members ?? [],
@@ -230,7 +232,17 @@ function createWindow (): void {
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      /**
+       * Chromium throttles timers, animation frames and media in windows it
+       * believes nobody is looking at. That is the right default for a browser
+       * and the wrong one here: the room keeps playing whether or not this
+       * window has focus, and a throttled client drifts away from everyone
+       * else while its own screen looks fine. It matters more under the
+       * <video> engine, where the film *is* this window, but the sync tick
+       * runs here either way.
+       */
+      backgroundThrottling: false
     }
   })
 

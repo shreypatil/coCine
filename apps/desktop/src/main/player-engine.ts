@@ -63,21 +63,17 @@ export function playerEngine (
 /**
  * Whether an engine can actually be run by the application today.
  *
- * The `<video>` player exists and is proven -- `npm run phase0:html`,
- * `npm run phase1:html` and `npm run b1-gate` all drive it -- but through its
- * own hidden host process, which has no surface anybody can see. Putting it on
- * screen means rendering it in the main window, which is B1.1.
- *
- * Reported rather than assumed so that asking for it before then fails with a
- * sentence instead of a black rectangle.
+ * Kept as a seam rather than deleted now that both work: it is the place a
+ * platform-specific limitation belongs if one turns up -- a machine with no
+ * X11 for the mpv path, say -- so that asking for an engine that cannot run
+ * there fails with a sentence instead of a black rectangle.
  */
 export function engineAvailable (engine: PlayerEngine): { ok: boolean; why?: string } {
-  if (engine === 'mpv') return { ok: true }
-  return {
-    ok: false,
-    why: 'the <video> player is not wired into the window yet (phase B1.1). ' +
-      'It can be driven headlessly today: npm run phase0:html, npm run phase1:html, npm run b1-gate.'
-  }
+  // Both are wired up as of B1.1: mpv into a reparented child window, and the
+  // <video> element into the main window's own renderer. Which one is better is
+  // the open question; which one *works* no longer is.
+  void engine
+  return { ok: true }
 }
 
 /** The engine to run, falling back with a warning rather than failing to start. */

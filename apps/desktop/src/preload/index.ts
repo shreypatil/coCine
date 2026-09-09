@@ -59,6 +59,22 @@ const api = {
     ipcRenderer.on('overlay:draft', fn)
     return () => { ipcRenderer.removeListener('overlay:draft', fn) }
   },
+  /**
+   * The <video> player (COCINE_PLAYER=html). The main process holds the sync
+   * engine and drives the element in here through PlayerController, so commands
+   * come down and state goes back up continuously -- position() in the main
+   * process reads a cache and cannot await a round trip.
+   */
+  onPlayerCommand: (h: (c: { id: number; cmd: string; arg?: unknown }) => void) => {
+    const fn = (_e: unknown, c: { id: number; cmd: string; arg?: unknown }): void => h(c)
+    ipcRenderer.on('player:command', fn)
+    return () => { ipcRenderer.removeListener('player:command', fn) }
+  },
+  sendPlayerReply: (r: { id: number; data?: unknown; error?: string }) => ipcRenderer.send('player:reply', r),
+  /** Sent many times a second; `send` rather than `invoke` so no reply is
+   *  awaited and a slow main process cannot stall the frame callback. */
+  sendPlayerState: (s: unknown) => ipcRenderer.send('player:state', s),
+  sendPlayerEvent: (e: { kind: string; message?: string }) => ipcRenderer.send('player:event', e),
   sendSignal: (to: string, payload: unknown) => ipcRenderer.invoke('voice:signal', to, payload),
   setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => ipcRenderer.invoke('voice:state', v),
   moderateVoice: (memberId: string, action: 'mute' | 'unmute') => ipcRenderer.invoke('voice:moderate', memberId, action),

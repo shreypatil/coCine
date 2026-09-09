@@ -47,6 +47,10 @@ export interface TransferStatus {
 }
 
 export interface State {
+  /** Which player is running. 'html' renders a <video> in this window; 'mpv'
+   *  keeps the native surface in a child window. Both are supported while the
+   *  two are being compared -- see main/player-engine.ts. */
+  playerEngine: 'mpv' | 'html'
   ready: boolean; connected: boolean
   /** Whether the room is actually reachable, as opposed to merely joined. */
   connection: 'connected' | 'reconnecting' | 'closed'
@@ -146,6 +150,12 @@ declare global {
       setOverlayDraft: (text: string | null) => Promise<unknown>
       /** Overlay only: what the main window is typing, for it to draw. */
       onOverlayDraft: (cb: (text: string | null) => void) => () => void
+      /** The <video> player: commands from the main process, and the state
+       *  and events it pushes back. Present only under COCINE_PLAYER=html. */
+      onPlayerCommand?: (cb: (c: { id: number; cmd: string; arg?: unknown }) => void) => () => void
+      sendPlayerReply?: (r: { id: number; data?: unknown; error?: string }) => void
+      sendPlayerState?: (s: unknown) => void
+      sendPlayerEvent?: (e: { kind: string; message?: string }) => void
       /** Overlay only: which rectangles of its window should exist at all. */
       setOverlayShape: (rects: ShapeRect[]) => Promise<unknown>
       /** Overlay only: whether it floats over the film or falls back to a box. */

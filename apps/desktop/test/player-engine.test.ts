@@ -52,29 +52,17 @@ describe('choosing an engine', () => {
   })
 })
 
-describe('asking for an engine that is not ready', () => {
-  it('says the <video> player is not on screen yet, and how to drive it', () => {
-    const check = engineAvailable('html')
-    expect(check.ok).toBe(false)
-    expect(check.why).toMatch(/B1\.1/)
-    expect(check.why).toMatch(/phase0:html/)
-  })
-
-  it('reports mpv as usable', () => {
+describe('an engine that cannot run here', () => {
+  it('reports both as usable now that both are wired up', () => {
+    // B1.1 put the <video> player into the main window; before that it existed
+    // only inside its own hidden host and had no surface anybody could see.
     expect(engineAvailable('mpv')).toEqual({ ok: true })
+    expect(engineAvailable('html')).toEqual({ ok: true })
   })
 
-  it('falls back with an explanation rather than starting something invisible', () => {
-    // The failure this prevents: selecting an engine with no surface, and
-    // getting a black rectangle with nothing said about why.
+  it('runs what was asked for, and says nothing when it can', () => {
     const said: string[] = []
-    const engine = resolveEngine(m => said.push(m), { COCINE_PLAYER: 'html' }, 'linux')
-    expect(engine).toBe('mpv')
-    expect(said.join(' ')).toMatch(/not wired into the window yet/)
-  })
-
-  it('says nothing when the engine asked for is the one that runs', () => {
-    const said: string[] = []
+    expect(resolveEngine(m => said.push(m), { COCINE_PLAYER: 'html' }, 'linux')).toBe('html')
     expect(resolveEngine(m => said.push(m), { COCINE_PLAYER: 'mpv' }, 'linux')).toBe('mpv')
     expect(said).toEqual([])
   })

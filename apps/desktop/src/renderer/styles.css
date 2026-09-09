@@ -154,6 +154,20 @@ body {
 /* The native video surface is positioned exactly over this element. It must
    stay an empty box -- anything inside is hidden behind mpv. */
 .stage { background: #000; position: relative; overflow: hidden; }
+/* The film, when it is rendered in this window rather than in a child window.
+   `contain` keeps the whole frame visible and letterboxes the rest, which is
+   what a player should do; filling would crop somebody's film.
+
+   Named `stagefilm` rather than `film`: the sidebar already has a `.sect.film`
+   panel, and an absolutely positioned rule under the shorter name covered the
+   whole interface and swallowed every click. */
+.stagefilm {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
 
 /* ---------------------------------------------------------------- sidebar */
 .sidebar {

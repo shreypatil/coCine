@@ -3,6 +3,7 @@ import type { ReactElement, DragEvent as ReactDragEvent, KeyboardEvent as ReactK
 import { useVoice } from './useVoice.js'
 import { FilmPicker } from './FilmPicker.js'
 import { hhmm, initials, tint } from './format.js'
+import { attachVideoEngine } from './videoEngine.js'
 import type { Library, State, StoredFilm } from './types.js'
 import './types.js'
 
@@ -153,6 +154,9 @@ export function App (): ReactElement {
   const [fsDraft, setFsDraft] = useState<string | null>(null)
   const fsInputRef = useRef<HTMLInputElement>(null)
   const slotRef = useRef<HTMLDivElement>(null)
+  /** The film itself, when this build renders it here rather than in a child
+   *  window. Null under the mpv engine, where the stage stays an empty box. */
+  const videoRef = useRef<HTMLVideoElement>(null)
   const chatRef = useRef<HTMLDivElement>(null)
 
   const memberIds = (s?.members ?? []).filter(m => m.inVoice || m.id === s?.memberId).map(m => m.id)
@@ -299,6 +303,16 @@ export function App (): ReactElement {
     setFsDraft(null)
     if (text) void guard(() => window.cocine.sendChat(text))
   }
+
+  // The main process holds the sync engine and drives this element through
+  // PlayerController, exactly as it drives mpv. Attached only while there is an
+  // element to attach to, and detached with it.
+  useEffect(() => {
+    const el = videoRef.current
+    if (!el) return
+    const engine = attachVideoEngine(el)
+    return () => engine.stop()
+  }, [s?.playerEngine])
 
   const onDrop = (e: ReactDragEvent): void => {
     e.preventDefault()
@@ -467,6 +481,21 @@ export function App (): ReactElement {
             and it is worth saying what to do rather than showing a black
             rectangle. Nothing inside may change the box's size. */}
         <div className="stage" ref={slotRef} data-testid="stage">
+          {/* Under the mpv engine this box stays empty and a native surface is
+              positioned over it. Under the <video> engine the film is here, in
+              this window, with everything else drawn above it in ordinary DOM. */}
+          {s?.playerEngine === 'html' && (
+            <video
+              ref={videoRef}
+              className="stagefilm"
+              data-testid="film"
+              playsInline
+              // The sync engine decides when a film starts; a player that began
+              // on its own would be a peer nobody scheduled.
+              autoPlay={false}
+              controls={false}
+            />
+          )}
           {!s?.mediaName && !s?.receiving && (
             <div className="welcome" data-testid="welcome">
               <svg viewBox="0 0 40 40" aria-hidden="true" className="wl-mark">

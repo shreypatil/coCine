@@ -2,6 +2,7 @@ import { BrowserWindow, screen } from 'electron'
 import { EmbeddedMpv, ExternalMpv, locateMpv } from '@cocine/player'
 import { embedWindow, setEmbeddedMapped, x11EmbeddingPossible } from './x11-embed.js'
 import { resolveEngine } from './player-engine.js'
+import { RendererPlayer } from './renderer-player.js'
 
 export interface Rect { x: number; y: number; width: number; height: number }
 
@@ -113,7 +114,7 @@ function extraMpvArgs (): string[] {
 
 export class VideoWindow {
   private win: BrowserWindow | null = null
-  player: EmbeddedMpv | ExternalMpv | null = null
+  player: EmbeddedMpv | ExternalMpv | RendererPlayer | null = null
   private slot: Slot | null = null
   /** True once the surface is a real child of the main window, after which its
    *  coordinates are relative to the parent rather than to the screen. */
@@ -157,7 +158,17 @@ export class VideoWindow {
    */
   readonly engine = resolveEngine()
 
-  async start (): Promise<EmbeddedMpv | ExternalMpv> {
+  async start (): Promise<EmbeddedMpv | ExternalMpv | RendererPlayer> {
+    // The <video> engine renders inside the main window, so none of what
+    // follows applies: no child window to create, no surface to reparent, no
+    // geometry to keep in step. Everything above this class still sees a
+    // PlayerController and cannot tell the difference.
+    if (this.engine === 'html') {
+      const player = new RendererPlayer(this.parent)
+      this.player = player
+      return player
+    }
+
     // Test affordance: no child window and no video output, so the full
     // application can be driven end to end without anything reaching a display.
     // Everything above this class sees the same PlayerController either way.
@@ -248,12 +259,16 @@ export class VideoWindow {
 
   /** Called from the renderer whenever the video slot moves or resizes. */
   setSlot (slot: Slot): void {
+    if (this.engine === 'html') return
+
     this.slot = slot
     if (this.win) this.reposition()
   }
 
   /** Whether a film is open. Nothing else decides if the surface is shown. */
   setFilmOpen (open: boolean): void {
+    if (this.engine === 'html') return
+
     this.wanted = open
     if (!this.win || this.win.isDestroyed()) return
     // Position first, then show: a surface that appears before it has been
