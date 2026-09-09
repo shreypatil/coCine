@@ -1,6 +1,8 @@
 export { ExternalMpv } from './external-mpv.js'
 export { EmbeddedMpv, nativeHandleToWid } from './embedded-mpv.js'
 export { MpvIpc } from './mpv-ipc.js'
+export { HtmlVideoPlayer, shutdownVideoHost } from './html-video.js'
+export type { HtmlVideoOptions } from './html-video.js'
 export { ensureTestVideo } from './fixture.js'
 export type { FixtureOptions } from './fixture.js'
 export type { PlayerController, PlayerOptions } from './types.js'

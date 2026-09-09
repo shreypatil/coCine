@@ -6,10 +6,25 @@
  *   - absolute seeks land where they were asked to
  *   - rate changes take effect
  *
- * Run: npm run phase0
+ * Run: npm run phase0            (mpv, the shipped player)
+ *      npm run phase0:html       (a <video> element -- the B1.0 gate)
+ *
+ * The engine is selectable because that is the point of the B1.0 gate: a new
+ * player has to clear the same bar the current one clears, measured by the same
+ * code. A gate with its own measurements would be marking its own homework.
  */
-import { ExternalMpv, ensureTestVideo } from '../src/index.js'
+import { ExternalMpv, HtmlVideoPlayer, shutdownVideoHost, ensureTestVideo } from '../src/index.js'
+import type { PlayerController } from '../src/index.js'
 import { join } from 'node:path'
+
+/** Both engines expose this beyond PlayerController; the harness needs it to
+ *  measure command latency and to check a seek landed. */
+interface Measurable extends PlayerController {
+  start: () => Promise<void>
+  positionExact: () => Promise<number>
+}
+
+const ENGINE = process.argv.includes('--player=html') ? 'html' : 'mpv'
 
 const TARGET_HZ = 10
 const TARGET_RTT_MS = 20
@@ -24,10 +39,22 @@ function report (name: string, ok: boolean, detail: string): boolean {
 }
 
 const main = async (): Promise<void> => {
-  console.log(`\n  Phase 0 — mpv control over JSON IPC\n  ${'─'.repeat(62)}`)
+  const title = ENGINE === 'html'
+    ? 'Phase 0 — a <video> element, over a socket'
+    : 'Phase 0 — mpv control over JSON IPC'
+  console.log(`\n  ${title}\n  ${'─'.repeat(62)}`)
   const film = ensureTestVideo(60, join(process.cwd(), '.fixtures'))
-  const mpv = new ExternalMpv({ headless: true })
-  mpv.on('exit', (code, stderr) => { if (code) console.error(`  mpv exited ${code}: ${stderr}`) })
+
+  let mpv: Measurable
+  if (ENGINE === 'html') {
+    const p = new HtmlVideoPlayer()
+    p.on('warning', (m: string) => console.error(`  media error: ${m}`))
+    mpv = p
+  } else {
+    const p = new ExternalMpv({ headless: true })
+    p.on('exit', (code, stderr) => { if (code) console.error(`  mpv exited ${code}: ${stderr}`) })
+    mpv = p
+  }
 
   const t0 = Date.now()
   await mpv.start()
@@ -85,9 +112,15 @@ const main = async (): Promise<void> => {
     `advanced ${ratio.toFixed(2)}x wall clock`))
 
   await mpv.close()
+  if (ENGINE === 'html') await shutdownVideoHost()
   const passed = results.every(Boolean)
   console.log(`  ${'─'.repeat(62)}\n  ${passed ? 'PASS' : 'FAIL'} — phase 0 ${passed ? 'criteria met' : 'criteria NOT met'}\n`)
   process.exit(passed ? 0 : 1)
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+main().catch(async e => {
+  console.error(e)
+  // Never leave the host running behind a failure.
+  if (ENGINE === 'html') await shutdownVideoHost().catch(() => {})
+  process.exit(1)
+})

@@ -12,10 +12,15 @@
  *
  * Run:  npm run phase1
  *       npm run phase1 -- --peers=5 --film=7200 --duration=7200 --events=20
+ *       npm run phase1:html      (a <video> element -- the B1.0 gate)
+ *
+ * The engine is selectable so a candidate player is held to the same budget by
+ * the same code, rather than by a measurement written to flatter it.
  */
 import { SignallingServer } from '../src/server.js'
 import { RoomClient } from '@cocine/client'
-import { ExternalMpv, ensureTestVideo } from '@cocine/player'
+import { ExternalMpv, HtmlVideoPlayer, shutdownVideoHost, ensureTestVideo } from '@cocine/player'
+import type { PlayerController } from '@cocine/player'
 import { join } from 'node:path'
 
 const arg = (k: string, d: number): number => {
@@ -41,6 +46,9 @@ const HEADLESS = arg('headless', 1) !== 0
 // --res=1080 gives every client a real 1080p stream to decode. --vo=null still
 // decodes and discards, so this exercises decode load without any display.
 const RES = arg('res', 240)
+/** Which player every peer runs. The room cannot tell the difference; that is
+ *  the property PlayerController exists to guarantee. */
+const ENGINE = process.argv.includes('--player=html') ? 'html' : 'mpv'
 
 const pct = (xs: number[], p: number): number =>
   xs.length === 0 ? NaN : [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(xs.length * p))]!
@@ -70,11 +78,13 @@ const main = async (): Promise<void> => {
   const port = await server.listen()
 
   const names = ['anjali', 'dev', 'priya', 'sam', 'rohan', 'kiran', 'meera', 'arjun']
-  const players: ExternalMpv[] = []
+  const players: Array<PlayerController & { start: () => Promise<void> }> = []
   const clients: RoomClient[] = []
 
   for (let i = 0; i < PEERS; i++) {
-    const player = new ExternalMpv({ headless: HEADLESS })
+    const player = ENGINE === 'html'
+      ? new HtmlVideoPlayer()
+      : new ExternalMpv({ headless: HEADLESS })
     await player.start()
     await player.load(film)
     players.push(player)
@@ -179,6 +189,7 @@ const main = async (): Promise<void> => {
   const pass = p99 <= BUDGET_MS && recovered.length === events.length
   console.log(`  ${'─'.repeat(66)}`)
   console.log(`  ${pass ? 'PASS' : 'FAIL'} — p99 steady-state drift ${p99.toFixed(1)} ms against a ${BUDGET_MS} ms budget\n`)
+  if (ENGINE === 'html') await shutdownVideoHost()
   process.exit(pass ? 0 : 1)
 }
 
