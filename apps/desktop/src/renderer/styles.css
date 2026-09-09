@@ -1007,3 +1007,45 @@ body.overlay-body { background: transparent; }
    to the people in it are different things, and only one was visible. */
 .vdot.wait { background: var(--warn); box-shadow: 0 0 7px var(--warn); }
 .vdot.bad { background: var(--bad); box-shadow: 0 0 7px var(--bad); }
+
+
+/* --------------------------------------------- chat over the film (B1.2)
+   The <video> engine draws chat here, in this window, above the film. What the
+   mpv engine needs a second window and the X SHAPE extension for is, here, a
+   z-index and one pointer-events rule: the container ignores the mouse so a
+   click lands on the film, and the pieces that should be clickable take it
+   back. */
+.stagechat {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  gap: 8px; padding: 22px; font-size: 12.5px;
+  pointer-events: none;
+}
+.sc-list {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 7px;
+}
+.sc-msg, .sc-sys {
+  max-width: min(460px, 46vw);
+  padding: 8px 12px; border-radius: 12px;
+  background: rgba(11, 8, 18, .82);
+  animation: ovin .22s cubic-bezier(.2, .8, .3, 1) both;
+  /* Selectable, which a shaped child window could never manage. */
+  pointer-events: auto;
+}
+.sc-msg { display: flex; gap: 8px; align-items: flex-start; }
+.sc-sys { margin: 0; opacity: .75; font-size: 11.5px; overflow-wrap: anywhere; }
+.sc-txt { min-width: 0; line-height: 1.45; overflow-wrap: anywhere; }
+.sc-txt b { display: block; font-weight: 600; font-size: 11.5px; opacity: .95; }
+.sc-txt b i { font-style: normal; opacity: .5; margin-left: 6px; font-size: 10.5px; }
+.sc-compose {
+  width: min(460px, 46vw); border-radius: 12px;
+  background: rgba(11, 8, 18, .9);
+  box-shadow: inset 0 0 0 1px rgba(123, 92, 255, .55);
+  pointer-events: auto;
+}
+.sc-input {
+  width: 100%; padding: 9px 12px;
+  background: transparent; border: 0; border-radius: 12px;
+  color: var(--tx); font: inherit; font-size: 12.5px;
+}
+.sc-input:focus { outline: none; }

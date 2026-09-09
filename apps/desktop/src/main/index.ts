@@ -275,7 +275,11 @@ function createWindow (): void {
   // as an overlay over the film. Only while in a room -- there is nothing to
   // show otherwise.
   const syncOverlay = (): void => {
-    const show = !!mainWin?.isFullScreen() && !!room && !process.env.COCINE_HEADLESS
+    // Never under the <video> engine: the film is this window, so chat is drawn
+    // over it in ordinary DOM (StageChat) and the shaped child window would be
+    // a second, opaque copy of something already on screen.
+    const show = !!mainWin?.isFullScreen() && !!room &&
+      !process.env.COCINE_HEADLESS && video?.engine !== 'html'
     void overlay?.setVisible(show).catch(err => console.error('[overlay]', err))
   }
   mainWin.on('enter-full-screen', syncOverlay)

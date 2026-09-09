@@ -4,6 +4,7 @@ import { useVoice } from './useVoice.js'
 import { FilmPicker } from './FilmPicker.js'
 import { hhmm, initials, tint } from './format.js'
 import { attachVideoEngine } from './videoEngine.js'
+import { StageChat } from './StageChat.js'
 import type { Library, State, StoredFilm } from './types.js'
 import './types.js'
 
@@ -291,9 +292,13 @@ export function App (): ReactElement {
     return () => window.removeEventListener('keydown', onKey)
   }, [s?.positionSec, s?.mediaName, s?.fullscreen, s?.connected, togglePlay, guard])
 
-  // Whatever is in the field, the overlay draws. Sent on every change because
-  // the point of the thing is watching your own line appear over the film.
-  useEffect(() => { void window.cocine.setOverlayDraft?.(fsDraft) }, [fsDraft])
+  // Under the mpv engine the draft has to be shipped to the overlay window to be
+  // drawn, because the field cannot live there. Under the <video> engine the
+  // field and the film are in the same window and there is nothing to send.
+  useEffect(() => {
+    if (s?.playerEngine === 'html') return
+    void window.cocine.setOverlayDraft?.(fsDraft)
+  }, [fsDraft, s?.playerEngine])
   // Leaving fullscreen takes the overlay away with it, so the field goes too.
   useEffect(() => { if (!s?.fullscreen) setFsDraft(null) }, [s?.fullscreen])
   useEffect(() => { if (fsDraft !== null) fsInputRef.current?.focus() }, [fsDraft !== null])
@@ -351,11 +356,13 @@ export function App (): ReactElement {
       onDragLeave={() => setDropping(false)}
       onDrop={onDrop}
     >
-      {s?.fullscreen && fsDraft !== null && (
-        // Deliberately invisible: in fullscreen this window's content is behind
-        // the video surface, and the overlay is what the viewer actually sees.
-        // It has to be a real focused input all the same, so that composition,
-        // dead keys and selection behave the way a text field should.
+      {s?.fullscreen && fsDraft !== null && s?.playerEngine !== 'html' && (
+        // mpv engine only. Deliberately invisible: in fullscreen this window's
+        // content is behind the video surface, and the overlay window is what
+        // the viewer actually sees. It has to be a real focused input all the
+        // same, so that composition, dead keys and selection behave the way a
+        // text field should. The <video> engine has no need for any of this --
+        // its composer is visible, in StageChat, in this window.
         <input
           ref={fsInputRef}
           className="fscompose"
@@ -484,6 +491,15 @@ export function App (): ReactElement {
           {/* Under the mpv engine this box stays empty and a native surface is
               positioned over it. Under the <video> engine the film is here, in
               this window, with everything else drawn above it in ordinary DOM. */}
+          {s?.playerEngine === 'html' && s?.fullscreen && s?.connected && (
+            <StageChat
+              messages={s.messages ?? []}
+              draft={fsDraft}
+              onDraftChange={setFsDraft}
+              onSend={sendFullscreen}
+              onClose={() => setFsDraft(null)}
+            />
+          )}
           {s?.playerEngine === 'html' && (
             <video
               ref={videoRef}

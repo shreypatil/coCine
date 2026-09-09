@@ -172,3 +172,72 @@ describe('the room driving it across the process boundary', () => {
     }), { timeout: 30_000 }).toBeLessThan(0.25)
   }, 60_000)
 })
+
+describe('chat over the film, in fullscreen, with no second window', () => {
+  it('opens a real composer on Enter and actually takes the keystrokes', async () => {
+    // The bug this exists for, on the other engine: the composer lived in a
+    // window reparented into this one, which no window manager will focus, so
+    // it opened, looked ready, and dropped every keystroke -- while the letters
+    // fell through to the shortcuts and paused the film for the whole room.
+    // Here it is an ordinary focused input in the window that has the keyboard.
+    await app.evaluate(async ({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setFullScreen(true)
+    })
+    await page.waitForFunction(
+      () => !!document.querySelector('[data-testid="stagechat"]'),
+      null, { timeout: 20_000 }
+    )
+
+    await page.keyboard.press('Enter')
+    await page.waitForSelector('[data-testid="stageinput"]', { timeout: 10_000 })
+    expect(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')))
+      .toBe('stageinput')
+
+    await page.keyboard.type('over the film')
+    expect(await page.inputValue('[data-testid="stageinput"]')).toBe('over the film')
+  }, 90_000)
+
+  it('sends what was typed, and the rest of the room receives it', async () => {
+    await page.keyboard.press('Enter')
+    await expect.poll(
+      () => guest.messages.map(m => m.text),
+      { timeout: 20_000 }
+    ).toContain('over the film')
+    expect(await page.locator('[data-testid="stageinput"]').count()).toBe(0)
+  }, 90_000)
+
+  it('draws an arriving message over the film', async () => {
+    guest.sendChat('from the other side')
+    await expect.poll(async () => page.evaluate(() =>
+      Array.from(document.querySelectorAll('[data-testid="stagemsg"]'))
+        .map(e => e.textContent ?? '').join(' ')
+    ), { timeout: 20_000 }).toContain('from the other side')
+  }, 90_000)
+
+  it('lets clicks through the empty space, which is what shaping was for', async () => {
+    // pointer-events: none on the container and auto on the bubbles is the one
+    // CSS property that replaces the entire X SHAPE mechanism.
+    const container = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="stagechat"]')
+      return el ? getComputedStyle(el).pointerEvents : null
+    })
+    expect(container).toBe('none')
+
+    const bubble = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="stagemsg"]')
+      return el ? getComputedStyle(el).pointerEvents : null
+    })
+    expect(bubble).toBe('auto')
+  }, 60_000)
+
+  it('needs no second window to do any of it', async () => {
+    // The mpv engine has a child window reparented into this one for exactly
+    // this feature. Under the <video> engine there is nothing but the app.
+    const windows = await app.evaluate(async ({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows().length)
+    expect(windows).toBe(1)
+    await app.evaluate(async ({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setFullScreen(false)
+    })
+  }, 60_000)
+})
