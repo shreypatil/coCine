@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { ReactElement, KeyboardEvent as ReactKeyEvent } from 'react'
+import type { ReactElement } from 'react'
 import type { ChatMessage, ShapeRect, State } from './types.js'
 import { initials, tint, hhmm } from './format.js'
 
@@ -20,6 +20,13 @@ import { initials, tint, hhmm } from './format.js'
  *
  * `panel` is the fallback for a display server that cannot do that, where the
  * old opaque box in the corner is still better than nothing.
+ *
+ * Nothing here is typed into. This window is reparented into the main window on
+ * X11, which means the window manager will not give it the keyboard, so a text
+ * field of its own opened, looked ready, and silently dropped every keystroke.
+ * The field lives in the main window -- which has the keyboard, and whose own
+ * content is behind the video in fullscreen anyway -- and what is being typed
+ * arrives here as text to draw.
  */
 
 /** How long a line stays up before it gets out of the way of the film. */
@@ -55,11 +62,10 @@ function rounded (r: DOMRect, radius: number): ShapeRect[] {
 export function Overlay (): ReactElement {
   const [s, setS] = useState<State | null>(null)
   const [layout, setLayout] = useState<'floating' | 'panel'>('floating')
-  const [draft, setDraft] = useState('')
-  const [composing, setComposing] = useState(false)
+  /** What the main window is typing, or null while the composer is closed. */
+  const [draft, setDraft] = useState<string | null>(null)
   const [, setTick] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
   /** When each message first reached this window, so expiry does not depend on
    *  agreeing with the server's clock. */
   const seen = useRef(new Map<string, number>())
@@ -67,6 +73,9 @@ export function Overlay (): ReactElement {
 
   useEffect(() => window.cocine.onState(setS), [])
   useEffect(() => window.cocine.onOverlayLayout?.(setLayout), [])
+  useEffect(() => window.cocine.onOverlayDraft?.(setDraft), [])
+
+  const composing = draft !== null
 
   const all: ChatMessage[] = s?.messages ?? []
   const now = Date.now()
@@ -100,13 +109,6 @@ export function Overlay (): ReactElement {
     if (el && layout === 'panel') el.scrollTop = el.scrollHeight
   }, [messages.length, layout])
 
-  useEffect(() => window.cocine.onFocusChat(() => {
-    setComposing(true)
-    // The field is rendered by the state change above, so focusing it has to
-    // wait a frame or there is nothing to focus.
-    requestAnimationFrame(() => inputRef.current?.focus())
-  }), [])
-
   /**
    * Tell the main process which pixels of this window should exist. Skipped
    * when nothing changed, because it crosses a process boundary and ends in an
@@ -138,20 +140,6 @@ export function Overlay (): ReactElement {
     return () => window.removeEventListener('resize', report)
   }, [report])
 
-  const send = (): void => {
-    const text = draft.trim()
-    if (!text) return
-    setDraft('')
-    void window.cocine.sendChat(text).catch(() => { /* the main window reports it */ })
-  }
-
-  const close = (): void => {
-    setComposing(false)
-    // Handing focus back matters: while this window has it, the main window's
-    // shortcuts -- space, seek, leaving fullscreen -- are dead.
-    void window.cocine.releaseChatFocus()
-  }
-
   return (
     <div className={`ov ${layout}`} data-testid="overlay">
       <div className="ov-list" ref={listRef} data-testid="overlaychat">
@@ -165,21 +153,15 @@ export function Overlay (): ReactElement {
           <p className="ov-sys" data-chip key={m.id} data-testid="overlaymsg"><b>{m.name}</b> {m.text}</p>
         ))}
       </div>
-      {(composing || layout === 'panel') && (
+      {composing && (
         <div className="ov-compose" data-chip data-testid="overlaycompose">
-          <input
-            ref={inputRef}
-            className="ov-input"
-            value={draft}
-            onChange={e => setDraft(e.target.value)}
-            onKeyDown={(e: ReactKeyEvent<HTMLInputElement>) => {
-              if (e.key === 'Enter') { e.preventDefault(); send() }
-              if (e.key === 'Escape') { e.preventDefault(); close() }
-            }}
-            placeholder={layout === 'panel' ? 'Message the room…' : 'Message the room — Esc to close'}
-            maxLength={800}
-            data-testid="overlayinput"
-          />
+          {/* A picture of the field in the main window, not a field. Everything
+              typed goes there; this only has to look like where it is going. */}
+          <p className="ov-input" data-testid="overlaydraft">
+            {draft ? <span className="ov-typed">{draft}</span> : null}
+            <span className="ov-caret" aria-hidden="true" />
+            {!draft && <span className="ov-hint">Message the room — Enter to send, Esc to close</span>}
+          </p>
         </div>
       )}
     </div>

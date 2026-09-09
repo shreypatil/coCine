@@ -214,6 +214,28 @@ window instead; an X server without SHAPE falls back to the old opaque panel.
 server: the overlay is a child of the main window, covers nothing while the room
 is quiet, and covers only the bubble once somebody speaks.
 
+The overlay draws and nothing more. It held the text field at first, and every
+test passed while the feature was unusable: a window reparented into another
+window is not one any window manager will focus, so the composer opened, looked
+ready, and dropped every keystroke. The field is in the main window now, where
+the keyboard already is and where fullscreen hides it behind the video, and the
+draft is sent to the overlay to be drawn. Two safeguards came with it: the
+overlay is never shown before it has actually been cut to shape, and a shaping
+request that fails drops it to the corner panel rather than leaving an opaque
+rectangle over the whole film.
+
+### mpv's video output has to survive being resized
+
+`vo=sdl` does not. With a `--wid` window resized under it — entering fullscreen,
+or the sidebar moving — the surface goes pure black permanently, and no seek,
+pause, `video-align-y` jiggle or filter reconfiguration repaints it; measured
+directly against each of those. mpv's own probe order puts `sdl` ahead of `x11`,
+so a machine whose GPU outputs are rejected lands on it. The embedded player is
+given `--vo=gpu-next,gpu,xv,x11` on Linux, which changes nothing where the GPU
+output works. `COCINE_MPV_ARGS` appends arguments after everything else, both as
+a user escape hatch and as the way the suite drives the real output on a virtual
+display (`--gpu-sw=yes`) or reproduces the failure (`--vo=sdl`).
+
 ### Phase 9 — interface overhaul
 
 Waiting on your list of issues from using it. What follows is what a read of the

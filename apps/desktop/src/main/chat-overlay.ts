@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { chromeOffset, type Rect, type Slot } from './video-window.js'
 import {
   embedWindow, raiseEmbedded, x11EmbeddingPossible, setEmbeddedMapped,
-  setWindowShape, clearWindowShape, shapingAvailable
+  setWindowShape, clearWindowShape
 } from './x11-embed.js'
 
 /**
@@ -24,6 +24,14 @@ import {
  * If neither is available -- an X server with no SHAPE extension -- it falls
  * back to `panel`, the opaque box in the corner it used to be. That is worse,
  * but it is visible, which is the property that matters.
+ *
+ * It never takes the keyboard. A window reparented into another window is not
+ * one the window manager knows about, so it cannot be focused: asking it to
+ * take the keyboard looked like it worked and quietly did nothing, which is why
+ * the fullscreen composer opened and then swallowed everything typed into it.
+ * The main window owns the text field -- it has the keyboard already, and in
+ * fullscreen its own content is hidden behind the video anyway -- and sends the
+ * draft here to be drawn.
  */
 
 /** Fallback panel only; the floating layout is sized to the video. */
@@ -41,6 +49,17 @@ export class ChatOverlay {
   private layout: OverlayLayout = 'floating'
   /** The last shape asked for, in CSS pixels, so it survives a reposition. */
   private shapeCss: Rect[] = []
+  /**
+   * Whether the window has actually been cut down to its shape.
+   *
+   * The floating layout is a window the size of the entire film with almost all
+   * of it taken away again. If the taking-away does not happen -- an X server
+   * without the extension, a request that fails, a renderer that never reports
+   * -- what is left is an opaque rectangle over the whole picture, which is the
+   * worst thing this window could possibly do. So it is never shown until a
+   * shape has been applied, and a failure to apply one drops it to the panel.
+   */
+  private shaped = false
 
   constructor (
     private readonly parent: BrowserWindow,
@@ -68,9 +87,12 @@ export class ChatOverlay {
       skipTaskbar: true,
       hasShadow: false,
       transparent,
-      // Unlike the video surface this one takes the keyboard, because it has a
-      // text field. It is shown without focus and only takes it when asked.
-      focusable: true,
+      // Pixels only, like the video surface. It used to be focusable, because
+      // it held the text field -- but a window reparented into another window
+      // is not one the window manager will focus, so every keystroke went to
+      // the main window regardless and the field could never be typed into.
+      // The field lives in the main window now and this only draws it.
+      focusable: false,
       backgroundColor: '#00000000',
       title: 'coCine chat',
       webPreferences: {
@@ -88,10 +110,14 @@ export class ChatOverlay {
     // visible over the film rather than behind it.
     if (x11EmbeddingPossible()) {
       this.embedded = await embedWindow(this.parent, win, 0, 0)
-      this.layout = (await shapingAvailable()) ? 'floating' : 'panel'
       // Nothing has been reported yet, so the window should show nothing at
-      // all rather than a full-video black rectangle for one frame.
-      if (this.layout === 'floating') await setWindowShape(win, [])
+      // all rather than a full-video black rectangle for one frame. This
+      // doubles as the test of whether shaping works here at all: asking the
+      // extension whether it exists is not the same as the request succeeding,
+      // and the consequence of believing it when it is not true is a film
+      // nobody can see.
+      this.shaped = await setWindowShape(win, [])
+      this.layout = this.shaped ? 'floating' : 'panel'
     }
     win.webContents.send('overlay:layout', this.layout)
     win.webContents.on('did-finish-load', () => {
@@ -118,9 +144,37 @@ export class ChatOverlay {
    */
   setShape (rects: Rect[]): void {
     this.shapeCss = rects
-    if (this.layout !== 'floating' || !this.win || this.win.isDestroyed()) return
-    if (process.platform !== 'linux') return
-    void setWindowShape(this.win, rects.map(r => this.toDevice(r)))
+    void this.applyShape()
+  }
+
+  /**
+   * Cut the window down to what the renderer asked for, and give up the
+   * floating layout entirely if that cannot be done. Covering the film with a
+   * black rectangle is not an acceptable way to fail.
+   */
+  private async applyShape (): Promise<boolean> {
+    if (this.layout !== 'floating' || !this.win || this.win.isDestroyed()) return false
+    // Elsewhere the window is genuinely transparent and there is nothing to cut.
+    if (process.platform !== 'linux') { this.shaped = true; return true }
+    const ok = await setWindowShape(this.win, this.shapeCss.map(r => this.toDevice(r)))
+    this.shaped = ok
+    if (!ok) this.degrade()
+    return ok
+  }
+
+  /**
+   * Fall back to the opaque box in the corner. Worse to look at, but it covers
+   * a corner of the film rather than all of it.
+   */
+  private degrade (): void {
+    if (this.layout === 'panel') return
+    console.error('[overlay] the window could not be shaped; falling back to a panel')
+    this.layout = 'panel'
+    if (this.win && !this.win.isDestroyed()) {
+      void clearWindowShape(this.win)
+      this.win.webContents.send('overlay:layout', 'panel')
+    }
+    this.reposition()
   }
 
   private toDevice (r: Rect): Rect {
@@ -147,8 +201,11 @@ export class ChatOverlay {
     const win = await this.ensure()
     if (!win) return
     this.reposition()
-    // showInactive keeps the keyboard with the main window, so space still
-    // pauses and Escape still leaves fullscreen until chat is deliberately used.
+    // Shape first, show second. The other order puts a black rectangle over the
+    // whole film for however long the shaping takes, and for ever if it fails.
+    if (this.layout === 'floating') await this.applyShape()
+    // showInactive keeps the keyboard with the main window: the overlay is
+    // pixels only, and everything typed into it is typed in the main window.
     win.showInactive()
     if (this.embedded) await setEmbeddedMapped(win, true)
     // Both children sit above the parent; this is what puts chat above video
@@ -160,18 +217,6 @@ export class ChatOverlay {
       const ok = await raiseEmbedded(win)
       if (process.env.COCINE_DEBUG) console.log(`[overlay] raised: ${ok} layout=${this.layout}`)
     } else { win.setAlwaysOnTop(true); win.moveTop() }
-  }
-
-  focus (): void {
-    if (this.win && !this.win.isDestroyed() && this.win.isVisible()) {
-      this.win.focus()
-      this.win.webContents.send('overlay:focus')
-    }
-  }
-
-  /** Give the keyboard back, or the main window's shortcuts stay dead. */
-  releaseFocus (): void {
-    if (!this.parent.isDestroyed()) this.parent.focus()
   }
 
   /** The overlay renders from the same state as the main window. Without this
@@ -196,9 +241,11 @@ export class ChatOverlay {
     const areaH = Math.round((slot?.height ?? content.height) * scale)
 
     if (this.layout === 'floating') {
-      // The whole video. The shape is what decides which of it is drawn.
+      // The whole video. The shape is what decides which of it is drawn, so it
+      // is re-applied unconditionally -- including when it is empty, which is
+      // the state that keeps an idle overlay off the picture entirely.
       this.win.setBounds({ x: areaX, y: areaY, width: Math.max(1, areaW), height: Math.max(1, areaH) })
-      if (this.shapeCss.length) this.setShape(this.shapeCss)
+      void this.applyShape()
       return
     }
     // Bottom-left of the video, which is the least likely corner to hold

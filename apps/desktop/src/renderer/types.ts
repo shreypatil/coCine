@@ -142,12 +142,10 @@ declare global {
       onSignal: (cb: (from: string, payload: unknown) => void) => () => void
       onModerated: (cb: (by: string, action: string) => void) => () => void
       onState: (cb: (s: State) => void) => () => void
-      /** Overlay only: the main window asking it to take the keyboard. */
-      onFocusChat: (cb: () => void) => () => void
-      /** Overlay only: hand the keyboard back, so shortcuts work again. */
-      releaseChatFocus: () => Promise<unknown>
-      /** Main window only: ask the overlay to take the keyboard. */
-      focusChat: () => Promise<unknown>
+      /** Main window only: the fullscreen draft to draw, or null when closed. */
+      setOverlayDraft: (text: string | null) => Promise<unknown>
+      /** Overlay only: what the main window is typing, for it to draw. */
+      onOverlayDraft: (cb: (text: string | null) => void) => () => void
       /** Overlay only: which rectangles of its window should exist at all. */
       setOverlayShape: (rects: ShapeRect[]) => Promise<unknown>
       /** Overlay only: whether it floats over the film or falls back to a box. */

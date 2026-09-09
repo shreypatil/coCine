@@ -54,6 +54,8 @@ let app: ElectronApplication
 let page: Page
 let home: string
 let film: string
+/** Main-process log lines, so the test can watch what the surface is doing. */
+const logs: string[] = []
 let server: SignallingServer
 
 interface Win { url: string; visible: boolean; wid: number }
@@ -94,7 +96,13 @@ beforeAll(async () => {
 
   execFileSync('npx', ['electron-vite', 'build'], { cwd: join(process.cwd(), 'apps/desktop'), stdio: 'ignore' })
   // Real windows on purpose: COCINE_HEADLESS would remove the very thing under test.
-  app = await electron.launch({ args: [join(process.cwd(), 'apps/desktop')], env: { ...process.env, HOME: home } })
+  // COCINE_DEBUG makes the main process report every time it reconfigures the
+  // native surface, which is the thing one of these tests counts.
+  app = await electron.launch({
+    args: [join(process.cwd(), 'apps/desktop')],
+    env: { ...process.env, HOME: home, COCINE_DEBUG: '1' }
+  })
+  app.on('console', m => logs.push(m.text()))
 
   const deadline = Date.now() + 30_000
   for (;;) {
@@ -161,6 +169,39 @@ describe.skipIf(!canGrab)('the picture, not just the sound', () => {
     } finally { x.close() }
     expect(spread(v!.wid), 'a black rectangle means sound with no picture').toBeGreaterThan(0.05)
   }, 90_000)
+
+  it('leaves the surface alone while nothing changes', async () => {
+    // The bug this exists for: a self-heal compared the geometry it *asked* for
+    // against the geometry the window *reported* — two different coordinate
+    // spaces once the surface is reparented — so they never matched and it
+    // "corrected" the window ten times a second. Reconfiguring a native window
+    // that mpv is drawing into leaves a paused film black, because no new frame
+    // arrives to repair it. Playing hid it; pausing did not.
+    const reconfigures = (): number => logs.filter(l => l.startsWith('[video] slot=')).length
+
+    await page.click('[data-testid="playpause"]')          // pause it
+    await new Promise(r => setTimeout(r, 1500))
+    const before = reconfigures()
+    await new Promise(r => setTimeout(r, 5000))
+    expect(reconfigures() - before, 'the surface must not be reconfigured while nothing changes').toBe(0)
+
+    // And it is still showing the film rather than a black rectangle.
+    const v = await videoWindow()
+    expect(spread(v!.wid)).toBeGreaterThan(0.05)
+    await page.click('[data-testid="playpause"]')          // leave it playing
+  }, 60_000)
+
+  it('does reposition when the video area genuinely moves', async () => {
+    const reconfigures = (): number => logs.filter(l => l.startsWith('[video] slot=')).length
+    const before = reconfigures()
+    await page.click('[data-testid="fullscreen"]')
+    await expect.poll(() => reconfigures() - before, { timeout: 15_000 }).toBeGreaterThan(0)
+    await new Promise(r => setTimeout(r, 1500))
+    const v = await videoWindow()
+    expect(spread(v!.wid), 'and the picture survives the move').toBeGreaterThan(0.05)
+    await page.keyboard.press('Escape')
+    await new Promise(r => setTimeout(r, 1500))
+  }, 60_000)
 
   it('still draws it after the picker has covered and uncovered the surface', async () => {
     // The picker hides the surface deliberately, because it would otherwise sit

@@ -64,9 +64,8 @@ async function openOverlay (): Promise<Page> {
     }
     w.cocine = {
       sendChat: rec('sendChat'),
-      releaseChatFocus: rec('releaseChatFocus'),
       setOverlayShape: rec('setOverlayShape'),
-      onFocusChat: (cb: () => void) => { w.__focusChat = cb; return () => {} },
+      onOverlayDraft: (cb: (t: string | null) => void) => { w.__draft = cb; return () => {} },
       onOverlayLayout: (cb: (l: string) => void) => { w.__layout = cb; return () => {} },
       onState: (cb: (s: unknown) => void) => { w.__push = cb; return () => {} }
     }
@@ -86,10 +85,17 @@ const calls = async (name: string): Promise<unknown[][]> =>
   page.evaluate(n => (window as unknown as { __calls: Array<{ name: string; args: unknown[] }> })
     .__calls.filter(c => c.name === n).map(c => c.args), name)
 
-/** Open the composer the way the main window does, with a real focus event. */
+/**
+ * What the main window sends while somebody is typing into it. `null` closes
+ * the composer; a string is the line so far.
+ */
+const draft = async (text: string | null): Promise<void> => {
+  await page.evaluate(t => (window as unknown as { __draft: (x: string | null) => void }).__draft(t), text)
+}
+
 const openComposer = async (): Promise<void> => {
-  await page.evaluate(() => (window as unknown as { __focusChat: () => void }).__focusChat())
-  await page.waitForSelector('[data-testid="overlayinput"]')
+  await draft('')
+  await page.waitForSelector('[data-testid="overlaydraft"]')
 }
 
 const setLayout = async (layout: 'floating' | 'panel'): Promise<void> => {
@@ -162,47 +168,36 @@ describe('the fullscreen chat overlay', () => {
     await page.close()
   })
 
-  it('has no composer until the main window asks for one', async () => {
+  it('has no composer until the main window says somebody is typing', async () => {
     await openOverlay()
     await push()
-    expect(await page.locator('[data-testid="overlayinput"]').count()).toBe(0)
+    expect(await page.locator('[data-testid="overlaydraft"]').count()).toBe(0)
     await openComposer()
-    // Focus lands a frame after the field is rendered; there is nothing to
-    // focus before that.
-    await expect.poll(async () => await page.evaluate(() =>
-      document.activeElement?.getAttribute('data-testid'))).toBe('overlayinput')
+    expect(await page.locator('[data-testid="overlaydraft"]').count()).toBe(1)
+    await draft(null)
+    expect(await page.locator('[data-testid="overlaydraft"]').count()).toBe(0)
     await page.close()
   })
 
-  it('sends a message on Enter and clears the field', async () => {
+  it('draws the line as it is typed in the other window', async () => {
     await openOverlay()
     await push()
-    await openComposer()
-    await page.fill('[data-testid="overlayinput"]', 'nice')
-    await page.press('[data-testid="overlayinput"]', 'Enter')
-    expect((await calls('sendChat'))[0]).toEqual(['nice'])
-    expect(await page.inputValue('[data-testid="overlayinput"]')).toBe('')
+    await draft('nice')
+    await expect.poll(async () => await page.textContent('[data-testid="overlaydraft"]')).toContain('nice')
     await page.close()
   })
 
-  it('does not send an empty message', async () => {
+  it('never asks for the keyboard, because it will never be given it', async () => {
+    // The bug this exists for: this window held the text field, and it is
+    // reparented into the main window, which means no window manager will
+    // focus it. The composer opened, looked ready, and swallowed every
+    // keystroke -- typing in fullscreen did nothing at all. Nothing focusable
+    // may live here; the field belongs to the main window.
     await openOverlay()
     await push()
     await openComposer()
-    await page.press('[data-testid="overlayinput"]', 'Enter')
-    expect(await calls('sendChat')).toHaveLength(0)
-    await page.close()
-  })
-
-  it('hands the keyboard back on Escape and closes the composer', async () => {
-    // Without this the main window's shortcuts stay dead while the overlay has
-    // focus, including the one that leaves fullscreen.
-    await openOverlay()
-    await push()
-    await openComposer()
-    await page.press('[data-testid="overlayinput"]', 'Escape')
-    expect(await calls('releaseChatFocus')).toHaveLength(1)
-    expect(await page.locator('[data-testid="overlayinput"]').count()).toBe(0)
+    const focusable = await page.locator('input, textarea, select, button, [contenteditable], [tabindex]').count()
+    expect(focusable).toBe(0)
     await page.close()
   })
 
@@ -226,8 +221,8 @@ describe('the fullscreen chat overlay', () => {
       id: `m${i}`, kind: 'said', memberId: 'd', name: 'dev', text: `line ${i}`, atServerMs: Date.now()
     }))
     await push({ messages: many })
-    // The composer is always there in the panel, and the newest line is in view.
-    await page.waitForSelector('[data-testid="overlayinput"]')
+    // The whole backlog is kept in the panel, and the newest line is in view.
+    await page.waitForSelector('[data-testid="overlaymsg"]')
     const atBottom = await page.evaluate(() => {
       const el = document.querySelector('[data-testid="overlaychat"]')!
       return el.scrollHeight - el.scrollTop - el.clientHeight < 4

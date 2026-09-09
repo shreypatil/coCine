@@ -206,9 +206,11 @@
       who took control — so there is one place to look when you wonder what just happened.
     </p>
     <p>
-      <strong>In fullscreen</strong>, press <kbd>Enter</kbd> to type. Messages appear as small
-      bubbles over the bottom-left of the picture and fade away after a few seconds; nothing
-      else covers the film. <kbd>Esc</kbd> puts the keyboard back on playback.
+      <strong>In fullscreen</strong>, press <kbd>Enter</kbd> and type — the line appears over
+      the bottom of the picture as you write it. <kbd>Enter</kbd> again sends it,
+      <kbd>Esc</kbd> throws it away and puts the keyboard back on playback. Messages appear as
+      small bubbles over the bottom-left of the picture and fade away after a few seconds;
+      nothing else covers the film.
     </p>
 
     <h3>Voice</h3>
@@ -363,6 +365,19 @@
       chooser told coCine you had cancelled whenever you double-clicked a file. coCine now
       uses its own file browser on Linux, so double-click, <kbd>Enter</kbd> and the
       <b>Open film</b> button all work. If you are on an older copy, update it.
+    </p>
+
+    <h3>The picture goes black when I go fullscreen</h3>
+    <p>
+      The sound keeps playing and the picture never comes back, even after leaving fullscreen
+      and returning. This was mpv choosing a video output that cannot survive its window being
+      resized, and coCine now asks for a different one on Linux. If you still see it, start
+      coCine from a terminal with an output of your own choosing:
+    </p>
+    <pre><code>COCINE_MPV_ARGS="--vo=x11" cocine</code></pre>
+    <p>
+      <code>--vo=xv</code> and <code>--gpu-sw=yes</code> are the other two worth trying. If one
+      of them fixes it, that is worth reporting, along with the graphics card you have.
     </p>
 
     <h3>It says “reconnecting”</h3>

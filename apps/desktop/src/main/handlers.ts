@@ -40,8 +40,8 @@ export interface OverlayLike {
   /** The parts of the overlay window that should exist at all; everything
    *  else is cut away so the film shows through. */
   setShape: (rects: Rect[]) => void
-  focus: () => void
-  releaseFocus: () => void
+  /** Push something for the overlay's own renderer to draw. */
+  send: (channel: string, payload: unknown) => void
 }
 
 export interface TransferLike {
@@ -246,15 +246,15 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
       return { ok: true }
     },
 
-    /** Fullscreen only: hand the keyboard to the chat overlay. */
-    'overlay:focus': () => {
-      deps.getOverlay?.()?.focus()
-      return { ok: true }
-    },
-
-    /** And hand it back, or the main window's shortcuts stay dead. */
-    'overlay:releaseFocus': () => {
-      deps.getOverlay?.()?.releaseFocus()
+    /**
+     * The fullscreen composer, which lives in the main window and is drawn by
+     * the overlay. The two are separate windows because the overlay cannot be
+     * given the keyboard -- it is reparented into the main window, so the
+     * window manager will not focus it, and everything typed while it was
+     * supposedly focused went to the main window and was dropped.
+     */
+    'overlay:draft': (text: string | null) => {
+      deps.getOverlay?.()?.send('overlay:draft', typeof text === 'string' ? text : null)
       return { ok: true }
     },
 

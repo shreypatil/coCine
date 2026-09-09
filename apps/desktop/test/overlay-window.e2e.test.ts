@@ -167,4 +167,25 @@ describe('the chat overlay as X sees it', () => {
     // it. Anything approaching the full window means the shape did not take.
     expect(covered).toBeLessThan(chat.width * chat.height * 0.25)
   })
+
+  it('can actually be typed into while fullscreen', async () => {
+    // The bug this exists for, and the reason none of the tests above caught
+    // it: everything the overlay *shows* worked, and the one thing a person
+    // does with it did not. The composer used to be a text field in this
+    // window, which is reparented into the main window and therefore never
+    // given the keyboard, so it opened and swallowed every keystroke. The
+    // field is in the main window now and this only draws it.
+    await page.keyboard.press('Enter')
+    await page.waitForSelector('[data-testid="fscompose"]', { timeout: 10_000 })
+    await page.keyboard.type('typed over the film')
+    // What is being typed reaches the window that draws it.
+    await expect.poll(async () => area(await x!.rectangles((await find('overlay')).wid)), { timeout: 15_000 })
+      .toBeGreaterThan(0)
+    await page.keyboard.press('Enter')
+
+    await expect.poll(() => guest.messages.map(m => m.text), { timeout: 20_000 })
+      .toContain('typed over the film')
+    // And the field goes away rather than eating the shortcuts afterwards.
+    expect(await page.locator('[data-testid="fscompose"]').count()).toBe(0)
+  }, 60_000)
 })

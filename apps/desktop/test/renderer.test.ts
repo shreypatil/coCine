@@ -101,7 +101,7 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
         shareFilm: rec('shareFilm'),
         setSharingPaused: rec('setSharingPaused'),
         unloadFilm: rec('unloadFilm'),
-        focusChat: rec('focusChat'),
+        setOverlayDraft: rec('setOverlayDraft'),
       sendSignal: rec('sendSignal'),
       setVoiceState: rec('setVoiceState'),
       moderateVoice: rec('moderateVoice'),
@@ -982,11 +982,66 @@ describe('room settings once the room exists', () => {
 })
 
 describe('chat in fullscreen', () => {
-  it('Enter asks the overlay for a composer, since nothing is drawn over the film until it does', async () => {
+  /**
+   * The field is here rather than in the overlay window, and that is the whole
+   * point of these: the overlay is reparented into this window on X11, so no
+   * window manager will give it the keyboard. It used to hold the composer, and
+   * everything typed into it went nowhere -- the fullscreen chat looked ready
+   * and could not be used at all.
+   */
+  it('opens a real, focused field on Enter', async () => {
     await open()
     await push({ fullscreen: true, connected: true })
     await page.keyboard.press('Enter')
-    expect(await calls('focusChat')).toHaveLength(1)
+    await page.waitForSelector('[data-testid="fscompose"]')
+    expect(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')))
+      .toBe('fscompose')
+    await page.close()
+  })
+
+  it('types into it and tells the overlay what to draw', async () => {
+    await open()
+    await push({ fullscreen: true, connected: true })
+    await page.keyboard.press('Enter')
+    await page.waitForSelector('[data-testid="fscompose"]')
+    await page.keyboard.type('over the film')
+    expect(await page.inputValue('[data-testid="fscompose"]')).toBe('over the film')
+    await expect.poll(async () => (await calls('setOverlayDraft')).at(-1)?.[0]).toBe('over the film')
+    await page.close()
+  })
+
+  it('sends on Enter, closes, and tells the overlay to stop drawing', async () => {
+    await open()
+    await push({ fullscreen: true, connected: true })
+    await page.keyboard.press('Enter')
+    await page.waitForSelector('[data-testid="fscompose"]')
+    await page.keyboard.type('nice')
+    await page.keyboard.press('Enter')
+    expect((await calls('sendChat')).at(-1)).toEqual(['nice'])
+    expect(await page.locator('[data-testid="fscompose"]').count()).toBe(0)
+    await expect.poll(async () => (await calls('setOverlayDraft')).at(-1)?.[0]).toBe(null)
+    await page.close()
+  })
+
+  it('sends nothing for an empty line', async () => {
+    await open()
+    await push({ fullscreen: true, connected: true })
+    await page.keyboard.press('Enter')
+    await page.waitForSelector('[data-testid="fscompose"]')
+    await page.keyboard.press('Enter')
+    expect(await calls('sendChat')).toHaveLength(0)
+    await page.close()
+  })
+
+  it('closes on Escape without sending', async () => {
+    await open()
+    await push({ fullscreen: true, connected: true })
+    await page.keyboard.press('Enter')
+    await page.waitForSelector('[data-testid="fscompose"]')
+    await page.keyboard.type('never mind')
+    await page.keyboard.press('Escape')
+    expect(await calls('sendChat')).toHaveLength(0)
+    expect(await page.locator('[data-testid="fscompose"]').count()).toBe(0)
     await page.close()
   })
 
@@ -994,7 +1049,17 @@ describe('chat in fullscreen', () => {
     await open()
     await push({ fullscreen: false, connected: true })
     await page.keyboard.press('Enter')
-    expect(await calls('focusChat')).toHaveLength(0)
+    expect(await page.locator('[data-testid="fscompose"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('takes the field away when fullscreen ends', async () => {
+    await open()
+    await push({ fullscreen: true, connected: true })
+    await page.keyboard.press('Enter')
+    await page.waitForSelector('[data-testid="fscompose"]')
+    await push({ fullscreen: false, connected: true })
+    await expect.poll(async () => await page.locator('[data-testid="fscompose"]').count()).toBe(0)
     await page.close()
   })
 })

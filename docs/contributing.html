@@ -190,6 +190,27 @@ npm run nat-check  # what this machine's network does to a peer connection</code
       <code>apps/desktop/test/overlay-window.e2e.test.ts</code> asserts it against a real X
       server rather than trusting it.
     </p>
+    <p>
+      <strong>The overlay never takes the keyboard.</strong> It held the composer at first, and
+      every test of it passed: the window appeared, the field rendered, focus was requested.
+      None of that mattered, because a reparented child is not a window any window manager will
+      focus — the field was never typed into and the fullscreen chat could not be used at all.
+      The field is in the main window now (<code>[data-testid="fscompose"]</code>, invisible
+      behind the video) and the overlay is sent the draft to draw. The lesson generalises:
+      a test that the interface <em>rendered</em> is not a test that it <em>works</em>.
+    </p>
+
+    <h3>mpv's video output must survive a resize</h3>
+    <p>
+      This application resizes the window mpv draws into — entering fullscreen, moving the
+      sidebar. mpv's auto-probe order puts <code>sdl</code> before <code>x11</code>, and with
+      <code>vo=sdl</code> a <code>--wid</code> window that is resized goes black permanently:
+      no seek, pause, <code>video-align-y</code> jiggle or filter reconfiguration repaints it.
+      The embedded player is therefore given <code>--vo=gpu-next,gpu,xv,x11</code> on Linux.
+      <code>COCINE_MPV_ARGS</code> appends arguments after everything else for anyone who needs
+      a different choice, and is how the test suite drives the real output on a virtual display
+      (<code>--gpu-sw=yes</code>) or reproduces the failure (<code>--vo=sdl</code>).
+    </p>
 
     <h3>The film picker is ours on Linux</h3>
     <p>

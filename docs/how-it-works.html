@@ -413,6 +413,24 @@
       compositing manager, so a bare i3 session behaves the same as a composited desktop.
       Windows and macOS use an ordinary transparent window instead.
     </p>
+    <p>
+      The overlay draws and nothing else. It cannot hold the text field, because a window
+      reparented into another window is not one the window manager will give the keyboard to:
+      a composer living there opened, looked ready, and dropped every keystroke. The field is
+      in the main window — which has the keyboard already, and whose own content is behind the
+      video in fullscreen and therefore invisible — and what is being typed is sent to the
+      overlay to be drawn, caret and all.
+    </p>
+    <p>
+      One more consequence of resizing a window mpv is drawing into: the video output has to
+      survive it. mpv's own probing order puts <code>sdl</code> ahead of <code>x11</code>, and
+      the SDL output does not survive a <code>--wid</code> window being resized — measured
+      directly, its pixels go to pure black after the resize and no seek, pause or
+      reconfiguration brings them back. So on Linux the embedded player is given
+      <code>--vo=gpu-next,gpu,xv,x11</code>: unchanged on any machine whose GPU output works,
+      and a software fallback that can be resized on any machine whose does not.
+      <code>COCINE_MPV_ARGS</code> overrides the lot.
+    </p>
 
     <h2 id="numbers">The numbers</h2>
     <p class="sub">

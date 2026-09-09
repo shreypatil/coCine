@@ -190,11 +190,6 @@ async function shapeExt (): Promise<ShapeExt | null> {
   return shapePromise
 }
 
-/** Whether the shaped overlay is possible at all, before anything is drawn. */
-export async function shapingAvailable (): Promise<boolean> {
-  return (await shapeExt()) !== null
-}
-
 /**
  * Restrict `win` to `rects`, in device pixels relative to the window's own
  * origin. An empty list makes the window invisible without hiding it, which is

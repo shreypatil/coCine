@@ -49,12 +49,15 @@ const api = {
     ipcRenderer.on('overlay:layout', fn)
     return () => { ipcRenderer.removeListener('overlay:layout', fn) }
   },
-  releaseChatFocus: () => ipcRenderer.invoke('overlay:releaseFocus'),
-  focusChat: () => ipcRenderer.invoke('overlay:focus'),
-  onFocusChat: (h: () => void) => {
-    const fn = (): void => h()
-    ipcRenderer.on('overlay:focus', fn)
-    return () => { ipcRenderer.removeListener('overlay:focus', fn) }
+  /** Main window only: what is being typed into the fullscreen composer, or
+   *  null when it is closed. The overlay cannot hold a text field of its own --
+   *  it is not a window the window manager will give the keyboard to -- so the
+   *  main window types and the overlay draws. */
+  setOverlayDraft: (text: string | null) => ipcRenderer.invoke('overlay:draft', text),
+  onOverlayDraft: (h: (text: string | null) => void) => {
+    const fn = (_e: unknown, text: string | null): void => h(text)
+    ipcRenderer.on('overlay:draft', fn)
+    return () => { ipcRenderer.removeListener('overlay:draft', fn) }
   },
   sendSignal: (to: string, payload: unknown) => ipcRenderer.invoke('voice:signal', to, payload),
   setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => ipcRenderer.invoke('voice:state', v),

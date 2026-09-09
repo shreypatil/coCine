@@ -15,6 +15,13 @@ export interface Rect { x: number; y: number; width: number; height: number }
  */
 export interface Slot extends Rect { viewport?: { width: number; height: number } }
 
+/** Two rectangles, to the nearest pixel. */
+function same (a: Rect | null, b: Rect | null): boolean {
+  if (!a || !b) return false
+  return Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1 &&
+    Math.abs(a.width - b.width) <= 1 && Math.abs(a.height - b.height) <= 1
+}
+
 /**
  * How far the page's origin sits inside the window's content area.
  *
@@ -57,6 +64,40 @@ function mpvBinary (): string {
   return locateMpv({ resourcesPath: process.resourcesPath })
 }
 
+/**
+ * Which video outputs mpv may use for the embedded surface, in order.
+ *
+ * mpv picks one by itself, and its own order puts `sdl` ahead of `x11`. That
+ * matters here in a way it does not for mpv on its own: this application
+ * resizes mpv's window -- entering fullscreen, moving the sidebar -- and the
+ * SDL output does not survive it. Measured directly: with vo=sdl the surface is
+ * drawing normally at one size, and after being resized its pixels are pure
+ * black, permanently, and no seek, pause, or reconfiguration brings them back.
+ * With vo=x11 the same resize is fine.
+ *
+ * So the software fallback is x11 rather than sdl. On a machine where the GPU
+ * outputs work -- which is nearly all of them -- nothing changes: gpu-next is
+ * still first and still wins.
+ *
+ * Only on Linux, where these outputs exist and where the failure was measured.
+ * Windows and macOS keep mpv's own choice.
+ */
+function videoOutputs (): string[] {
+  return process.platform === 'linux' ? ['--vo=gpu-next,gpu,xv,x11'] : []
+}
+
+/**
+ * Extra arguments for mpv, from the environment, last so they win.
+ *
+ * An escape hatch for a graphics setup nobody anticipated: COCINE_MPV_ARGS
+ * ="--vo=x11" pins the output, COCINE_MPV_ARGS="--gpu-sw=yes" lets the GPU
+ * outputs accept a software renderer. It is also what lets the test suite
+ * exercise the real video output on a virtual display.
+ */
+function extraMpvArgs (): string[] {
+  return (process.env.COCINE_MPV_ARGS ?? '').split(' ').filter(Boolean)
+}
+
 export class VideoWindow {
   private win: BrowserWindow | null = null
   player: EmbeddedMpv | ExternalMpv | null = null
@@ -81,6 +122,18 @@ export class VideoWindow {
    * hidden it, which is how a dialog ended up behind the video.
    */
   private suspended = false
+  /**
+   * The last geometry asked for, and what the window reported straight after.
+   *
+   * Both are needed because they are not in the same coordinate space: once the
+   * surface is reparented, what we ask for is relative to the parent while
+   * getBounds() still answers in screen coordinates. Comparing the two directly
+   * made them differ always, so the self-heal below "corrected" the window ten
+   * times a second for ever -- a constant reconfigure that leaves the picture
+   * black on a paused film, when no new frame arrives to paint over it.
+   */
+  private applied: Rect | null = null
+  private observed: Rect | null = null
 
   constructor (private readonly parent: BrowserWindow) {}
 
@@ -89,7 +142,7 @@ export class VideoWindow {
     // application can be driven end to end without anything reaching a display.
     // Everything above this class sees the same PlayerController either way.
     if (process.env.COCINE_HEADLESS) {
-      const player = new ExternalMpv({ headless: true, binary: mpvBinary() })
+      const player = new ExternalMpv({ headless: true, binary: mpvBinary(), extraArgs: extraMpvArgs() })
       await player.start()
       this.player = player
       return player
@@ -112,7 +165,9 @@ export class VideoWindow {
     })
     await this.win.loadURL('data:text/html,<body style="margin:0;background:#000"></body>')
 
-    const player = new EmbeddedMpv(this.win.getNativeWindowHandle(), { binary: mpvBinary() })
+    const player = new EmbeddedMpv(this.win.getNativeWindowHandle(), {
+      binary: mpvBinary(), extraArgs: [...videoOutputs(), ...extraMpvArgs()]
+    })
     await player.start()
     this.player = player
 
@@ -163,6 +218,9 @@ export class VideoWindow {
    */
   private setShown (shown: boolean): void {
     if (!this.win || this.win.isDestroyed()) return
+    // A hidden window's geometry means nothing, and a shown one has to be
+    // placed again rather than trusted to be where it was.
+    if (!shown) { this.applied = null; this.observed = null }
     if (shown) this.win.showInactive()
     else this.win.hide()
     if (this.embedded) void setEmbeddedMapped(this.win, shown)
@@ -206,17 +264,26 @@ export class VideoWindow {
   private reposition (): void {
     const bounds = this.targetBounds()
     if (!this.win || !bounds || this.win.isDestroyed()) return
-    const content = this.parent.getContentBounds()
-    const scale = screen.getDisplayMatching(content).scaleFactor || 1
-    this.win.setBounds(bounds)
-    if (process.env.COCINE_DEBUG && this.slot) {
-      const got = this.win.getBounds()
-      console.log(`[video] slot=${this.slot.width}x${this.slot.height}@${this.slot.x},${this.slot.y}` +
-        ` content=${content.width}x${content.height}@${content.x},${content.y} scale=${scale}` +
-        ` asked=${bounds.width}x${bounds.height}@${bounds.x},${bounds.y}` +
-        ` got=${got.width}x${got.height}@${got.x},${got.y}`)
+
+    // Asking for geometry it already has is not free: every call reconfigures a
+    // native window that mpv is drawing into, and doing that ten times a second
+    // leaves a paused film black, because no new frame arrives to repair it.
+    if (!same(bounds, this.applied)) {
+      this.win.setBounds(bounds)
+      this.applied = bounds
+      if (process.env.COCINE_DEBUG && this.slot) {
+        const content = this.parent.getContentBounds()
+        const got = this.win.getBounds()
+        console.log(`[video] slot=${this.slot.width}x${this.slot.height}@${this.slot.x},${this.slot.y}` +
+          ` content=${content.width}x${content.height}@${content.x},${content.y}` +
+          ` asked=${bounds.width}x${bounds.height}@${bounds.x},${bounds.y}` +
+          ` got=${got.width}x${got.height}@${got.x},${got.y}`)
+      }
     }
     if (this.wanted && !this.suspended && !this.win.isVisible()) this.setShown(true)
+    // Read last, so the drift check compares against where the window actually
+    // settled rather than what was asked for.
+    this.observed = this.win.getBounds()
   }
 
   /**
@@ -228,16 +295,18 @@ export class VideoWindow {
     if (!this.win || this.win.isDestroyed()) return
     if (!this.wanted || this.suspended || !this.slot) return
     if (!this.win.isVisible()) { this.reposition(); this.setShown(true); return }
-    // Position as well as visibility. A window manager can move or resize this
-    // window behind our back -- a fullscreen transition is the usual moment --
-    // and a surface sitting somewhere other than over the video area is a black
-    // rectangle that never comes right on its own.
+
+    // Position as well as visibility -- a window manager can move this window
+    // behind our back, and a surface that is not over the video area is a black
+    // rectangle that never comes right on its own. But both comparisons are
+    // made against like: what we asked for last time against what we want now,
+    // and what the window reported then against what it reports now. Comparing
+    // the request with the report instead is what turned this into a reconfigure
+    // storm ten times a second.
     const want = this.targetBounds()
-    const got = this.win.getBounds()
-    if (!want) return
-    const adrift = Math.abs(want.x - got.x) > 1 || Math.abs(want.y - got.y) > 1 ||
-      Math.abs(want.width - got.width) > 1 || Math.abs(want.height - got.height) > 1
-    if (adrift) this.reposition()
+    if (want && !same(want, this.applied)) { this.reposition(); return }
+    const now = this.win.getBounds()
+    if (this.observed && !same(now, this.observed)) this.reposition()
   }
 
   /**

@@ -140,6 +140,18 @@ export function App (): ReactElement {
   const [splash, setSplash] = useState(true)
   const [armed, setArmed] = useState(false)
   const [library, setLibrary] = useState<Library | null>(null)
+  /**
+   * What is being typed into the fullscreen chat, or null when it is closed.
+   *
+   * The field is here rather than in the overlay window because the overlay is
+   * reparented into this window on X11, so the window manager will not give it
+   * the keyboard -- it opened a composer that looked ready and dropped every
+   * keystroke. This window has the keyboard already, and in fullscreen its own
+   * content is behind the video, so the field is invisible here and is drawn by
+   * the overlay instead.
+   */
+  const [fsDraft, setFsDraft] = useState<string | null>(null)
+  const fsInputRef = useRef<HTMLInputElement>(null)
   const slotRef = useRef<HTMLDivElement>(null)
   const chatRef = useRef<HTMLDivElement>(null)
 
@@ -269,11 +281,24 @@ export function App (): ReactElement {
       // Fullscreen has no visible composer until it is asked for; this is how
       // it is asked for. The overlay takes the keyboard and hands it back on
       // Escape, so the shortcuts here are only dead while someone is typing.
-      else if (e.key === 'Enter' && s?.fullscreen && s?.connected) { e.preventDefault(); void window.cocine.focusChat() }
+      else if (e.key === 'Enter' && s?.fullscreen && s?.connected) { e.preventDefault(); setFsDraft('') }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [s?.positionSec, s?.mediaName, s?.fullscreen, s?.connected, togglePlay, guard])
+
+  // Whatever is in the field, the overlay draws. Sent on every change because
+  // the point of the thing is watching your own line appear over the film.
+  useEffect(() => { void window.cocine.setOverlayDraft?.(fsDraft) }, [fsDraft])
+  // Leaving fullscreen takes the overlay away with it, so the field goes too.
+  useEffect(() => { if (!s?.fullscreen) setFsDraft(null) }, [s?.fullscreen])
+  useEffect(() => { if (fsDraft !== null) fsInputRef.current?.focus() }, [fsDraft !== null])
+
+  const sendFullscreen = (): void => {
+    const text = (fsDraft ?? '').trim()
+    setFsDraft(null)
+    if (text) void guard(() => window.cocine.sendChat(text))
+  }
 
   const onDrop = (e: ReactDragEvent): void => {
     e.preventDefault()
@@ -312,6 +337,30 @@ export function App (): ReactElement {
       onDragLeave={() => setDropping(false)}
       onDrop={onDrop}
     >
+      {s?.fullscreen && fsDraft !== null && (
+        // Deliberately invisible: in fullscreen this window's content is behind
+        // the video surface, and the overlay is what the viewer actually sees.
+        // It has to be a real focused input all the same, so that composition,
+        // dead keys and selection behave the way a text field should.
+        <input
+          ref={fsInputRef}
+          className="fscompose"
+          value={fsDraft}
+          maxLength={800}
+          aria-label="Message the room"
+          data-testid="fscompose"
+          onChange={e => setFsDraft(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') { e.preventDefault(); sendFullscreen() }
+            if (e.key === 'Escape') { e.preventDefault(); setFsDraft(null) }
+          }}
+          // Keep the field: in fullscreen there is nothing else here to click,
+          // so losing focus means something took it by accident. Guarded on the
+          // window still being focused, or switching away from the application
+          // would turn into a fight over the keyboard.
+          onBlur={() => { if (fsDraft !== null && document.hasFocus()) fsInputRef.current?.focus() }}
+        />
+      )}
       <header className="topbar" data-testid="header">
         <span className="brand">
           <svg className="mark" viewBox="0 0 40 40" aria-hidden="true">

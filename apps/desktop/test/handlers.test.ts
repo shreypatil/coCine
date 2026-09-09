@@ -499,8 +499,8 @@ describe('room:connect', () => {
 
 const overlay = (): {
   setSlot: ReturnType<typeof vi.fn>; setShape: ReturnType<typeof vi.fn>
-  focus: ReturnType<typeof vi.fn>; releaseFocus: ReturnType<typeof vi.fn>
-} => ({ setSlot: vi.fn(), setShape: vi.fn(), focus: vi.fn(), releaseFocus: vi.fn() })
+  send: ReturnType<typeof vi.fn>
+} => ({ setSlot: vi.fn(), setShape: vi.fn(), send: vi.fn() })
 
 /** A room this client hosts, which is what the settings below all require. */
 const hosted = (over: Partial<RoomLike> = {}): RoomLike => ({
@@ -533,13 +533,21 @@ describe('the fullscreen chat overlay', () => {
     expect(o.setShape).toHaveBeenCalledWith([])
   })
 
-  it('hands the keyboard over and back', async () => {
+  it('carries what the main window is typing over to be drawn', async () => {
+    // The overlay cannot hold the text field itself: it is reparented into the
+    // main window, so the window manager will not focus it, and the composer
+    // that used to live there dropped every keystroke while looking ready.
     const o = overlay()
     const { h } = build({ getOverlay: () => o })
-    await call(h, 'overlay:focus')
-    await call(h, 'overlay:releaseFocus')
-    expect(o.focus).toHaveBeenCalledOnce()
-    expect(o.releaseFocus).toHaveBeenCalledOnce()
+    await call(h, 'overlay:draft', 'half a sen')
+    expect(o.send).toHaveBeenCalledWith('overlay:draft', 'half a sen')
+  })
+
+  it('closes the drawn composer when the field goes away', async () => {
+    const o = overlay()
+    const { h } = build({ getOverlay: () => o })
+    await call(h, 'overlay:draft', null)
+    expect(o.send).toHaveBeenCalledWith('overlay:draft', null)
   })
 })
 
