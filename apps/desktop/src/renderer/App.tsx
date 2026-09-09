@@ -5,6 +5,10 @@ import { FilmPicker } from './FilmPicker.js'
 import { hhmm, initials, tint } from './format.js'
 import { attachVideoEngine } from './videoEngine.js'
 import { StageChat } from './StageChat.js'
+import {
+  SubtitleLayer, SubtitleControls, useSubtitles, DEFAULT_SUBTITLE_STYLE, type SubtitleStyle
+} from './Subtitles.js'
+import type { SubtitleFile } from './types.js'
 import type { Library, State, StoredFilm } from './types.js'
 import './types.js'
 
@@ -142,6 +146,10 @@ export function App (): ReactElement {
   const [splash, setSplash] = useState(true)
   const [armed, setArmed] = useState(false)
   const [library, setLibrary] = useState<Library | null>(null)
+  /** Subtitle files beside the film, which of them is on, and how it looks. */
+  const [subFiles, setSubFiles] = useState<SubtitleFile[]>([])
+  const [subPath, setSubPath] = useState<string | null>(null)
+  const [subStyle, setSubStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE)
   /**
    * What is being typed into the fullscreen chat, or null when it is closed.
    *
@@ -352,6 +360,22 @@ export function App (): ReactElement {
   }, [seekable])
   clampRef.current = clampSeek
 
+  const findSubtitles = useCallback(() => {
+    void window.cocine.subtitlesBeside?.()
+      .then(r => setSubFiles(r.files))
+      .catch(() => setSubFiles([]))
+  }, [])
+
+  // A new film means new subtitles, and the old choice is meaningless against
+  // it -- keeping it would draw one film's dialogue over another's picture.
+  useEffect(() => {
+    setSubPath(null)
+    if (!s?.mediaName) { setSubFiles([]); return }
+    findSubtitles()
+  }, [s?.mediaName, findSubtitles])
+
+  const { cues: subCues, error: subError } = useSubtitles(subPath)
+
   const onDrop = (e: ReactDragEvent): void => {
     e.preventDefault()
     setDropping(false)
@@ -524,6 +548,9 @@ export function App (): ReactElement {
           {/* Under the mpv engine this box stays empty and a native surface is
               positioned over it. Under the <video> engine the film is here, in
               this window, with everything else drawn above it in ordinary DOM. */}
+          {s?.playerEngine === 'html' && subPath && (
+            <SubtitleLayer cues={subCues} positionSec={s?.positionSec ?? 0} style={subStyle} />
+          )}
           {s?.playerEngine === 'html' && s?.fullscreen && s?.connected && (
             <StageChat
               messages={s.messages ?? []}
@@ -874,6 +901,20 @@ export function App (): ReactElement {
             </>
           )}
           {view === 'room' && (
+            <>
+            {/* Subtitles can only be drawn where the film is in this window;
+                mpv has nothing that can be put above its picture. */}
+            {s?.playerEngine === 'html' && s?.mediaName && (
+              <SubtitleControls
+                files={subFiles}
+                activePath={subPath}
+                style={subStyle}
+                onPick={setSubPath}
+                onStyle={setSubStyle}
+                onRefresh={findSubtitles}
+              />
+            )}
+            {subError && <p className="quiet small vwarn" data-testid="subserror">{subError}</p>}
             <div className="sect film">
               <h4>Film</h4>
                 {s?.connected && s.isHost && s.originAvailable && (
@@ -987,6 +1028,7 @@ export function App (): ReactElement {
                 </>
               )}
             </div>
+            </>
           )}
         </aside>
       </main>

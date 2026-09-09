@@ -1,4 +1,6 @@
-import { basename, dirname } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import { readdir, readFile } from 'node:fs/promises'
+import { isSubtitleFile, isUnsupportedSubtitleFile } from '@cocine/player'
 import { listDirectory, placesFor, startDirectory, type Listing } from './browse.js'
 import type { ChatMessage, Member } from '@cocine/protocol'
 import type { Identity } from './identity.js'
@@ -244,6 +246,48 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     'overlay:shape': (rects: Rect[]) => {
       deps.getOverlay?.()?.setShape(Array.isArray(rects) ? rects : [])
       return { ok: true }
+    },
+
+    /**
+     * Subtitle files sitting beside the film (phase B1.4).
+     *
+     * Looked for rather than asked for, because that is where they always are:
+     * a film downloaded with subtitles has them in the same folder, usually
+     * sharing its name. Anything matching the film's own name is offered first,
+     * since a folder can hold subtitles for a whole season.
+     *
+     * Formats that need libass are listed but marked, so the interface can say
+     * "this needs a renderer coCine does not have yet" rather than silently
+     * not offering a file the person can plainly see.
+     */
+    'subs:beside': async () => {
+      const film = deps.getMediaPath()
+      if (!film) return { files: [] }
+      const dir = dirname(film)
+      const stem = basename(film).replace(/\.[^.]+$/, '').toLowerCase()
+      let names: string[] = []
+      try { names = await readdir(dir) } catch { return { files: [] } }
+      const files = names
+        .filter(n => isSubtitleFile(n) || isUnsupportedSubtitleFile(n))
+        .map(n => ({
+          name: n,
+          path: join(dir, n),
+          /** Whether this can be drawn, or only named. */
+          supported: isSubtitleFile(n),
+          /** Subtitles for *this* film rather than another in the folder. */
+          matches: n.toLowerCase().startsWith(stem)
+        }))
+        // The film's own subtitles first, then everything else alphabetically.
+        .sort((a, b) => Number(b.matches) - Number(a.matches) || a.name.localeCompare(b.name))
+      return { files }
+    },
+
+    /** The text of one subtitle file, parsed in the renderer that draws it. */
+    'subs:read': async (path: string) => {
+      if (!isSubtitleFile(path)) throw new Error('that is not a subtitle format coCine can draw')
+      // Subtitle files are small; a whole-file read is simpler than streaming
+      // and there is nothing to gain from being clever about it.
+      return { text: await readFile(path, 'utf8') }
     },
 
     /**

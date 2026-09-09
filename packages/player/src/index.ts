@@ -3,6 +3,10 @@ export { EmbeddedMpv, nativeHandleToWid } from './embedded-mpv.js'
 export { MpvIpc } from './mpv-ipc.js'
 export { HtmlVideoPlayer, shutdownVideoHost } from './html-video.js'
 export type { HtmlVideoOptions } from './html-video.js'
+export {
+  parseSubtitles, parseTimestamp, cuesAt, isSubtitleFile, isUnsupportedSubtitleFile
+} from './subtitles.js'
+export type { Cue } from './subtitles.js'
 export { ensureTestVideo } from './fixture.js'
 export type { FixtureOptions } from './fixture.js'
 export type { PlayerController, PlayerOptions } from './types.js'

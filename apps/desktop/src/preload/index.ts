@@ -75,6 +75,9 @@ const api = {
    *  awaited and a slow main process cannot stall the frame callback. */
   sendPlayerState: (s: unknown) => ipcRenderer.send('player:state', s),
   sendPlayerEvent: (e: { kind: string; message?: string }) => ipcRenderer.send('player:event', e),
+  /** Subtitle files sitting beside the film, and the text of one. */
+  subtitlesBeside: () => ipcRenderer.invoke('subs:beside'),
+  readSubtitles: (path: string) => ipcRenderer.invoke('subs:read', path),
   sendSignal: (to: string, payload: unknown) => ipcRenderer.invoke('voice:signal', to, payload),
   setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => ipcRenderer.invoke('voice:state', v),
   moderateVoice: (memberId: string, action: 'mute' | 'unmute') => ipcRenderer.invoke('voice:moderate', memberId, action),

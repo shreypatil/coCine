@@ -48,6 +48,15 @@ export interface TransferStatus {
   seekableMap?: string
 }
 
+export interface SubtitleFile {
+  name: string
+  path: string
+  /** Whether coCine can draw it, or only name it. */
+  supported: boolean
+  /** Whether it is named after this film rather than another in the folder. */
+  matches: boolean
+}
+
 export interface State {
   /** Which player is running. 'html' renders a <video> in this window; 'mpv'
    *  keeps the native surface in a child window. Both are supported while the
@@ -152,6 +161,9 @@ declare global {
       setOverlayDraft: (text: string | null) => Promise<unknown>
       /** Overlay only: what the main window is typing, for it to draw. */
       onOverlayDraft: (cb: (text: string | null) => void) => () => void
+      /** Subtitle files beside the film, and the text of one of them. */
+      subtitlesBeside?: () => Promise<{ files: SubtitleFile[] }>
+      readSubtitles?: (path: string) => Promise<{ text: string }>
       /** The <video> player: commands from the main process, and the state
        *  and events it pushes back. Present only under COCINE_PLAYER=html. */
       onPlayerCommand?: (cb: (c: { id: number; cmd: string; arg?: unknown }) => void) => () => void

@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
 import { execFileSync } from 'node:child_process'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { writeFileSync, rmSync } from 'node:fs'
 import { ensureTestVideo, ExternalMpv } from '@cocine/player'
 import { RoomClient } from '@cocine/client'
 import { SignallingServer } from '../../server/src/server.js'
@@ -239,5 +240,111 @@ describe('chat over the film, in fullscreen, with no second window', () => {
     await app.evaluate(async ({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0]?.setFullScreen(false)
     })
+  }, 60_000)
+})
+
+describe('subtitles drawn over the film', () => {
+  /**
+   * Phase B1.4. Cues are drawn as DOM rather than handed to a `<track>`,
+   * because `::cue` cannot move a cue and the requirement asks for position
+   * control. That is only possible because the film is in this window; under
+   * the mpv engine there is nothing that can be put above its picture.
+   */
+  // Computed inside beforeAll, not in the describe body: describe bodies run
+  // during collection, before any beforeAll, so `film` is still empty there --
+  // which silently wrote the subtitles to the repository root instead of beside
+  // the film, and the application was right to find nothing.
+  let srt = ''
+
+  beforeAll(() => {
+    srt = join(dirname(film), 'film-30s-240p.srt')
+    writeFileSync(srt, [
+      '1', '00:00:01,000 --> 00:00:29,000', 'A line of dialogue.', ''
+    ].join('\n'))
+  })
+  afterAll(() => { try { if (srt) rmSync(srt, { force: true }) } catch { /* gone */ } })
+
+  it('finds a subtitle file sitting beside the film', async () => {
+    // Looked for rather than asked for: that is where they always are.
+    await page.click('[data-testid="subsrefresh"]')
+    await expect.poll(async () => page.evaluate(() =>
+      Array.from(document.querySelectorAll('[data-testid="substrack"] option'))
+        .map(o => o.textContent ?? '').join(' ')
+    ), { timeout: 20_000 }).toContain('.srt')
+  }, 60_000)
+
+  it('draws the cue that is on screen, and nothing when none is', async () => {
+    await page.selectOption('[data-testid="substrack"]', { label: 'film-30s-240p.srt' })
+    guest.requestSeek(10)
+    guest.requestPlay(10)
+    await expect.poll(async () => page.evaluate(() =>
+      document.querySelector('[data-testid="subtitles"]')?.textContent ?? ''
+    ), { timeout: 30_000 }).toContain('A line of dialogue')
+
+    // Before the first cue there should be nothing at all -- an empty box would
+    // still dim the film underneath it.
+    guest.requestPause(0.2)
+    guest.requestSeek(0.2)
+    await expect.poll(
+      () => page.locator('[data-testid="subtitles"]').count(),
+      { timeout: 30_000 }
+    ).toBe(0)
+  }, 90_000)
+
+  it('moves and resizes them, which is what the requirement asked for', async () => {
+    guest.requestSeek(10)
+    await page.waitForSelector('[data-testid="subtitles"]', { timeout: 30_000 })
+
+    const before = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="subtitles"]') as HTMLElement
+      return { bottom: el.style.bottom, size: el.style.fontSize }
+    })
+
+    await page.locator('[data-testid="subsheight"]').fill('30')
+    await page.locator('[data-testid="subssize"]').fill('7')
+
+    const after = await page.evaluate(() => {
+      const el = document.querySelector('[data-testid="subtitles"]') as HTMLElement
+      return { bottom: el.style.bottom, size: el.style.fontSize }
+    })
+    expect(after.bottom).not.toBe(before.bottom)
+    expect(after.size).not.toBe(before.size)
+    expect(after.bottom).toBe('30%')
+  }, 90_000)
+
+  it('shifts them in time, for subtitles cut against another release', async () => {
+    // The control everyone reaches for first, for subtitles timed against a
+    // different release. Paused first so the assertions are about the offset
+    // rather than about where playback happened to reach.
+    guest.requestPause(10)
+    guest.requestSeek(10)
+    await page.locator('[data-testid="subsoffset"]').fill('0')
+    await expect.poll(
+      () => page.locator('[data-testid="subtitles"]').count(),
+      { timeout: 20_000 }
+    ).toBe(1)
+
+    // The cue covers 1s to 29s. Delaying by ten seconds means that at ten
+    // seconds in, the film is showing what the file timed for zero -- before
+    // the first line.
+    await page.locator('[data-testid="subsoffset"]').fill('10')
+    await expect.poll(
+      () => page.locator('[data-testid="subtitles"]').count(),
+      { timeout: 20_000 }
+    ).toBe(0)
+
+    await page.locator('[data-testid="subsoffset"]').fill('0')
+    await expect.poll(
+      () => page.locator('[data-testid="subtitles"]').count(),
+      { timeout: 20_000 }
+    ).toBe(1)
+  }, 90_000)
+
+  it('turns them off again', async () => {
+    await page.selectOption('[data-testid="substrack"]', '')
+    await expect.poll(
+      () => page.locator('[data-testid="subtitles"]').count(),
+      { timeout: 20_000 }
+    ).toBe(0)
   }, 60_000)
 })
