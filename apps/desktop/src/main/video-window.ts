@@ -15,8 +15,20 @@ export interface Rect { x: number; y: number; width: number; height: number }
  */
 export interface Slot extends Rect { viewport?: { width: number; height: number } }
 
-/** Two rectangles, to the nearest pixel. */
-function same (a: Rect | null, b: Rect | null): boolean {
+/**
+ * Two rectangles, to the nearest pixel.
+ *
+ * Exported for testing, and worth testing on its own: it is the whole of the
+ * fix for a black picture on a paused film. Every geometry call reconfigures a
+ * native window mpv is drawing into, so a comparison that is wrong in the
+ * "different" direction reconfigures ten times a second, and on a paused film
+ * no new frame ever arrives to repair the damage.
+ *
+ * A null on either side is deliberately *not* equal. Null means "no geometry
+ * has been applied", which is the state after the surface is hidden, and there
+ * the window must be placed again rather than assumed to be where it was.
+ */
+export function same (a: Rect | null, b: Rect | null): boolean {
   if (!a || !b) return false
   return Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1 &&
     Math.abs(a.width - b.width) <= 1 && Math.abs(a.height - b.height) <= 1

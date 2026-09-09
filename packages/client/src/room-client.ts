@@ -40,8 +40,22 @@ export class RoomClient extends EventEmitter {
   members: Member[] = []
   memberId = ''
   code = ''
-  private pendingOriginUrl = new Map<'upload' | 'download',
-    { resolve: (v: { url: string; key: string; expiresAtMs: number }) => void; reject: (e: Error) => void }>()
+  /**
+   * Callers waiting on a signed URL, oldest first, per purpose.
+   *
+   * A queue rather than a single slot, because a single slot silently answered
+   * the wrong caller. Two requests in quick succession -- picking a film and
+   * then changing your mind -- both went to the server, and the *first* reply
+   * resolved the *second* caller's promise. That caller then uploaded to the
+   * previous film's key, so the object the room announced and the bytes
+   * actually written to it were for different films.
+   *
+   * Matching by arrival order is correct here: one socket preserves order and
+   * the server answers each request in turn.
+   */
+  private pendingOriginUrl = new Map<'upload' | 'download', Array<
+    { resolve: (v: { url: string; key: string; expiresAtMs: number }) => void; reject: (e: Error) => void }
+  >>()
   media: Media | null = null
   phase: RoomPhase = 'lobby'
   waitForLatecomers = true
@@ -140,10 +154,11 @@ export class RoomClient extends EventEmitter {
         this.clock.addExchange(msg.c1, msg.s1, msg.s2, Date.now())
         break
         case 'origin.url': {
-          // Signed URLs are requested one at a time per purpose, so a single
-          // pending resolver each is enough and nothing can be mismatched.
-          const pending = this.pendingOriginUrl.get(msg.purpose)
-          if (pending) { this.pendingOriginUrl.delete(msg.purpose); pending.resolve(msg) }
+          // The oldest outstanding request for this purpose, which is the one
+          // this reply answers.
+          const queue = this.pendingOriginUrl.get(msg.purpose)
+          const pending = queue?.shift()
+          if (pending) pending.resolve(msg)
           break
         }
       case 'welcome':
@@ -286,17 +301,22 @@ export class RoomClient extends EventEmitter {
     extra: { contentId?: string; name?: string; bytes?: number } = {},
     timeoutMs = 15_000
   ): Promise<{ url: string; key: string; expiresAtMs: number }> {
-    const existing = this.pendingOriginUrl.get(purpose)
-    if (existing) existing.reject(new Error('superseded by a newer request'))
+    const queue = this.pendingOriginUrl.get(purpose) ?? []
+    this.pendingOriginUrl.set(purpose, queue)
     return new Promise((resolve, reject) => {
+      const entry = {
+        resolve: (v: { url: string; key: string; expiresAtMs: number }) => { clearTimeout(timer); resolve(v) },
+        reject: (e: Error) => { clearTimeout(timer); reject(e) }
+      }
+      // A timeout removes only its own entry. Clearing the whole queue would
+      // strand every other caller, and worse, shift the remaining replies onto
+      // the wrong promises.
       const timer = setTimeout(() => {
-        this.pendingOriginUrl.delete(purpose)
+        const at = queue.indexOf(entry)
+        if (at >= 0) queue.splice(at, 1)
         reject(new Error(`the server did not supply a ${purpose} URL within ${timeoutMs / 1000}s`))
       }, timeoutMs)
-      this.pendingOriginUrl.set(purpose, {
-        resolve: v => { clearTimeout(timer); resolve(v) },
-        reject: e => { clearTimeout(timer); reject(e) }
-      })
+      queue.push(entry)
       this.send({ t: 'origin.request', purpose, ...extra })
     })
   }

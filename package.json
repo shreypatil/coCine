@@ -9,6 +9,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "coverage": "vitest run --coverage.enabled --coverage.provider=v8 --coverage.reporter=text --coverage.include='packages/*/src/**' --coverage.include='apps/*/src/**'",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p apps/desktop/tsconfig.node.json --noEmit && tsc -p apps/desktop/tsconfig.web.json --noEmit",
     "phase0": "tsx packages/player/scripts/verify.ts",
     "phase1": "tsx apps/server/scripts/drift-test.ts",
@@ -32,6 +33,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^5.0.0",
     "electron": "44.2.0",
     "electron-builder": "^26.15.3",
     "electron-updater": "^6.8.9",
