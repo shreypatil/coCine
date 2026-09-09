@@ -19,6 +19,7 @@
 import { createSocket, type Socket } from 'node:dgram'
 import { randomBytes } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
+import { installWebRtc, isWebRtcInstalled, probeIce, DEFAULT_ICE_SERVERS } from '@cocine/client'
 
 const MAGIC = 0x2112a442
 const TIMEOUT_MS = 4000
@@ -26,6 +27,25 @@ const TIMEOUT_MS = 4000
 /** Different operators on purpose: one provider's anycast could hide a
  *  per-destination mapping that a genuinely different path reveals. */
 const SERVERS_V4 = [
+  { host: 'stun.l.google.com', port: 19302 },
+  { host: 'stun.cloudflare.com', port: 3478 },
+  { host: 'stun.nextcloud.com', port: 443 }
+]
+
+/**
+ * The same idea for IPv6, and a separate list rather than a reuse of the one
+ * above.
+ *
+ * These happen to be the same three hosts, because all three publish AAAA
+ * records -- but that is a fact about those operators today, not a property of
+ * the list. Probing IPv6 through a constant named `SERVERS_V4` meant the check
+ * silently depended on it: an operator dropping their AAAA record, or a swap
+ * for a v4-only server, would have turned the IPv6 section into "configured but
+ * no STUN reply" and read as a fault on this network rather than in this
+ * script. Naming it makes the requirement -- every host here must be
+ * dual-stack -- something a future edit has to notice.
+ */
+const SERVERS_V6 = [
   { host: 'stun.l.google.com', port: 19302 },
   { host: 'stun.cloudflare.com', port: 3478 },
   { host: 'stun.nextcloud.com', port: 443 }
@@ -150,7 +170,7 @@ async function main (): Promise<void> {
   const local = localAddresses()
 
   const v4 = await probe('udp4', SERVERS_V4)
-  const v6 = local.v6.length > 0 ? await probe('udp6', SERVERS_V4) : []
+  const v6 = local.v6.length > 0 ? await probe('udp6', SERVERS_V6) : []
 
   // ---- IPv4 ----
   console.log('  IPv4')
@@ -219,9 +239,50 @@ async function main (): Promise<void> {
     }
   }
 
+  // ---- what the application's own stack gathers ----
+  //
+  // Everything above is raw STUN from a plain UDP socket, which proves what the
+  // *network* will do. It does not prove what coCine will do with it: the two
+  // are only connected if the WebRTC stack actually gathers a candidate for
+  // each family and offers it to peers. That step has its own ways of failing
+  // -- an addon built without IPv6, a bind pinned to one local address -- and
+  // each of them produces a valid IPv4-only offer rather than an error.
+  console.log('\n  What coCine gathers')
+  let iceV6 = false
+  installWebRtc()
+  if (!isWebRtcInstalled()) {
+    console.log('    WebRTC is unavailable on this machine, so nothing can be gathered.')
+    console.log('    The film transfer will not work at all here; voice and chat still will.')
+  } else {
+    try {
+      const ice = await probeIce({ iceServers: DEFAULT_ICE_SERVERS, timeoutMs: 10_000 })
+      iceV6 = ice.globalV6
+      const kinds = (f: 'IPv4' | 'IPv6'): string => {
+        const types = [...new Set(ice.candidates.filter(c => c.family === f).map(c => c.type))]
+        return types.length > 0 ? types.join(', ') : 'none'
+      }
+      console.log(`    IPv4 candidates: ${kinds('IPv4')}`)
+      console.log(`    IPv6 candidates: ${kinds('IPv6')}${ice.globalV6 ? '' : ' (none globally routable)'}`)
+      if (ice.globalV6 && !ice.reflexiveV6) {
+        console.log('    A global IPv6 address is offered, but no STUN server confirmed it over')
+        console.log('    IPv6 -- peers will still try it, and it is usually right.')
+      }
+      if (!ice.v6PreferredOverV4) {
+        console.log('    Unexpected: IPv6 is ranked below IPv4, so the better path is only tried')
+        console.log('    after the worse one fails. Worth reporting.')
+      }
+      if (local.v6.length > 0 && !ice.globalV6) {
+        console.log('    Unexpected: this machine has a global IPv6 address that the WebRTC stack')
+        console.log('    did not offer. That address will go unused. Worth reporting.')
+      }
+    } catch (err) {
+      console.log(`    Could not gather: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   // ---- what it means for a session ----
   console.log('\n  For a coCine session')
-  const v6Works = v6.length > 0
+  const v6Works = v6.length > 0 && iceV6
   const v4Punchable = v4.length > 1 && new Set(v4.map(r => r.mapped.port)).size === 1
   if (v6Works) {
     console.log('    Good, if the other person also has IPv6. Compare this output with theirs;')

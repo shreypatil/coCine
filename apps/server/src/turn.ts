@@ -30,8 +30,20 @@ export interface IceServer {
 
 export const DEFAULT_TURN_TTL_SECONDS = 12 * 3600
 
-/** Public STUN, which needs no credentials and costs nothing to use. */
-export const PUBLIC_STUN: IceServer = { urls: ['stun:stun.l.google.com:19302'] }
+/**
+ * Public STUN, which needs no credentials and costs nothing to use.
+ *
+ * Two operators on purpose. A STUN server can only report an address it can
+ * itself be reached over, so the IPv6 server-reflexive candidate depends on the
+ * STUN hostname publishing a AAAA record and that path routing from the
+ * client. Relying on one provider for that means a broken IPv6 route on their
+ * side does not degrade connectivity, it deletes the IPv6 path -- which for a
+ * client behind carrier-grade NAT is the only path that was going to work.
+ * Both of these are dual-stack and unrelated to each other.
+ */
+export const PUBLIC_STUN: IceServer = {
+  urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478']
+}
 
 export function mintTurnCredential (
   cfg: TurnConfig,

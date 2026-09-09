@@ -53,5 +53,22 @@ export function isWebRtcInstalled (): boolean {
   return typeof (g.WRTC as { RTCPeerConnection?: unknown } | undefined)?.RTCPeerConnection === 'function'
 }
 
-/** Public STUN carries phase 4; coturn arrives in phase 6. */
-export const DEFAULT_ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]
+/**
+ * Public STUN carries phase 4; coturn arrives in phase 6.
+ *
+ * Two operators, not one, and the reason is address families rather than
+ * uptime. A STUN server teaches a peer its own external address, and it can
+ * only teach it one it can be reached over -- so the server-reflexive IPv6
+ * candidate exists only if the STUN hostname publishes a AAAA record *and* that
+ * address is actually routable from here. With a single provider, an outage or
+ * a broken IPv6 anycast route on their side does not degrade the connection, it
+ * removes the IPv6 path entirely and silently, leaving peers to fall back to an
+ * IPv4 side that on a carrier-grade-NAT line may not work at all.
+ *
+ * Both of these publish A and AAAA records and are run by unrelated operators,
+ * so no single failure can take IPv6 away.
+ */
+export const DEFAULT_ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' }
+]

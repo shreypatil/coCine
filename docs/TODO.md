@@ -355,17 +355,56 @@ The end-to-end relay test therefore uses static credentials. **When you deploy a
 real coturn, confirm the minted credentials are accepted:** `docker logs` should
 show `ALLOCATE processed, success` rather than `401: Unauthorized`.
 
-### IPv6 is untested, and probably matters more than "loose end" suggests
+### IPv6 — covered on one machine now; the pairing still needs two
 
-ICE gathers and prioritises IPv6 on its own and nothing in the code suppresses
-it, but no test asserts an IPv6 path is actually used where one exists, and a
-loopback test environment cannot produce that situation.
+Previously recorded here as untested, on the reasoning that a loopback
+environment cannot produce the situation. That turned out to be true only of the
+last step. Everything up to "do two IPv6 peers connect" is a property of *this*
+machine and is now asserted on it.
 
-Worth raising in priority: `npm run nat-check` shows this machine has native
-IPv6 with no NAT on that path, and Jio is one of the largest IPv6 deployments
-anywhere. For a user base on Indian ISPs, IPv6 is plausibly the single biggest
-determinant of whether peer-to-peer works at all — and it is the part with no
-coverage.
+What the suite holds. `packages/client/test/ice.test.ts` gathers candidates from
+a real peer connection on this machine's real interfaces and asserts that its
+global IPv6 address is offered to peers, that IPv4 is offered alongside it, and
+that IPv6 is ranked above IPv4 so the better path is tried first. The
+address-family tests gather with no ICE servers at all, so they need no network
+and cannot flake on somebody else's STUN server, and they skip where there is no
+global IPv6 to offer — most CI runners — because there its absence is correct.
+`apps/server/test/dual-stack.test.ts` asserts the signalling server answers both
+families on one port, including a real room created over IPv6 and joined over
+IPv4. Verified to discriminate: an IPv4-only bind fails three of its four tests.
+
+What changed in the code, rather than around it:
+
+- **The server binds `::` with `ipv6Only: false` explicitly**, falling back to
+  IPv4 if that fails. It was dual-stack before by inheriting Node's default,
+  which a host with `net.ipv6.bindv6only=1` silently inverts into an IPv6-only
+  listener that refuses every IPv4 client while looking healthy.
+- **Two STUN operators instead of one.** A STUN server can only report an
+  address it is reachable over, so a single provider's broken IPv6 route does
+  not degrade the connection, it deletes the IPv6 path — and for a peer behind
+  carrier-grade NAT that was the only path that would have worked.
+- **`nat-check` reports what the application's own stack gathers**, not only
+  what raw STUN sees. The two were never connected before: the network can do
+  IPv6 perfectly while the WebRTC stack offers an IPv4-only answer, and that
+  failure produces no error anywhere.
+- **`gatherCandidates` waits for end-of-candidates, not for
+  `iceGatheringState`.** Measured against libdatachannel: the state flips to
+  `complete` and the server-reflexive candidate arrives immediately *after*, in
+  the same millisecond. The first version of this module resolved on the state
+  and so reported a machine with working STUN as having none.
+
+One measured finding worth keeping: **no IPv6 server-reflexive candidate is
+gathered, and that is correct.** A global IPv6 host candidate already is the
+address a peer would send to, so there is nothing for STUN to discover and the
+stack does not ask — confirmed here, where raw STUN over IPv6 answers fine and
+the stack still gathers an IPv4 srflx and no IPv6 one.
+
+**Still needs two machines**, and it is the same list as phase 6: whether two
+peers that both have IPv6 actually connect over it, and whether a pairing with
+IPv6 on one side and CGNAT-only IPv4 on the other falls back correctly. Jio is
+one of the largest IPv6 deployments anywhere, so for a user base on Indian ISPs
+this remains plausibly the single biggest determinant of whether peer-to-peer
+works at all.
 
 ### No runtime test that voice ICE reaches the peer connection
 

@@ -97,13 +97,7 @@ export class SignallingServer {
     // Binding can fail -- the port is taken, or privileged. Without this the
     // failure surfaces as an unhandled 'error' event and a bare stack trace,
     // and the caller's promise never settles either way.
-    await new Promise<void>((resolve, reject) => {
-      const onError = (err: Error): void => { this.http!.off('listening', onListening); reject(err) }
-      const onListening = (): void => { this.http!.off('error', onError); resolve() }
-      this.http!.once('error', onError)
-      this.http!.once('listening', onListening)
-      this.http!.listen(this.opts.port ?? 0)
-    })
+    await this.bind(this.opts.port ?? 0)
     // Transfer status is derived from reports that arrive once a second, so
     // broadcasting on the same cadence is as fresh as it can meaningfully be.
     this.statusTimer = setInterval(() => this.broadcastTransferStatus(), 1000)
@@ -115,6 +109,43 @@ export class SignallingServer {
     this.port = port
     this.trackerUrl = `ws://127.0.0.1:${port}${ANNOUNCE_PATH}`
     return port
+  }
+
+  /**
+   * Bind the listener, accepting both address families wherever the host has
+   * them.
+   *
+   * `listen(port)` with no host looked like it already did this, and mostly it
+   * does: Node binds the IPv6 wildcard and the kernel maps IPv4 connections
+   * onto it. But that behaviour is the *kernel's* default, not a guarantee this
+   * code was making -- a host with `net.ipv6.bindv6only=1` set turns the same
+   * call into an IPv6-only listener, and every IPv4 client is refused by a
+   * server that appears to be running perfectly. Passing `ipv6Only: false`
+   * explicitly states the requirement rather than inheriting it.
+   *
+   * The fallback matters as much as the bind. A host with IPv6 disabled
+   * entirely cannot bind `::` at all, and there the right answer is an IPv4
+   * listener rather than a server that refuses to start -- so that failure is
+   * caught and retried on the wildcard, and only a second failure is reported.
+   */
+  private async bind (port: number): Promise<void> {
+    const attempt = (target: { port: number; host?: string; ipv6Only?: boolean }): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        const onError = (err: Error): void => { this.http!.off('listening', onListening); reject(err) }
+        const onListening = (): void => { this.http!.off('error', onError); resolve() }
+        this.http!.once('error', onError)
+        this.http!.once('listening', onListening)
+        this.http!.listen(target)
+      })
+
+    try {
+      await attempt({ port, host: '::', ipv6Only: false })
+    } catch (err) {
+      // A port that is genuinely taken will fail the same way on both families,
+      // so retrying costs one extra syscall and reports the clearer error.
+      this.log(`dual-stack bind failed (${(err as Error).message}); falling back to IPv4`)
+      await attempt({ port })
+    }
   }
 
   /**
