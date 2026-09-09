@@ -1049,3 +1049,20 @@ body.overlay-body { background: transparent; }
   color: var(--tx); font: inherit; font-size: 12.5px;
 }
 .sc-input:focus { outline: none; }
+
+
+/* The stretch of film the whole room can reach (B1.3). Everything outside it is
+   dimmed rather than hidden: a seek bar that silently refuses looks broken,
+   while one that shows the reachable span explains why, and makes the room's
+   slowest member a visible property of the room rather than an error. */
+.track.limited::after {
+  content: "";
+  position: absolute; left: 0; right: 0; top: 50%;
+  height: 3px; transform: translateY(-50%);
+  border-radius: 2px;
+  background: linear-gradient(90deg,
+    rgba(245, 104, 127, .22) 0, rgba(245, 104, 127, .22) var(--sa),
+    transparent var(--sa), transparent var(--sb),
+    rgba(245, 104, 127, .22) var(--sb), rgba(245, 104, 127, .22) 100%);
+  pointer-events: none;
+}

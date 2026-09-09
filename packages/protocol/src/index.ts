@@ -317,7 +317,15 @@ export const ServerMessage = z.discriminatedUnion('t', [
     /** Whole copies of the film in the room, counting the sharer. */
     fullCopies: z.number(),
     /** Whether the film survives the sharer disconnecting. */
-    safeForSharerToLeave: z.boolean()
+    safeForSharerToLeave: z.boolean(),
+    /**
+     * Which parts of the film the whole room can play, in the same shape as a
+     * peer's own map: 'f' where everybody holds that sixty-fourth, '0' where
+     * somebody does not. Seeking outside it is refused, so the interface can
+     * draw the reachable stretch rather than leaving a seek bar that silently
+     * declines. Absent when nobody has reported and nothing is known.
+     */
+    seekableMap: PieceMap.optional()
   }),
   z.object({ t: z.literal('playback.schedule'), state: PlaybackState, seq: z.number() }),
     /** A signed URL, good for one method on one key until it expires. */

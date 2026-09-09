@@ -3,6 +3,7 @@ import { SignallingServer } from '../../../apps/server/src/server.js'
 import type { OriginConfig } from '../../../apps/server/src/origin.js'
 import { RoomClient } from '../src/room-client.js'
 import type { PlayerController } from '@cocine/player'
+import type { PeerReport } from '@cocine/protocol'
 
 /**
  * RoomClient's command surface, against a real server.
@@ -365,4 +366,123 @@ describe('what the client knows about itself', () => {
     const client = new RoomClient({ url: 'ws://127.0.0.1:1', code: null, name: 'nobody', player: stubPlayer() })
     expect(client.me()).toBeUndefined()
   })
+})
+
+describe('seeking is limited by what the room can actually play', () => {
+  /**
+   * Phase B1.3. Moving the playhead moves it for everybody, so a seek into a
+   * stretch somebody has not downloaded stalls *them* while the rest watch on.
+   * Enforced by the server rather than only by the interface, because a limit
+   * that lives in the client is a courtesy.
+   *
+   * Reports go through `getReport`, the callback the running application feeds
+   * from its transfer manager, so this drives the same path a real client does.
+   */
+
+  /** A report claiming exactly the buckets `held` covers. */
+  const holding = (held: (i: number) => boolean): PeerReport => ({
+    havePct: 0.5, bufferEndSec: 60, downBps: 1_000, upBps: 1_000, peers: 1,
+    pieces: Array.from({ length: 64 }, (_, i) => (held(i) ? 'f' : '0')).join('')
+  })
+
+  /** A room whose two clients report the holdings given. */
+  async function reporting (
+    hostHeld: (i: number) => boolean, guestHeld: (i: number) => boolean
+  ): Promise<{ host: RoomClient; guest: RoomClient }> {
+    const server = new SignallingServer({ startLeadMs: 50 })
+    const port = await server.listen()
+    cleanups.push(() => server.close())
+
+    const host = new RoomClient({
+      url: `ws://127.0.0.1:${port}`, code: null, name: 'anjali', player: stubPlayer(),
+      getReport: () => holding(hostHeld)
+    })
+    cleanups.push(() => host.close())
+    await host.connect()
+
+    const guest = new RoomClient({
+      url: `ws://127.0.0.1:${port}`, code: host.code, name: 'dev', player: stubPlayer(),
+      getReport: () => holding(guestHeld)
+    })
+    cleanups.push(() => guest.close())
+    await guest.connect()
+
+    await until(() => host.members.length === 2 && guest.members.length === 2, 'both members')
+    // A real source, not a bare name: the server only broadcasts transfer
+    // status for a room that is actually distributing something, which is also
+    // the only situation where seek limits mean anything.
+    host.announceMedia('film.mkv', 3600, {
+      kind: 'p2p', infoHash: 'b'.repeat(40),
+      magnet: `magnet:?xt=urn:btih:${'b'.repeat(40)}`,
+      bytes: 2_000_000_000, pieceLength: 262_144
+    })
+    await until(() => guest.media?.name === 'film.mkv', 'the film')
+    // Wait for both *reports*, not both members. peerStatuses() lists every
+    // member whether or not they have reported, so a length check is satisfied
+    // immediately and the seek limits would be computed from one map instead of
+    // two -- which reads as "everything is seekable" and quietly passes.
+    await until(
+      () => (host.transfer?.perPeer.filter(p => typeof p.pieces === 'string').length ?? 0) === 2,
+      'both peers to report their piece maps', 10_000
+    )
+    return { host, guest }
+  }
+
+  it('refuses a seek past the peer who has the least of the film', async () => {
+    // The host holds all of it; the guest only the first quarter.
+    const { host } = await reporting(() => true, i => i < 16)
+    const errors: string[] = []
+    host.on('server-error', (m: string) => errors.push(m))
+
+    host.requestSeek(3000) // well past the guest's quarter of a 3600s film
+    await until(() => errors.length > 0, 'the server to refuse')
+    expect(errors.join(' ')).toMatch(/Cannot seek there yet/)
+    expect(errors.join(' ')).toContain('dev')
+  }, 30_000)
+
+  it('allows a seek everybody can play', async () => {
+    const { host } = await reporting(() => true, i => i < 16)
+    const schedules: unknown[] = []
+    host.on('schedule', (x: unknown) => schedules.push(x))
+
+    host.requestSeek(300) // inside the first quarter
+    await until(() => schedules.length > 0, 'the seek to be scheduled')
+  }, 30_000)
+
+  it('refuses a late joiner seeking back into a beginning nobody kept', async () => {
+    // A newcomer fetches from the playhead rather than from the start, so the
+    // wait is seconds instead of minutes. The cost is that the opening is
+    // missing until it arrives, and seeking into it would stall the room.
+    const { host } = await reporting(i => i >= 32, i => i >= 32)
+    const errors: string[] = []
+    host.on('server-error', (m: string) => errors.push(m))
+
+    host.requestSeek(60)
+    await until(() => errors.length > 0, 'the server to refuse')
+  }, 30_000)
+
+  it('tells the room which parts it can reach, for the interface to draw', async () => {
+    // A seek bar that merely refuses looks broken; one that shows the reachable
+    // stretch explains itself.
+    const { host } = await reporting(() => true, i => i < 16)
+    await until(() => !!host.transfer?.seekableMap, 'the seekable map', 8000)
+
+    const map = host.transfer!.seekableMap!
+    expect(map).toMatch(/^[0-9a-f]{64}$/)
+    expect(map.slice(0, 16)).toBe('f'.repeat(16))
+    expect(map.slice(16)).toBe('0'.repeat(48))
+  }, 30_000)
+
+  it('does not restrict a room where nobody can report pieces', async () => {
+    // Relay mode fetches byte ranges and has no pieces to report. Treating that
+    // as holding nothing would lock the room out of the whole film.
+    const { host, guest } = await room()
+    host.announceMedia('film.mkv', 3600, null)
+    await until(() => guest.media?.name === 'film.mkv', 'the film')
+
+    const schedules: unknown[] = []
+    host.on('schedule', (x: unknown) => schedules.push(x))
+    host.requestSeek(3000)
+    await until(() => schedules.length > 0, 'the seek to go ahead')
+  }, 30_000)
 })

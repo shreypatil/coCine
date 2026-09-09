@@ -44,6 +44,8 @@ export interface TransferStatus {
   bottleneck: string | null
   fullCopies: number
   safeForSharerToLeave: boolean
+  /** Which parts of the film the whole room can play, as a piece map. */
+  seekableMap?: string
 }
 
 export interface State {

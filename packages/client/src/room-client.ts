@@ -73,6 +73,9 @@ export class RoomClient extends EventEmitter {
     bottleneck: string | null
     fullCopies: number
     safeForSharerToLeave: boolean
+    /** Which parts of the film the whole room can play, as a piece map.
+     *  Undefined until somebody has reported. */
+    seekableMap?: string
   } | null = null
   /** Where the room's swarm announces. Learned from the server, never guessed. */
   trackerUrl = ''
@@ -219,7 +222,9 @@ export class RoomClient extends EventEmitter {
           tMinSec: msg.tMinSec,
           bottleneck: msg.bottleneck,
           fullCopies: msg.fullCopies,
-          safeForSharerToLeave: msg.safeForSharerToLeave
+          safeForSharerToLeave: msg.safeForSharerToLeave,
+          /** Which parts the whole room can play; see readiness.seekableBuckets. */
+          seekableMap: msg.seekableMap
         }
         this.emit('transfer', this.transfer)
         break

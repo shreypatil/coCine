@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react'
 import type { ReactElement, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyEvent } from 'react'
 import { useVoice } from './useVoice.js'
 import { FilmPicker } from './FilmPicker.js'
@@ -264,6 +264,9 @@ export function App (): ReactElement {
   // re-registered on every open and close.
   const pickingRef = useRef(false)
   pickingRef.current = picking
+  /** Read inside the key handler, which must not be re-registered whenever the
+   *  room's holdings change. */
+  const clampRef = useRef<(sec: number) => number>((sec: number) => sec)
 
   const togglePlay = useCallback(() => {
     if (!s?.mediaName) return
@@ -281,8 +284,8 @@ export function App (): ReactElement {
       if (e.key === ' ') { e.preventDefault(); togglePlay() }
       else if (e.key === 'f' || e.key === 'F') { void window.cocine.setFullScreen() }
       else if (e.key === 'Escape' && s?.fullscreen) { void window.cocine.setFullScreen(false) }
-      else if (e.key === 'ArrowRight' && s?.mediaName) { void guard(() => window.cocine.seek(pos + 10)) }
-      else if (e.key === 'ArrowLeft' && s?.mediaName) { void guard(() => window.cocine.seek(Math.max(0, pos - 10))) }
+      else if (e.key === 'ArrowRight' && s?.mediaName) { void guard(() => window.cocine.seek(clampRef.current(pos + 10))) }
+      else if (e.key === 'ArrowLeft' && s?.mediaName) { void guard(() => window.cocine.seek(clampRef.current(pos - 10))) }
       // Fullscreen has no visible composer until it is asked for; this is how
       // it is asked for. The overlay takes the keyboard and hands it back on
       // Escape, so the shortcuts here are only dead while someone is typing.
@@ -318,6 +321,36 @@ export function App (): ReactElement {
     const engine = attachVideoEngine(el)
     return () => engine.stop()
   }, [s?.playerEngine])
+
+  /**
+   * Which part of the film the room can actually reach, from the map the
+   * server broadcasts (see readiness.seekableBuckets). Drawn on the seek bar
+   * and used to clamp the keyboard, so a refused seek is something you can see
+   * coming rather than an error banner after the fact.
+   */
+  const seekable = useMemo(() => {
+    const map = s?.transferStatus?.seekableMap
+    const total = s?.durationSec ?? 0
+    if (!map || !(total > 0)) return null
+    const per = total / map.length
+    const held = (i: number): boolean => map[i] === 'f'
+    const here = Math.min(map.length - 1, Math.max(0, Math.floor(((s?.positionSec ?? 0) / total) * map.length)))
+    if (!held(here)) return { fromSec: 0, toSec: total, limited: false }
+    let lo = here; let hi = here
+    while (lo > 0 && held(lo - 1)) lo--
+    while (hi < map.length - 1 && held(hi + 1)) hi++
+    const fromSec = lo * per
+    const toSec = Math.min(total, (hi + 1) * per)
+    return { fromSec, toSec, limited: fromSec > 0.5 || toSec < total - 0.5 }
+  }, [s?.transferStatus?.seekableMap, s?.durationSec, s?.positionSec])
+
+  /** Keep a seek inside what the room holds, so the keys never ask for a
+   *  refusal the interface could have avoided. */
+  const clampSeek = useCallback((sec: number): number => {
+    if (!seekable) return Math.max(0, sec)
+    return Math.max(seekable.fromSec, Math.min(sec, Math.max(seekable.fromSec, seekable.toSec - 0.5)))
+  }, [seekable])
+  clampRef.current = clampSeek
 
   const onDrop = (e: ReactDragEvent): void => {
     e.preventDefault()
@@ -967,11 +1000,23 @@ export function App (): ReactElement {
             : <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="2.5" width="3.4" height="11" rx="1" /><rect x="9.1" y="2.5" width="3.4" height="11" rx="1" /></svg>}
         </button>
         <span className="tc" data-testid="position">{clock(s?.positionSec)}</span>
-        <span className="track" style={{ ['--p' as string]: `${progress}%` }}>
+        <span
+          className={`track${seekable?.limited ? ' limited' : ''}`}
+          style={{
+            ['--p' as string]: `${progress}%`,
+            // The stretch the room can actually reach, so a seek that would be
+            // refused is visible before it is attempted.
+            ['--sa' as string]: `${duration > 0 ? ((seekable?.fromSec ?? 0) / duration) * 100 : 0}%`,
+            ['--sb' as string]: `${duration > 0 ? ((seekable?.toSec ?? duration) / duration) * 100 : 100}%`
+          }}
+          title={seekable?.limited
+            ? 'Only the lit stretch is downloaded by everyone; the room cannot seek outside it yet'
+            : undefined}
+        >
           <input
             className="scrub" type="range" min={0} max={Math.max(1, duration)} step={0.5}
             value={Math.min(s?.positionSec ?? 0, duration)}
-            onChange={e => void guard(() => window.cocine.seek(Number(e.target.value)))}
+            onChange={e => void guard(() => window.cocine.seek(clampSeek(Number(e.target.value))))}
             disabled={!s?.mediaName || (!!s?.connected && !s.mayControl)} aria-label="Seek"
           />
         </span>

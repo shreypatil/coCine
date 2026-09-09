@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isReady, phaseFor, bottleneck, tMinSeconds, etaSeconds, durability, DEFAULT_READINESS } from '../src/readiness.js'
+import { isReady, phaseFor, bottleneck, tMinSeconds, etaSeconds, durability, DEFAULT_READINESS, seekableBuckets, seekableAt, seekableSpan, seekableMapOf } from '../src/readiness.js'
 import type { PeerStatus } from '@cocine/protocol'
 
 const peer = (over: Partial<PeerStatus> = {}): PeerStatus => ({
@@ -113,5 +113,111 @@ describe('surviving the sharer leaving', () => {
     // here loses the film.
     expect(durability([peer({ havePct: 0.7 }), peer({ havePct: 0.7 }), peer({ havePct: 0.7 })]))
       .toEqual({ fullCopies: 0, safeForSharerToLeave: false })
+  })
+})
+
+/**
+ * Phase B1.3: which parts of the film the room may seek to.
+ *
+ * Seeking moves the playhead for everybody, so a seek into a stretch somebody
+ * has not downloaded stalls *them* while the rest watch. The two shapes of that
+ * are seeking ahead of the slowest downloader, and a late joiner seeking back
+ * into a beginning they never fetched -- a newcomer fetches from the playhead,
+ * not from the start, which is a decision recorded well before this existed.
+ */
+
+/** A peer holding exactly the buckets in `held`. */
+const withMap = (name: string, held: (i: number) => boolean): PeerStatus => ({
+  memberId: name, name, havePct: 0.5, bufferEndSec: 30, downBps: 1, upBps: 1,
+  peers: 1, ready: true,
+  pieces: Array.from({ length: 64 }, (_, i) => (held(i) ? 'f' : '0')).join('')
+})
+
+describe('what the whole room can play', () => {
+  it('intersects, so one peer missing a stretch takes it away from everyone', () => {
+    // The point of the feature. Anjali has the first half, dev the first
+    // quarter; the room can only move within the first quarter.
+    const seekable = seekableBuckets([
+      withMap('anjali', i => i < 32),
+      withMap('dev', i => i < 16)
+    ])
+    expect(seekable.slice(0, 16).every(Boolean)).toBe(true)
+    expect(seekable.slice(16).some(Boolean)).toBe(false)
+  })
+
+  it('counts only a complete slice as held', () => {
+    // pieceMapOf reaches 'f' only for a full bucket -- one piece short reads as
+    // 'e' -- so this is conservative in the direction that matters: a bucket
+    // wrongly called seekable stalls the room.
+    const nearly: PeerStatus = { ...withMap('sam', () => true), pieces: 'e'.repeat(64) }
+    expect(seekableBuckets([nearly]).some(Boolean)).toBe(false)
+  })
+
+  it('ignores peers that cannot report rather than treating them as empty', () => {
+    // Relay mode fetches byte ranges and has no pieces; a client that just
+    // joined has not reported yet. Counting either as holding nothing would
+    // lock the room out of the whole film.
+    const noMap: PeerStatus = {
+      memberId: 'r', name: 'relay', havePct: 0.5, bufferEndSec: 30,
+      downBps: 1, upBps: 1, peers: 0, ready: true
+    }
+    const seekable = seekableBuckets([withMap('anjali', i => i < 32), noMap])
+    expect(seekable.slice(0, 32).every(Boolean)).toBe(true)
+  })
+
+  it('allows everything when nobody can report at all', () => {
+    expect(seekableBuckets([]).every(Boolean)).toBe(true)
+  })
+})
+
+describe('whether a particular moment may be seeked to', () => {
+  const firstHalf = seekableBuckets([withMap('anjali', i => i < 32)])
+
+  it('permits a moment everyone holds and refuses one they do not', () => {
+    expect(seekableAt(10, 3600, firstHalf)).toBe(true)
+    expect(seekableAt(1790, 3600, firstHalf)).toBe(true)
+    expect(seekableAt(1810, 3600, firstHalf)).toBe(false)
+    expect(seekableAt(3599, 3600, firstHalf)).toBe(false)
+  })
+
+  it('does not block on a film whose length is not known yet', () => {
+    // Duration arrives with the metadata; refusing every seek until then would
+    // read as the seek bar being broken.
+    expect(seekableAt(10, 0, firstHalf)).toBe(true)
+  })
+
+  it('handles the very end without falling off the last bucket', () => {
+    const all = seekableBuckets([withMap('anjali', () => true)])
+    expect(seekableAt(3600, 3600, all)).toBe(true)
+  })
+})
+
+describe('the stretch the interface should draw', () => {
+  it('reports the contiguous run around the playhead', () => {
+    const seekable = seekableBuckets([withMap('anjali', i => i >= 8 && i < 24)])
+    const span = seekableSpan(600, 3600, seekable)
+    // Buckets 8..23 of 64 over an hour: 450s to 1350s.
+    expect(span.fromSec).toBeCloseTo(450, 0)
+    expect(span.toSec).toBeCloseTo(1350, 0)
+  })
+
+  it('stops at a gap rather than spanning across it', () => {
+    // A late joiner holding the middle and the end but not the join between:
+    // the room can move within the run it is in, not into the far one.
+    const seekable = seekableBuckets([withMap('dev', i => (i >= 8 && i < 16) || i >= 40)])
+    const span = seekableSpan(600, 3600, seekable)
+    expect(span.toSec).toBeLessThan(3600 * (40 / 64))
+  })
+
+  it('collapses to a point when the playhead is somewhere nobody holds', () => {
+    const seekable = seekableBuckets([withMap('anjali', i => i < 8)])
+    expect(seekableSpan(3000, 3600, seekable)).toEqual({ fromSec: 3000, toSec: 3000 })
+  })
+
+  it('travels as a piece map, so it is drawn by the code that draws the others', () => {
+    const seekable = seekableBuckets([withMap('anjali', i => i < 32)])
+    const map = seekableMapOf(seekable)
+    expect(map).toMatch(/^[0-9a-f]{64}$/)
+    expect(map).toBe('f'.repeat(32) + '0'.repeat(32))
   })
 })

@@ -7,6 +7,7 @@ import type { Room } from './room.js'
 import { InMemoryRoomStore, type RoomStore } from './store.js'
 import { iceServersFor, type TurnConfig } from './turn.js'
 import { presign, objectKeyFor, DEFAULT_EXPIRY_SECONDS, type OriginConfig } from './origin.js'
+import { seekableBuckets, seekableAt, seekableMapOf } from './readiness.js'
 
 interface Conn {
   ws: WebSocket
@@ -146,6 +147,31 @@ export class SignallingServer {
       this.log(`dual-stack bind failed (${(err as Error).message}); falling back to IPv4`)
       await attempt({ port })
     }
+  }
+
+  /**
+   * Why a seek must be refused, or null if it may go ahead.
+   *
+   * Deliberately a refusal with a reason rather than a silent clamp to the
+   * nearest allowed moment: somebody dragging a seek bar has a place in mind,
+   * and being moved somewhere else without explanation is worse than being told
+   * the room cannot go there yet. The interface draws the reachable stretch so
+   * this is a backstop rather than the first thing anyone meets.
+   */
+  private seekRefusal (room: Room, positionSec: number): string | null {
+    const duration = room.media?.durationSec ?? 0
+    if (!(duration > 0)) return null
+    const peers = room.peerStatuses()
+    if (peers.length === 0) return null
+    const seekable = seekableBuckets(peers)
+    if (seekableAt(positionSec, duration, seekable)) return null
+    const behind = peers
+      .filter(p => typeof p.pieces === 'string' && !seekableAt(positionSec, duration, seekableBuckets([p])))
+      .map(p => p.name)
+    const who = behind.length === 0
+      ? 'somebody in the room does not have'
+      : `${behind.join(' and ')} ${behind.length === 1 ? 'does not have' : 'do not have'}`
+    return `Cannot seek there yet — ${who} that part of the film.`
   }
 
   /**
@@ -317,6 +343,15 @@ export class SignallingServer {
 
       case 'playback.request': {
         if (!me.mayControl) return this.send(ws, { t: 'error', message: 'You do not have playback control' })
+        // Phase B1.3. Seeking moves the playhead for everybody, so a seek into
+        // a stretch somebody has not downloaded stalls them while the rest
+        // watch on. Enforced here rather than only in the interface: a limit
+        // that lives in the client is a courtesy, and this is the same place
+        // the permission above is checked.
+        if (msg.intent === 'seek' && typeof msg.positionSec === 'number') {
+          const refusal = this.seekRefusal(conn.room, msg.positionSec)
+          if (refusal) return this.send(ws, { t: 'error', message: refusal })
+        }
         const state = conn.room.apply(msg.intent, msg.positionSec, this.now())
         this.broadcast(conn.room, { t: 'playback.schedule', state, seq: conn.room.seq })
         this.log(`${me.name} → ${msg.intent}${msg.positionSec !== undefined ? ` @${msg.positionSec.toFixed(2)}s` : ''}`)
@@ -437,7 +472,15 @@ export class SignallingServer {
       }
 
       if (!c.room.media?.source) continue
-      this.broadcast(c.room, { t: 'transfer.status', ...c.room.transferStatus() })
+      const status = c.room.transferStatus()
+      // What the room may seek to, drawn by the interface from the same shape
+      // as everyone else's piece map. Only meaningful once a film with a known
+      // length is on; before that there is nothing to be outside of.
+      const duration = c.room.media?.durationSec ?? 0
+      const seekableMap = duration > 0 && status.perPeer.length > 0
+        ? seekableMapOf(seekableBuckets(status.perPeer))
+        : undefined
+      this.broadcast(c.room, { t: 'transfer.status', ...status, seekableMap })
     }
   }
 
