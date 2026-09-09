@@ -1,6 +1,7 @@
 import { BrowserWindow, screen } from 'electron'
 import { EmbeddedMpv, ExternalMpv, locateMpv } from '@cocine/player'
 import { embedWindow, setEmbeddedMapped, x11EmbeddingPossible } from './x11-embed.js'
+import { resolveEngine } from './player-engine.js'
 
 export interface Rect { x: number; y: number; width: number; height: number }
 
@@ -148,6 +149,13 @@ export class VideoWindow {
   private observed: Rect | null = null
 
   constructor (private readonly parent: BrowserWindow) {}
+
+  /**
+   * Which engine this window is driving. Read once at startup so a run cannot
+   * change engine underneath itself, and exposed so the interface can say which
+   * one is in use while both are being compared.
+   */
+  readonly engine = resolveEngine()
 
   async start (): Promise<EmbeddedMpv | ExternalMpv> {
     // Test affordance: no child window and no video output, so the full

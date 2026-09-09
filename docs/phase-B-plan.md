@@ -202,22 +202,36 @@ step revertible.
 **Exit:** a film plays in a room, in sync, with the sync tests passing against
 both implementations.
 
-### B1.2 — One window
+### B1.2 — One window, alongside the other one
 
-Where most of the existing patchwork dies. Delete the second `BrowserWindow`,
-`x11-embed.ts`, the SHAPE-extension overlay machinery, `video-window.ts`'s
-geometry and self-heal, and the `--wid` path.
+**Revised: nothing is deleted.** The earlier version of this step removed the
+second `BrowserWindow`, `x11-embed.ts`, the SHAPE overlay machinery and the
+`--wid` path outright. That was wrong to write down as a consequence of the new
+player working. The gate answered "can it?" and not "is it better?", and on the
+one number where they differ mpv is ahead — p99 drift 26.9 ms against 48.7 ms,
+both inside budget. Which one ships is a judgement to make after watching a film
+with each, and it may not be the same answer on every platform.
 
-This is the step that fixes, by removing rather than by patching: the black
-screen, the overlay that could not take the keyboard, the surface drifting under
-the window manager, and Wayland (the app can stop forcing
-`--ozone-platform=x11`, and native fractional scaling comes back).
+So this step *adds* a single-window path beside the existing one, selected by
+`COCINE_PLAYER` (see `apps/desktop/src/main/player-engine.ts`):
 
-Chat in fullscreen becomes a `div` with a `z-index`.
+- `COCINE_PLAYER=mpv` — today's behaviour, unchanged: a child window with mpv
+  reparented into it, and the shaped overlay for chat.
+- `COCINE_PLAYER=html` — a `<video>` in the main window, with chat, subtitles
+  and controls as ordinary DOM above it.
 
-**Exit:** the overlay and video-output e2e suites are deleted rather than fixed,
-because what they tested no longer exists. Fullscreen chat works with no X11
-involvement.
+Everything the mpv path needs stays exactly where it is. The X11 machinery is
+not touched, so the choice stays reversible for as long as it needs to be.
+
+What the `html` side gets for free is still worth stating, because it is the
+case for eventually preferring it: chat over fullscreen video becomes a `div`
+with a `z-index`; Wayland works without forcing `--ozone-platform=x11`, which
+restores native fractional scaling; and the class of bug that produced the black
+screen cannot occur, because there is no second window to place, no geometry to
+self-heal and no foreign surface to keep in position.
+
+**Exit:** a film plays in a room under either engine, chosen at launch, with the
+existing overlay and video-output suites still passing on the mpv path.
 
 ### B1.3 — Transfer-aware seeking
 
@@ -260,16 +274,30 @@ than a pipeline everything goes through.
 - FFmpeg has to be bundled, which is the same packaging problem `fetch-mpv.mjs`
   already solves for mpv and can be adapted from.
 
-### B1.6 — Retire mpv from the shipped app
+### B1.6 — Decide what ships where
 
-Remove mpv from packaging, `fetch-mpv.mjs`, `locate.ts`, and the "install mpv"
-messaging. The installers get smaller and the "requires mpv on PATH" caveat goes
-away, which is one less thing standing between a friend and a working app.
+**Revised: a decision, not a removal.** This was "retire mpv from the shipped
+app". It is now the point at which both engines have been used by hand, on each
+platform that matters, and a choice is made — possibly a different one per
+operating system, which `defaultEngine()` is written to express.
 
-**Keep `ExternalMpv` and `MpvIpc` as the headless test rig.** The comment in
-`external-mpv.ts` gives the reason and it stays true: "you cannot point five
-embedded players at one machine, but you can point five of these." The drift
-tests depend on it, and it costs nothing to keep once it is no longer shipped.
+The trade is not close to symmetric, which is why the answer may differ:
+
+- mpv holds the room measurably tighter, and is the path that has actually been
+  shipped and run by people.
+- The `<video>` path cannot produce the black-screen or fullscreen-chat classes
+  of bug at all, works on Wayland, and drops the "requires mpv on PATH" caveat
+  along with mpv from the installers.
+
+Whatever is decided, **`ExternalMpv` and `MpvIpc` stay regardless.** The comment
+in `external-mpv.ts` gives the reason and it remains true: "you cannot point
+five embedded players at one machine, but you can point five of these." The
+drift tests depend on it, and it costs nothing to keep once it is no longer the
+thing on screen.
+
+Only if mpv is dropped on a platform does its packaging come off there —
+`fetch-mpv.mjs`, `locate.ts` and the "install mpv" messaging are per-platform
+concerns and can go one platform at a time.
 
 ## What else becomes easy
 
