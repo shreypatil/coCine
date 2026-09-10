@@ -44,6 +44,15 @@ rather than on a third party's free tier.
 - An Oracle Cloud account. A card is required for identity verification even
   though Always Free costs nothing; expect a small temporary authorisation on
   it that is reversed.
+
+  There is no "Always Free only" registration: signing up gives you a 30-day
+  trial with US$300 of credits *and* the Always Free allowance, and the account
+  converts to Always Free on its own when the trial ends. **Build only on
+  Always-Free-eligible resources from the first day.** Anything else is stopped
+  and then deleted at the end of the trial, so a comfortable four-core machine
+  bought with the credits means rebuilding this on day 31. Watch for the label
+  on the shape and the boot volume rather than going by name. Done that way,
+  the trial ending is a non-event.
 - **Ask for the AMD micro shape (`VM.Standard.E2.1.Micro`), not Ampere.** The
   June 2026 halving of the ARM allowance and the notorious "out of host
   capacity" errors both apply to Ampere alone. The micros were untouched and
