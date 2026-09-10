@@ -42,27 +42,100 @@ rather than on a third party's free tier.
 
 - A domain you control, so you can point two names at two IPs.
 - An Oracle Cloud account. A card is required for identity verification even
-  though Always Free costs nothing.
+  though Always Free costs nothing; expect a small temporary authorisation on
+  it that is reversed.
 - **Ask for the AMD micro shape (`VM.Standard.E2.1.Micro`), not Ampere.** The
   June 2026 halving of the ARM allowance and the notorious "out of host
   capacity" errors both apply to Ampere alone. The micros were untouched and
   provision immediately, and a 140 MB process has no use for 12 GB.
 
+### The vocabulary, for a first account
+
+Oracle's console asks about several things before it will let you make a
+machine, and most of them exist for organisations rather than for one person.
+
+**Tenancy** is your whole account, and it is also the *root compartment*.
+
+**A compartment** is a folder used for access control and cost tracking. A
+company puts each team's resources in its own one and writes policies against
+them. For a single account it is overhead: use the root compartment for
+everything. What matters is only that you pick the *same* one every time —
+every creation form has a compartment dropdown, and a network created in one
+compartment is invisible to an instance being created in another. Almost every
+"where did my VCN go" is this. Ignore `ManagedCompartmentForPaaS` if it
+appears; Oracle creates it and it is not yours to use.
+
+**Region** is chosen at signup and your **home region cannot be changed
+afterwards**. Always Free resources exist only there, so choose one near the
+people who will use the app. The picker in the top bar switches which region
+you are *looking at*, which is a good way to be confused about why a machine you
+made is not listed.
+
+**An availability domain** is a data centre within the region. Many regions
+have exactly one. Take the default.
+
+**A VCN** is a private network, and **a subnet** lives inside it. Both
+instances can share one VCN.
+
+**A security list** is a firewall attached to a subnet — Oracle's, not the
+instance's. This is the one that catches people, and it has its own step below.
+
 ---
 
-## 1. Create the instances
+## 1. The network
 
-Two `VM.Standard.E2.1.Micro` instances, Oracle Linux, in your home region. Add
-your SSH public key. Note both public IPs.
+Make this before the instances; the instance form will ask for it.
 
-## 2. Open the ports — in the console, not on the box
+*Networking → Virtual cloud networks → Start VCN Wizard →
+"Create VCN with Internet Connectivity"*. Give it a name, accept every default,
+create. The wizard builds the VCN, a public and a private subnet, an internet
+gateway, route tables and a default security list — which is a good deal more
+than assembling those by hand.
+
+## 2. Create the instances
+
+*Compute → Instances → Create instance*, twice.
+
+- **Image:** Oracle Linux (the default). `setup.sh` also handles Debian and
+  Ubuntu, but the login user differs: `opc` on Oracle Linux, `ubuntu` on Ubuntu.
+- **Shape:** press *Change shape*. `VM.Standard.E2.1.Micro` is **not** in the
+  list that first appears — it is under **Specialty and previous generation**.
+  Look for the "Always Free eligible" label; the account allows two of them.
+- **Networking:** the VCN from step 1, its **public** subnet, and
+  *Assign a public IPv4 address* — a machine on the private subnet has no way
+  in.
+- **SSH keys:** paste your own public key (`~/.ssh/id_ed25519.pub`) rather than
+  having Oracle generate one, which it offers to let you download exactly once.
+- **Boot volume:** the default is right. Always Free covers 200 GB in total;
+  two instances at the 50 GB minimum leave room.
+
+Note both public IPs. They are *ephemeral* by default and are released when an
+instance is terminated, which matters here — reclamation means a rebuild will
+come back on a different address and the DNS records in step 4 will need
+changing. Converting each to a reserved public IP avoids that, and is worth
+checking against your account's free allowance.
+
+## 3. Open the ports — in the console, not on the box
 
 This is the step nothing on the instance can do for you, and the one that makes
 people think the software is broken. Oracle's **security lists** sit in front of
-the instance's own firewall; a port has to be open in both.
+the instance's own firewall; a port has to be open in both, and only one of the
+two is anywhere near the machine you are logged into.
 
-In *Networking → Virtual Cloud Networks → your VCN → Security Lists → Default*,
-add ingress rules:
+*Networking → Virtual cloud networks → your VCN → Security Lists →
+Default Security List → Add Ingress Rules*. It starts with one rule, SSH on 22,
+which is how you are able to log in at all.
+
+Both instances share this list, so what you are adding is the union of the two
+columns below. That is looser than it needs to be, and it is fine: each box's
+own firewall is the gate that actually distinguishes them — `setup.sh` opens
+only HTTP and HTTPS, `setup-turn.sh` opens the TURN ports and nothing else, so
+nothing answers on 3478 at the signalling instance regardless of what the
+security list permits. If you would rather have the console enforce it too, the
+tidy way is a network security group per instance instead of one shared list.
+
+Set *Source Type* to CIDR, *Source CIDR* to `0.0.0.0/0`, and leave the rules
+stateful. The destination port range is the "Port" column:
 
 | Instance | Source | Protocol | Port | For |
 | --- | --- | --- | --- | --- |
@@ -76,7 +149,7 @@ add ingress rules:
 
 `setup.sh` opens the instance-side firewall. It cannot touch the security list.
 
-## 3. Point DNS at them
+## 4. Point DNS at them
 
 ```
 cocine.example.com      A   <signalling public IP>
@@ -86,7 +159,7 @@ turn.cocine.example.com A   <relay public IP>
 Wait for them to resolve before running the setup, or Let's Encrypt's challenge
 fails and you will be debugging the wrong thing.
 
-## 4. Build the server and copy it over
+## 5. Build the server and copy it over
 
 Nothing is compiled on the instance. A 1 GB box has no business holding a
 toolchain, and `npm ci` at the repository root would pull Electron onto it.
@@ -102,7 +175,7 @@ the tracker needs and which pulls a native addon (`node-datachannel`) that
 cannot be bundled. `setup.sh` installs it — about 12 MB, and the only
 `node_modules` on the machine.
 
-## 5. Run the setup
+## 6. Run the setup
 
 ```bash
 ssh opc@<signalling-ip>
@@ -122,7 +195,7 @@ curl https://cocine.example.com/health
 # {"ok":true,"rooms":0,"members":0,"uptimeSec":12,"version":"2026-09-10"}
 ```
 
-## 6. The voice relay
+## 7. The voice relay
 
 ```bash
 SECRET=$(openssl rand -hex 32)
@@ -164,7 +237,7 @@ would begin failing three months after a setup that went perfectly — long enou
 that nobody would connect the two events. The hook restarts coturn when the
 certificate changes.
 
-## 7. Point the app at it
+## 8. Point the app at it
 
 ```bash
 COCINE_DEFAULT_SERVER=wss://cocine.example.com npm run dist:linux
@@ -224,7 +297,7 @@ announcement of any kind, and reclamation carries no warning. The question is
 not whether this needs rebuilding but how long it takes when it does.
 
 Everything that makes this instance what it is lives in the repository. To
-rebuild: create an instance, repeat steps 2 to 5, and put back the one thing
+rebuild: create an instance, repeat steps 2 to 6, and put back the one thing
 that is not in git — `/etc/cocine/server.env`, which holds the TURN secret and
 any storage credentials. **Keep a copy of that file somewhere you will still
 have it.**
