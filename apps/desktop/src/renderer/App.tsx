@@ -152,16 +152,19 @@ export function App (): ReactElement {
   const [subPath, setSubPath] = useState<string | null>(null)
   const [subStyle, setSubStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE)
   /**
-   * What is being typed into the fullscreen chat, or null when it is closed.
+   * What is being typed into the fullscreen chat.
    *
-   * The field is here rather than in the overlay window because the overlay is
-   * reparented into this window on X11, so the window manager will not give it
-   * the keyboard -- it opened a composer that looked ready and dropped every
-   * keystroke. This window has the keyboard already, and in fullscreen its own
-   * content is behind the video, so the field is invisible here and is drawn by
-   * the overlay instead.
+   * Under the mpv engine this drives an invisible field here whose contents are
+   * drawn by the overlay window, because that window can never hold the
+   * keyboard. Under the <video> engine it drives a visible box in the control
+   * bar -- a field only a keyboard shortcut could reach meant that in practice
+   * there was no way to type in fullscreen unless you already knew.
    */
   const [fsDraft, setFsDraft] = useState<string | null>(null)
+  /** Bumped to ask the bar's chat box for the keyboard. */
+  const [focusChatAt, setFocusChatAt] = useState(0)
+  /** Whether that box currently has it, which holds the bar open. */
+  const [chatFocused, setChatFocused] = useState(false)
   const fsInputRef = useRef<HTMLInputElement>(null)
   const slotRef = useRef<HTMLDivElement>(null)
   /** The film itself, when this build renders it here rather than in a child
@@ -276,6 +279,8 @@ export function App (): ReactElement {
   /** Read inside the key handler, which must not be re-registered whenever the
    *  room's holdings change. */
   const clampRef = useRef<(sec: number) => number>((sec: number) => sec)
+  /** Read inside the key handler, which is registered once. */
+  const showBarRef = useRef<() => void>(() => {})
 
   const togglePlay = useCallback(() => {
     if (!s?.mediaName) return
@@ -298,7 +303,14 @@ export function App (): ReactElement {
       // Fullscreen has no visible composer until it is asked for; this is how
       // it is asked for. The overlay takes the keyboard and hands it back on
       // Escape, so the shortcuts here are only dead while someone is typing.
-      else if (e.key === 'Enter' && s?.fullscreen && s?.connected) { e.preventDefault(); setFsDraft('') }
+      else if (e.key === 'Enter' && s?.fullscreen && s?.connected) {
+        e.preventDefault()
+        setFsDraft(d => d ?? '')
+        // The <video> engine's composer lives in the control bar, so the
+        // shortcut has to bring the bar up with it or it would ask a hidden
+        // box for the keyboard.
+        showBarRef.current()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -317,7 +329,10 @@ export function App (): ReactElement {
 
   const sendFullscreen = (): void => {
     const text = (fsDraft ?? '').trim()
-    setFsDraft(null)
+    // Emptied rather than closed: the box is a permanent part of the bar under
+    // the <video> engine, and somebody who just said one thing usually says
+    // another. The mpv engine still closes its own composer, below.
+    setFsDraft(s?.playerEngine === 'html' ? '' : null)
     if (text) void guard(() => window.cocine.sendChat(text))
   }
 
@@ -381,7 +396,10 @@ export function App (): ReactElement {
   // until asked for, because a bar across a film somebody is watching is
   // exactly what a player should not do.
   const overFilm = s?.playerEngine === 'html' && !!s?.fullscreen
-  const bar = useStageControls(overFilm)
+  // Held open while somebody is typing, passed in rather than toggled from
+  // outside: the hook's own effect owns the countdown.
+  const bar = useStageControls(overFilm, chatFocused)
+  showBarRef.current = () => { bar.show(); setFocusChatAt(n => n + 1) }
 
   const onDrop = (e: ReactDragEvent): void => {
     e.preventDefault()
@@ -578,6 +596,14 @@ export function App (): ReactElement {
               onLeaveFullscreen={() => void window.cocine.setFullScreen(false)}
               onHold={bar.hold}
               onRelease={bar.release}
+              draft={fsDraft ?? ''}
+              onDraftChange={setFsDraft}
+              onSend={sendFullscreen}
+              onChatFocus={setChatFocused}
+              focusChatAt={focusChatAt}
+              canChat={!!s?.connected}
+              keepOpen={chatFocused}
+              hovering={bar.hovering()}
             />
           )}
           {s?.playerEngine === 'html' && subPath && (
@@ -586,10 +612,7 @@ export function App (): ReactElement {
           {s?.playerEngine === 'html' && s?.fullscreen && s?.connected && (
             <StageChat
               messages={s.messages ?? []}
-              draft={fsDraft}
-              onDraftChange={setFsDraft}
-              onSend={sendFullscreen}
-              onClose={() => setFsDraft(null)}
+              composing={chatFocused || (fsDraft ?? '').length > 0}
             />
           )}
           {s?.playerEngine === 'html' && (

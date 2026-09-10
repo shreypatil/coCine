@@ -31,23 +31,23 @@ const MAX_VISIBLE = 5
 
 export interface StageChatProps {
   messages: ChatMessage[]
-  /** The line being typed, or null when the composer is closed. */
-  draft: string | null
-  onDraftChange: (text: string) => void
-  onSend: () => void
-  onClose: () => void
+  /**
+   * Whether somebody is composing a message right now.
+   *
+   * The composer itself lives in the control bar -- a hidden field that only a
+   * keyboard shortcut could reach meant that in practice there was no way to
+   * type in fullscreen unless you already knew. What is left here is the
+   * drawing, and this only decides whether recent lines stay up.
+   */
+  composing: boolean
 }
 
-export function StageChat ({
-  messages: all, draft, onDraftChange, onSend, onClose
-}: StageChatProps): ReactElement {
+export function StageChat ({ messages: all, composing }: StageChatProps): ReactElement {
   const [, setTick] = useState(0)
-  const inputRef = useRef<HTMLInputElement>(null)
   /** When each message first appeared here, so expiry never depends on agreeing
    *  with the server's clock. */
   const seen = useRef(new Map<string, number>())
   const started = useRef(false)
-  const composing = draft !== null
 
   const now = Date.now()
   if (!started.current && all.length) {
@@ -75,10 +75,6 @@ export function StageChat ({
     return () => clearInterval(id)
   }, [composing, visible.length])
 
-  // A real field in the window that has the keyboard, which is the thing the
-  // mpv overlay could never be.
-  useEffect(() => { if (composing) inputRef.current?.focus() }, [composing])
-
   return (
     <div className="stagechat" data-testid="stagechat">
       <div className="sc-list" data-testid="stagechatlist">
@@ -91,28 +87,6 @@ export function StageChat ({
           <p className="sc-sys" data-testid="stagemsg" key={m.id}><b>{m.name}</b> {m.text}</p>
         ))}
       </div>
-
-      {composing && (
-        <div className="sc-compose" data-testid="stagecompose">
-          <input
-            ref={inputRef}
-            className="sc-input"
-            data-testid="stageinput"
-            value={draft}
-            maxLength={800}
-            placeholder="Message the room — Enter to send, Esc to close"
-            aria-label="Message the room"
-            onChange={e => onDraftChange(e.target.value)}
-            onKeyDown={e => {
-              // Stopped here so the window's own shortcuts -- space, the arrow
-              // keys -- do not also fire while somebody is typing a message.
-              e.stopPropagation()
-              if (e.key === 'Enter') { e.preventDefault(); onSend() }
-              if (e.key === 'Escape') { e.preventDefault(); onClose() }
-            }}
-          />
-        </div>
-      )}
     </div>
   )
 }

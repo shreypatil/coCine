@@ -1137,3 +1137,23 @@ body.overlay-body { background: transparent; }
   -webkit-appearance: none; appearance: none;
   width: 11px; height: 11px; border-radius: 50%; background: #fff;
 }
+
+
+/* The chat box in the fullscreen bar. Visible, because a composer only a
+   keyboard shortcut could reach meant there was in practice no way to type in
+   fullscreen unless you already knew the shortcut. */
+.stagechatinput {
+  flex: 0 1 240px; min-width: 120px;
+  padding: 6px 11px;
+  background: rgba(255, 255, 255, .1);
+  border: 1px solid transparent; border-radius: 999px;
+  color: var(--tx); font: inherit; font-size: 12px;
+  transition: background .15s, border-color .15s, flex-basis .15s;
+}
+.stagechatinput::placeholder { color: rgba(255, 255, 255, .5); }
+.stagechatinput:focus {
+  outline: none;
+  flex-basis: 320px;
+  background: rgba(11, 8, 18, .9);
+  border-color: rgba(123, 92, 255, .6);
+}

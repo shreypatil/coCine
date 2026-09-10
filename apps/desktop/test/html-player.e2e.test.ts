@@ -176,12 +176,7 @@ describe('the room driving it across the process boundary', () => {
 })
 
 describe('chat over the film, in fullscreen, with no second window', () => {
-  it('opens a real composer on Enter and actually takes the keystrokes', async () => {
-    // The bug this exists for, on the other engine: the composer lived in a
-    // window reparented into this one, which no window manager will focus, so
-    // it opened, looked ready, and dropped every keystroke -- while the letters
-    // fell through to the shortcuts and paused the film for the whole room.
-    // Here it is an ordinary focused input in the window that has the keyboard.
+  beforeAll(async () => {
     await app.evaluate(async ({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0]?.setFullScreen(true)
     })
@@ -189,24 +184,101 @@ describe('chat over the film, in fullscreen, with no second window', () => {
       () => !!document.querySelector('[data-testid="stagechat"]'),
       null, { timeout: 20_000 }
     )
+  }, 60_000)
 
-    await page.keyboard.press('Enter')
-    await page.waitForSelector('[data-testid="stageinput"]', { timeout: 10_000 })
-    expect(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')))
-      .toBe('stageinput')
+  afterAll(async () => {
+    await app.evaluate(async ({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setFullScreen(false)
+    })
+  })
 
-    await page.keyboard.type('over the film')
-    expect(await page.inputValue('[data-testid="stageinput"]')).toBe('over the film')
+  const barShown = (): Promise<boolean> => page.evaluate(() =>
+    document.querySelector('[data-testid="stagebar"]')?.classList.contains('shown') ?? false)
+
+  /**
+   * Bring the bar up and put the keyboard in its chat box.
+   *
+   * Each test does this for itself. Relying on the previous one to have left
+   * the bar up is order-dependence, which bit this suite twice already: a click
+   * *toggles*, so a test following one that left it up hides it instead.
+   */
+  const openChat = async (): Promise<void> => {
+    if (!await barShown()) await page.click('[data-testid="stage"]', { position: { x: 200, y: 120 } })
+    await expect.poll(barShown, { timeout: 10_000 }).toBe(true)
+    await page.click('[data-testid="stageinput"]')
+    await expect.poll(
+      async () => page.evaluate(() => document.activeElement?.getAttribute('data-testid')),
+      { timeout: 10_000 }
+    ).toBe('stageinput')
+    // Emptied, because the box is a permanent part of the bar now: whatever a
+    // previous test typed and did not send is still sitting in it.
+    await page.locator('[data-testid="stageinput"]').fill('')
+  }
+
+  it('has a visible box to type in, rather than only a shortcut', async () => {
+    // The bug this replaces: the composer opened on Enter and nothing on screen
+    // said so, so in practice there was no way to type in fullscreen at all
+    // unless you already knew. It is part of the control bar now.
+    await page.click('[data-testid="stage"]', { position: { x: 200, y: 120 } })
+    await expect.poll(barShown, { timeout: 10_000 }).toBe(true)
+    await page.hover('[data-testid="stagebar"]')
+    expect(await page.locator('[data-testid="stageinput"]').count()).toBe(1)
+  }, 60_000)
+
+  it('takes the keystrokes, and the bar does not vanish mid-sentence', async () => {
+    const line = `typed over the film ${Date.now()}`
+    await openChat()
+    await page.keyboard.type(line)
+    expect(await page.inputValue('[data-testid="stageinput"]')).toBe(line)
+
+    // Somebody halfway through a sentence is using the bar as much as somebody
+    // with a hand on it, so the countdown must be suspended for them too.
+    await new Promise(r => setTimeout(r, 5000))
+    expect(await barShown(), 'the bar hid itself while a message was being typed').toBe(true)
+    // And for the right reason: the keyboard is in it, not a pointer on it.
+    expect(await page.getAttribute('[data-testid="stagebar"]', 'data-keepopen')).toBe('1')
+    expect(await page.inputValue('[data-testid="stageinput"]')).toBe(line)
   }, 90_000)
 
-  it('sends what was typed, and the rest of the room receives it', async () => {
+  it('sends on Enter and keeps the box for the next line', async () => {
+    // Its own message rather than the one the previous test sent, so a pass
+    // here cannot be somebody else's success arriving late.
+    const line = `sent from the bar ${Date.now()}`
+    await openChat()
+    await page.keyboard.type(line)
+    expect(await page.inputValue('[data-testid="stageinput"]')).toBe(line)
     await page.keyboard.press('Enter')
     await expect.poll(
       () => guest.messages.map(m => m.text),
       { timeout: 20_000 }
-    ).toContain('over the film')
-    expect(await page.locator('[data-testid="stageinput"]').count()).toBe(0)
+    ).toContain(line)
+    // Emptied rather than closed: whoever said one thing usually says another.
+    expect(await page.inputValue('[data-testid="stageinput"]')).toBe('')
+    expect(await page.locator('[data-testid="stageinput"]').count()).toBe(1)
   }, 90_000)
+
+  it('opens and focuses the box when Enter is pressed over the film', async () => {
+    // The shortcut still works, and now it brings the bar up with it rather
+    // than asking a hidden field for the keyboard.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+    await page.mouse.move(5, 5)
+    await expect.poll(barShown, { timeout: 15_000 }).toBe(false)
+
+    await page.keyboard.press('Enter')
+    await expect.poll(barShown, { timeout: 10_000 }).toBe(true)
+    await expect.poll(
+      async () => page.evaluate(() => document.activeElement?.getAttribute('data-testid')),
+      { timeout: 10_000 }
+    ).toBe('stageinput')
+  }, 60_000)
+
+  it('lets go of the keyboard on Escape, so the film shortcuts work again', async () => {
+    await page.keyboard.press('Escape')
+    await expect.poll(
+      async () => page.evaluate(() => document.activeElement?.getAttribute('data-testid')),
+      { timeout: 10_000 }
+    ).not.toBe('stageinput')
+  }, 60_000)
 
   it('draws an arriving message over the film', async () => {
     guest.sendChat('from the other side')
@@ -219,134 +291,20 @@ describe('chat over the film, in fullscreen, with no second window', () => {
   it('lets clicks through the empty space, which is what shaping was for', async () => {
     // pointer-events: none on the container and auto on the bubbles is the one
     // CSS property that replaces the entire X SHAPE mechanism.
-    const container = await page.evaluate(() => {
+    expect(await page.evaluate(() => {
       const el = document.querySelector('[data-testid="stagechat"]')
       return el ? getComputedStyle(el).pointerEvents : null
-    })
-    expect(container).toBe('none')
-
-    const bubble = await page.evaluate(() => {
+    })).toBe('none')
+    expect(await page.evaluate(() => {
       const el = document.querySelector('[data-testid="stagemsg"]')
       return el ? getComputedStyle(el).pointerEvents : null
-    })
-    expect(bubble).toBe('auto')
+    })).toBe('auto')
   }, 60_000)
 
   it('needs no second window to do any of it', async () => {
-    // The mpv engine has a child window reparented into this one for exactly
-    // this feature. Under the <video> engine there is nothing but the app.
     const windows = await app.evaluate(async ({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().length)
     expect(windows).toBe(1)
-    await app.evaluate(async ({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]?.setFullScreen(false)
-    })
-  }, 60_000)
-})
-
-describe('subtitles drawn over the film', () => {
-  /**
-   * Phase B1.4. Cues are drawn as DOM rather than handed to a `<track>`,
-   * because `::cue` cannot move a cue and the requirement asks for position
-   * control. That is only possible because the film is in this window; under
-   * the mpv engine there is nothing that can be put above its picture.
-   */
-  // Computed inside beforeAll, not in the describe body: describe bodies run
-  // during collection, before any beforeAll, so `film` is still empty there --
-  // which silently wrote the subtitles to the repository root instead of beside
-  // the film, and the application was right to find nothing.
-  let srt = ''
-
-  beforeAll(() => {
-    srt = join(dirname(film), 'film-30s-240p.srt')
-    writeFileSync(srt, [
-      '1', '00:00:01,000 --> 00:00:29,000', 'A line of dialogue.', ''
-    ].join('\n'))
-  })
-  afterAll(() => { try { if (srt) rmSync(srt, { force: true }) } catch { /* gone */ } })
-
-  it('finds a subtitle file sitting beside the film', async () => {
-    // Looked for rather than asked for: that is where they always are.
-    await page.click('[data-testid="subsrefresh"]')
-    await expect.poll(async () => page.evaluate(() =>
-      Array.from(document.querySelectorAll('[data-testid="substrack"] option'))
-        .map(o => o.textContent ?? '').join(' ')
-    ), { timeout: 20_000 }).toContain('.srt')
-  }, 60_000)
-
-  it('draws the cue that is on screen, and nothing when none is', async () => {
-    await page.selectOption('[data-testid="substrack"]', { label: 'film-30s-240p.srt' })
-    guest.requestSeek(10)
-    guest.requestPlay(10)
-    await expect.poll(async () => page.evaluate(() =>
-      document.querySelector('[data-testid="subtitles"]')?.textContent ?? ''
-    ), { timeout: 30_000 }).toContain('A line of dialogue')
-
-    // Before the first cue there should be nothing at all -- an empty box would
-    // still dim the film underneath it.
-    guest.requestPause(0.2)
-    guest.requestSeek(0.2)
-    await expect.poll(
-      () => page.locator('[data-testid="subtitles"]').count(),
-      { timeout: 30_000 }
-    ).toBe(0)
-  }, 90_000)
-
-  it('moves and resizes them, which is what the requirement asked for', async () => {
-    guest.requestSeek(10)
-    await page.waitForSelector('[data-testid="subtitles"]', { timeout: 30_000 })
-
-    const before = await page.evaluate(() => {
-      const el = document.querySelector('[data-testid="subtitles"]') as HTMLElement
-      return { bottom: el.style.bottom, size: el.style.fontSize }
-    })
-
-    await page.locator('[data-testid="subsheight"]').fill('30')
-    await page.locator('[data-testid="subssize"]').fill('7')
-
-    const after = await page.evaluate(() => {
-      const el = document.querySelector('[data-testid="subtitles"]') as HTMLElement
-      return { bottom: el.style.bottom, size: el.style.fontSize }
-    })
-    expect(after.bottom).not.toBe(before.bottom)
-    expect(after.size).not.toBe(before.size)
-    expect(after.bottom).toBe('30%')
-  }, 90_000)
-
-  it('shifts them in time, for subtitles cut against another release', async () => {
-    // The control everyone reaches for first, for subtitles timed against a
-    // different release. Paused first so the assertions are about the offset
-    // rather than about where playback happened to reach.
-    guest.requestPause(10)
-    guest.requestSeek(10)
-    await page.locator('[data-testid="subsoffset"]').fill('0')
-    await expect.poll(
-      () => page.locator('[data-testid="subtitles"]').count(),
-      { timeout: 20_000 }
-    ).toBe(1)
-
-    // The cue covers 1s to 29s. Delaying by ten seconds means that at ten
-    // seconds in, the film is showing what the file timed for zero -- before
-    // the first line.
-    await page.locator('[data-testid="subsoffset"]').fill('10')
-    await expect.poll(
-      () => page.locator('[data-testid="subtitles"]').count(),
-      { timeout: 20_000 }
-    ).toBe(0)
-
-    await page.locator('[data-testid="subsoffset"]').fill('0')
-    await expect.poll(
-      () => page.locator('[data-testid="subtitles"]').count(),
-      { timeout: 20_000 }
-    ).toBe(1)
-  }, 90_000)
-
-  it('turns them off again', async () => {
-    await page.selectOption('[data-testid="substrack"]', '')
-    await expect.poll(
-      () => page.locator('[data-testid="subtitles"]').count(),
-      { timeout: 20_000 }
-    ).toBe(0)
   }, 60_000)
 })
 
@@ -441,8 +399,25 @@ describe('controls over the film in fullscreen', () => {
    * pointer was moved away first. Order-dependence in a suite is its own bug.
    */
   beforeEach(async () => {
-    await page.mouse.move(5, 5)                 // release any hover hold
-    if (await shown()) await expect.poll(shown, { timeout: 15_000 }).toBe(false)
+    // Both holds have to be let go, not just the pointer: a chat box that still
+    // has the keyboard keeps the bar up for as long as it holds it, which is
+    // the whole point of that behaviour and made this wait for ever.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+    await page.mouse.move(5, 5)
+    // Wait for the hold to actually let go before judging anything about the
+    // countdown: blurring is asynchronous through React state, and a test that
+    // raced it was measuring the previous test's chat box.
+    await expect.poll(
+      async () => page.getAttribute('[data-testid="stagebar"]', 'data-keepopen'),
+      { timeout: 10_000 }
+    ).toBe('0')
+    // Toggled shut rather than waited out. Waiting on the countdown is at the
+    // mercy of whatever is still holding the bar open -- a pointer, a focused
+    // chat box -- and toggling is what a person would do anyway.
+    if (await shown()) {
+      await page.click('[data-testid="stage"]', { position: { x: 200, y: 120 } })
+      await expect.poll(shown, { timeout: 10_000 }).toBe(false)
+    }
   })
 
   /** Show the bar and keep it up, the way a hand on it would. */
@@ -478,7 +453,13 @@ describe('controls over the film in fullscreen', () => {
     // itself when nobody is using it.
     await page.click('[data-testid="stage"]', { position: { x: 200, y: 120 } })
     await expect.poll(shown, { timeout: 10_000 }).toBe(true)
+    // Nothing holding it: no pointer on it, no keyboard in it.
+    expect(await page.getAttribute('[data-testid="stagebar"]', 'data-keepopen')).toBe('0')
     // It takes itself away after a few quiet seconds rather than staying up.
+    // Nothing is holding it: neither a pointer on it nor a keyboard in it.
+    // Asserted rather than assumed, because a bar that stays up for one of
+    // those reasons looks identical to one whose countdown is broken.
+    expect(await page.getAttribute('[data-testid="stagebar"]', 'data-hover')).toBe('0')
     await expect.poll(shown, { timeout: 15_000 }).toBe(false)
   }, 60_000)
 

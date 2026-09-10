@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 
 /**
@@ -39,6 +39,24 @@ export interface StageControlsProps {
   onSeek: (sec: number) => void
   onVolume: (percent: number) => void
   onLeaveFullscreen: () => void
+  /**
+   * The chat line being typed, and what to do with it.
+   *
+   * In the bar rather than floating over the film on a keyboard shortcut. The
+   * shortcut works and is kept, but nothing on screen said so, so in practice
+   * there was no way to type in fullscreen at all unless you already knew.
+   */
+  draft: string
+  onDraftChange: (text: string) => void
+  onSend: () => void
+  /** Reported so the bar can stay up while somebody is mid-sentence. */
+  onChatFocus: (focused: boolean) => void
+  /** Bumped to ask for the keyboard, which is how the Enter shortcut works. */
+  focusChatAt: number
+  canChat: boolean
+  /** Reflected onto the element for diagnosis. */
+  keepOpen: boolean
+  hovering: boolean
   /** Hold the bar open while the pointer is on it, and let it go again when
    *  the pointer leaves. Without this it vanishes from under the cursor
    *  mid-drag, which is the most irritating thing a control bar can do. */
@@ -48,19 +66,40 @@ export interface StageControlsProps {
 
 export function StageControls ({
   visible, paused, positionSec, durationSec, volume, mayControl, seekable,
-  onPlayPause, onSeek, onVolume, onLeaveFullscreen, onHold, onRelease
+  onPlayPause, onSeek, onVolume, onLeaveFullscreen, onHold, onRelease,
+  draft, onDraftChange, onSend, onChatFocus, focusChatAt, canChat, keepOpen, hovering
 }: StageControlsProps): ReactElement {
   const duration = durationSec > 0 ? durationSec : 0
   const progress = duration > 0 ? Math.min(100, (positionSec / duration) * 100) : 0
+  const chatRef = useRef<HTMLInputElement>(null)
+
+  // Pressing Enter over the film shows the bar and asks for the keyboard here,
+  // so the shortcut and the visible box are the same composer rather than two.
+  useEffect(() => {
+    if (focusChatAt > 0) chatRef.current?.focus()
+  }, [focusChatAt])
 
   return (
     <div
       className={`stagebar${visible ? ' shown' : ''}`}
       data-testid="stagebar"
+      // Exposed so a test can say *why* the bar is or is not up, rather than
+      // only that it is not.
+      data-shown={visible ? '1' : '0'}
+      data-keepopen={keepOpen ? '1' : '0'}
+      data-hover={hovering ? '1' : '0'}
       aria-hidden={!visible}
-      // Clicks on the bar are for the bar; without this they would also reach
-      // the film underneath and toggle the bar straight back off again.
-      onMouseDown={e => { e.stopPropagation(); onHold() }}
+      // Clicks on the bar are for the bar. Both events have to be stopped: the
+      // stage listens for `click`, so stopping only `mousedown` let every press
+      // on a button bubble through and toggle the bar shut underneath the very
+      // control being used.
+      //
+      // They deliberately do *not* claim the hover hold. Entering the bar does
+      // that, and leaving it releases -- whereas a click that took the hold
+      // could never give it back if the bar hid before the pointer left, and
+      // the bar then stayed up for ever.
+      onMouseDown={e => e.stopPropagation()}
+      onClick={e => e.stopPropagation()}
       // Held open by the pointer being on it rather than by movement: a hand
       // resting still on the volume slider is using it just as much as one
       // that is moving, and a bar that disappears at that moment is useless.
@@ -127,6 +166,34 @@ export function StageControls ({
         />
       </span>
 
+      {canChat && (
+        <input
+          ref={chatRef}
+          className="stagechatinput"
+          data-testid="stageinput"
+          value={draft}
+          maxLength={800}
+          placeholder="Say something…"
+          aria-label="Message the room"
+          onChange={e => onDraftChange(e.target.value)}
+          // Focus is reported as focus and nothing else. It used to also claim
+          // the *pointer* hold, which blurring never gave back -- so once
+          // anybody had clicked into the chat box, the bar believed a pointer
+          // was resting on it for the rest of the session and never hid again.
+          // Holding it open while typing is `keepOpen`'s job, and that one is
+          // released on blur.
+          onFocus={() => onChatFocus(true)}
+          onBlur={() => onChatFocus(false)}
+          onKeyDown={e => {
+            // Kept here so the film's own shortcuts -- space, the arrow keys --
+            // do not fire while somebody is typing a message into it.
+            e.stopPropagation()
+            if (e.key === 'Enter') { e.preventDefault(); onSend() }
+            if (e.key === 'Escape') { e.preventDefault(); e.currentTarget.blur() }
+          }}
+        />
+      )}
+
       <button
         className="icon" data-testid="stagefullscreen"
         onClick={onLeaveFullscreen} aria-label="Leave fullscreen"
@@ -146,46 +213,54 @@ export function StageControls ({
  * interaction, so it never vanishes in the middle of dragging the seek bar --
  * which is the single most irritating thing a control bar can do.
  */
-export function useStageControls (active: boolean): {
+export function useStageControls (active: boolean, keepOpen = false): {
   visible: boolean; show: () => void; toggle: () => void
-  hold: () => void; release: () => void
+  hold: () => void; release: () => void; hovering: () => boolean
 } {
   const [visible, setVisible] = useState(false)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** True while the pointer is on the bar, which suspends the countdown. */
-  const held = useRef(false)
+  /**
+   * Whether the pointer is on the bar.
+   *
+   * State rather than a ref, and the countdown is an effect rather than a
+   * timer somebody arms by hand. The imperative version was wrong in a way that
+   * took three attempts to see: a hold taken while the bar was up outlived it,
+   * because a hidden bar stops accepting the pointer and so never sends the
+   * `mouseleave` that would have released it -- and the bar was then stuck open
+   * for ever. Expressed as state, "hidden" and "hovered" cannot disagree.
+   */
+  const [hovering, setHovering] = useState(false)
+  /** Bumped to restart the countdown without changing anything else. */
+  const [poke, setPoke] = useState(0)
 
-  const clear = useCallback(() => {
-    if (timer.current) { clearTimeout(timer.current); timer.current = null }
-  }, [])
+  // The countdown. Restarted whenever anything it depends on changes, and
+  // simply absent while something is holding the bar open.
+  useEffect(() => {
+    if (!visible || keepOpen || hovering) return
+    const t = setTimeout(() => setVisible(false), HIDE_AFTER_MS)
+    return () => clearTimeout(t)
+  }, [visible, keepOpen, hovering, poke])
 
-  const arm = useCallback(() => {
-    clear()
-    if (held.current) return
-    timer.current = setTimeout(() => setVisible(false), HIDE_AFTER_MS)
-  }, [clear])
-
-  const show = useCallback(() => { setVisible(true); arm() }, [arm])
-  const hold = useCallback(() => { held.current = true; clear() }, [clear])
-  const release = useCallback(() => { held.current = false; arm() }, [arm])
-  const toggle = useCallback(() => {
-    setVisible(v => {
-      if (v) { clear(); return false }
-      arm()
-      return true
-    })
-  }, [arm, clear])
+  // A bar nobody can point at is not being hovered, whatever the last event
+  // said. This is what the ref could never express.
+  useEffect(() => { if (!visible) setHovering(false) }, [visible])
 
   // Leaving fullscreen takes the bar with it: the footer is back, and a bar
   // left showing would be a second set of controls over a windowed film.
   useEffect(() => {
     if (active) return
     setVisible(false)
-    held.current = false
-    clear()
-  }, [active, clear])
+    setHovering(false)
+  }, [active])
 
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
+  const show = useCallback(() => { setVisible(true); setPoke(n => n + 1) }, [])
+  const toggle = useCallback(() => setVisible(v => !v), [])
+  const hold = useCallback(() => setHovering(true), [])
+  const release = useCallback(() => setHovering(false), [])
+  const isHovering = useCallback(() => hovering, [hovering])
 
-  return { visible, show, toggle, hold, release }
+  // Stable, so an effect depending on it does not run on every render.
+  return useMemo(
+    () => ({ visible, show, toggle, hold, release, hovering: isHovering }),
+    [visible, show, toggle, hold, release, isHovering]
+  )
 }
