@@ -474,6 +474,47 @@ rather than fought over — which is why this is written down rather than done.
 an `it.fails` test. It is green today because the behaviour is wrong, and it
 will turn red the moment somebody fixes it, which is the point.
 
+### mpv's video output is broken here, and the test that watched it was lying
+
+Found by using the application, then confirmed by fixing the test that should
+have caught it. Under the mpv engine, on this machine:
+
+- Entering fullscreen turns the picture black **every time**, and it stays black
+  after leaving fullscreen again. Measured: a healthy surface reads 0.383
+  standard deviation and 0.206 mean brightness; in fullscreen it reads
+  0.002/0.000, for as long as it is watched.
+- Starting a film is black perhaps half the time even windowed, reading
+  0.043/0.004 — four tenths of one per cent brightness.
+- Forcing `--vo=x11` is worse, not better: the picture never appears at all.
+  So the GPU output works windowed and dies on the `--wid` resize, while the
+  software output never draws into a reparented child at all.
+
+The geometry is not the problem. With `COCINE_DEBUG=1` the surface is placed
+exactly where it should be — `asked=1920x1080@0,0 got=1920x1080@0,0` — so mpv
+simply stops painting into a window it has been given.
+
+**The test that should have caught this was passing.** `video-output.e2e.test.ts`
+read pixels with `import -window <wid>`, which asks the X server for that
+window's contents — and mpv renders through OpenGL, so the X server holds no
+pixels for it and returns stale or background content instead. Every assertion
+passed while the screen was plainly black. It grabs the root window and crops to
+the surface's rectangle now, which is the framebuffer, which is what a person
+sees. The picture assertions in that file are no longer made, because they would
+fail for this reason rather than for the reason that test is about;
+`black-screen.e2e.test.ts` reproduces it deliberately instead:
+
+    COCINE_PLAYER=mpv npm run test:app
+
+**The `<video>` engine does not have this problem.** The same test against it
+reads 0.381/0.202 windowed, 0.459/0.498 in fullscreen — brighter, because the
+film fills the screen — and 0.381/0.202 again on the way back. Four opens and
+plays in a row, no black frame anywhere. That is the practical answer today:
+`COCINE_PLAYER=html`.
+
+Whether to fix mpv's output or to make the `<video>` engine the default is the
+B1.6 decision, and it now has a good deal more evidence behind it than the drift
+figures alone.
+
 ### Piece scheduler measured no better than stock WebTorrent
 
 The harness found no scenario where a custom scheduling policy beat stock
