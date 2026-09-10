@@ -382,25 +382,80 @@ Sketched rather than planned; each deserves its own pass before it starts.
 
 ## B2 — A publicly reachable server
 
-The load genuinely is tiny: one small Node process holding room state in memory,
-websockets carrying kilobits, and a BitTorrent tracker that only introduces
-peers. Cold starts are acceptable, as noted.
+**Decided: Oracle Cloud Always Free, on the AMD micro shapes.**
 
-The constraint that decides this is **not** CPU or bandwidth — it is that the
-signalling server holds long-lived WebSocket connections and keeps room state in
-process memory. Most free tiers either sleep aggressively, cap connection
-duration, or run several instances behind a load balancer, and any of those
-breaks a room. Worth evaluating against those three criteria specifically rather
-than against price alone.
+### What the server actually needs, measured
 
-Note the interaction with a decision already recorded: room state lives in
-memory precisely because there is one process. Anything that scales to more than
-one instance makes Redis a prerequisite rather than a deferred nicety, and
-`InMemoryRoomStore` sits behind `RoomStore` for exactly this swap.
+| | |
+| --- | --- |
+| Memory | **140 MB** floor — almost all of it Node itself — plus 32 KB per connection |
+| CPU | **0.1 %** of one core, idle |
+| Egress, room of three | 2.9 KB/s — **20 MB** per two-hour film |
+| Egress, room of six | 10.1 KB/s — **71 MB** per two-hour film |
 
-Separately, coturn is its own problem — a TURN relay needs UDP and a port range,
-which almost no free platform offers. Voice may need a different host from
-signalling, or a cheap VPS.
+Egress grows with the *square* of the room: N transfer reports, each broadcast
+to N members, once a second. It is the only figure that scales badly, and the
+only reason bandwidth is worth thinking about at all — the server carries no
+film data in either mode.
+
+### Why Oracle
+
+Two Always Free AMD micro instances, 1 GB each, 10 TB of egress a month, and
+root on a real VM. Three things decide it over the alternative:
+
+- **Both halves on one host.** UDP and a port range mean coturn lives on the
+  second instance. No PaaS free tier offers that, so the alternative is always
+  "hosting plus a TURN provider plus their limits".
+- **Rooms survive.** Room state is in memory, so an unannounced instance swap
+  ends a film mid-watch and returns "No room with that code" on rejoin. On a VM
+  the restarts are yours.
+- **10 TB against 5 GB.** Render's free egress was cut from 100 GB to 5 GB in
+  April 2026 — enough for about seventy six-person sessions a month, which is
+  probably fine and is a ceiling to watch. Oracle's is not a ceiling at all.
+
+**Take the AMD micro shapes, not Ampere.** The June 2026 halving of the ARM
+allowance and the notorious "out of host capacity" errors both apply to Ampere
+alone; the micros were untouched and provision readily. A 140 MB process has no
+use for 12 GB anyway.
+
+### The idle-reclamation problem, and the fix
+
+Oracle *terminates* — not stops — an Always Free instance it judges idle:
+
+> CPU utilisation for the 95th percentile is less than 20 %, **and** network
+> utilisation is less than 20 %, over a 7-day period.
+
+coCine idles at 0.1 % of a core. That profile is exactly what gets reclaimed,
+and there is no documented warning.
+
+All conditions must hold, so breaking one is enough. Network is not the one:
+twenty per cent of the micro's 50 Mbps is roughly 750 GB a week. CPU is, and the
+**95th percentile** makes it cheap — clearing it needs more than five per cent
+of samples above the threshold, about **8.4 hours a week**, not a week of load.
+
+`infra/keepalive.sh` with `infra/cocine-keepalive.{service,timer}` does it:
+twelve minutes every two hours, about fourteen hours a week for margin, at
+`nice 19` so the server preempts it on a one-vCPU box — and it **asks
+`/health` first and skips entirely while anybody is connected**. A keepalive
+that ran during a film would be protecting the server by degrading it, and the
+idle stretches it waits for are the ones that accrue the risk anyway.
+
+Assume it may still happen. Neither provider is stable — Oracle halved the ARM
+tier in June 2026 with no announcement at all, Render cut egress twentyfold in
+April — so the rebuild wants to be cheap and scripted rather than remembered.
+
+### Deployment notes
+
+- **`COCINE_PUBLIC_HOST` is not optional behind TLS.** `trackerUrlFor` derives
+  `ws://host:port` from the Host header, which is wrong in both scheme and port
+  behind a terminating proxy. The failure is *"chat works but transfer progress
+  never moves"* — the exact symptom `docs/multi-machine-testing.md` calls the
+  most misleading one there is. Set it to `wss://your-host`.
+- `/health` reports rooms, members, uptime and version, and deliberately no
+  codes or names: it is unauthenticated, and a room code is the only thing
+  between a room and a stranger.
+- Redis stays deferred. It becomes a prerequisite the moment there is more than
+  one instance, which is precisely what this plan avoids.
 
 ## B3 — macOS
 

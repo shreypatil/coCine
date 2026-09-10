@@ -1,0 +1,22 @@
+# Keeps Oracle from reclaiming the instance for looking idle. See keepalive.sh
+# for why this exists and why the numbers are what they are.
+[Unit]
+Description=coCine keepalive (stops Oracle reclaiming an idle always-free instance)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/cocine/infra/keepalive.sh
+# Belt and braces with the script's own `timeout`: a run that somehow outlives
+# its deadline is killed rather than left burning a core until somebody notices.
+TimeoutStartSec=20min
+# Lowest possible priority for both CPU and IO. The server must never wait on
+# this, and on a single-vCPU instance that is not automatic.
+Nice=19
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+# Nothing here needs to touch the filesystem or the network beyond localhost.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true

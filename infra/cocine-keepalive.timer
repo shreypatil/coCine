@@ -1,0 +1,16 @@
+# Every two hours. Twelve runs a day at twelve minutes each is about fourteen
+# hours a week above the CPU threshold, against the 8.4 hours that clearing a
+# 95th percentile of 20% actually needs -- margin for the runs that skip
+# themselves because somebody is watching a film.
+[Unit]
+Description=Run the coCine keepalive periodically
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=2h
+# Spread across the interval so every reboot does not burn at the same moment.
+RandomizedDelaySec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,6 +1,12 @@
 import { WebSocketServer, type WebSocket } from 'ws'
 import { createServer, type Server as HttpServer } from 'node:http'
 import { RoomTracker, ANNOUNCE_PATH } from './tracker.js'
+
+/** Where anything outside asks whether this server is alive and busy. */
+export const HEALTH_PATH = '/health'
+/** Reported by /health so a deploy can be told apart from a restart. */
+const VERSION = process.env.COCINE_VERSION ?? 'dev'
+
 import { randomUUID } from 'node:crypto'
 import { ClientMessage, encode, normaliseCode, type ServerMessage } from '@cocine/protocol'
 import type { Room } from './room.js'
@@ -83,7 +89,15 @@ export class SignallingServer {
     // One port carries both planes: signalling on the root path, tracker
     // announces on /announce. Two ports would mean two things to open in a
     // firewall for no benefit.
-    this.http = createServer((_req, res) => { res.writeHead(404); res.end() })
+    this.http = createServer((req, res) => {
+      // The one plain HTTP route. Everything else here is a websocket upgrade.
+      if ((req.url ?? '').split('?')[0] === HEALTH_PATH) {
+        const body = JSON.stringify(this.health())
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+        return res.end(body)
+      }
+      res.writeHead(404); res.end()
+    })
     this.wss = new WebSocketServer({ noServer: true })
     // The request carries the address this client used to reach us, which is
     // the only address we know it can reach.
@@ -146,6 +160,35 @@ export class SignallingServer {
       // so retrying costs one extra syscall and reports the clearer error.
       this.log(`dual-stack bind failed (${(err as Error).message}); falling back to IPv4`)
       await attempt({ port })
+    }
+  }
+
+  /**
+   * What this server is doing, for anything watching it from outside.
+   *
+   * Three uses, and the third is the one that made it worth adding. An uptime
+   * monitor needs somewhere to knock. A deploy needs to know the process came
+   * back. And on a host that reclaims instances it judges idle -- Oracle's
+   * always-free tier terminates one whose CPU and network both sit under twenty
+   * per cent for a week -- the keepalive that stops that happening needs to
+   * know whether anybody is actually watching a film, so it can stay out of the
+   * way while they are.
+   *
+   * Deliberately says nothing about *who* is in a room. Room codes are the only
+   * thing standing between a room and a stranger, and this endpoint is
+   * unauthenticated.
+   */
+  health (): {
+    ok: true; rooms: number; members: number; uptimeSec: number; version: string
+  } {
+    let members = 0
+    for (const conn of this.conns.values()) void conn, members++
+    return {
+      ok: true,
+      rooms: this.rooms.size(),
+      members,
+      uptimeSec: Math.round(process.uptime()),
+      version: VERSION
     }
   }
 
