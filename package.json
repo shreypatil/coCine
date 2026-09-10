@@ -17,6 +17,7 @@
     "phase1:html": "tsx apps/server/scripts/drift-test.ts --player=html",
     "b1-gate": "tsx apps/server/scripts/b1-gate.ts",
     "server": "tsx apps/server/scripts/serve.ts",
+    "build:server": "esbuild apps/server/scripts/serve.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/server.mjs --external:bufferutil --external:utf-8-validate --external:node-datachannel --external:webrtc-polyfill --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
     "desktop": "npm run build --workspace @cocine/desktop && electron apps/desktop",
     "desktop:dev": "npm run dev --workspace @cocine/desktop",
     "phase1:heavy": "tsx apps/server/scripts/drift-test.ts --peers=5 --film=300 --duration=150 --events=10 --latency=40 --jitter=15 --skew=37000 --res=1080",

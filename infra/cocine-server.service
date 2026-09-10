@@ -1,0 +1,38 @@
+# The coCine signalling server.
+#
+# One Node process holding rooms in memory, the BitTorrent tracker, and the
+# /health endpoint, all on one port. Caddy terminates TLS in front of it, so
+# this listens on localhost only -- nothing should reach it except through the
+# proxy.
+[Unit]
+Description=coCine signalling server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cocine
+Group=cocine
+WorkingDirectory=/opt/cocine
+ExecStart=/usr/bin/node /opt/cocine/server.mjs
+EnvironmentFile=/etc/cocine/server.env
+Restart=always
+RestartSec=3
+
+# Rooms live in memory, so a restart ends every room in progress. Give the
+# process a moment to close sockets cleanly rather than cutting them: the client
+# reconnects by room code, and a clean close is what tells it to.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Nothing here writes to disk or needs privileges.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,37 @@
+# TLS in front of the signalling server.
+#
+# Caddy is here for one reason that matters and one that is convenient. The
+# convenient one is certificates: it gets and renews them from Let's Encrypt
+# with no cron and no renewal to forget.
+#
+# The one that matters is that clients connect over wss://, and the server has
+# to be *told* that. `trackerUrlFor` derives the tracker address from the Host
+# header, which behind a terminating proxy is wrong in both scheme and port --
+# and the failure is not obvious. Chat and playback work perfectly while the
+# film never transfers, which docs/multi-machine-testing.md calls the single
+# most misleading symptom there is. COCINE_PUBLIC_HOST in server.env is what
+# prevents it; this file is where the mismatch would otherwise be created.
+#
+# Replace cocine.example.com with the name you own.
+
+cocine.example.com {
+	# Websocket upgrades, the tracker on /announce, and /health all share one
+	# port on the server, so one reverse_proxy covers everything.
+	reverse_proxy 127.0.0.1:8787 {
+		# Rooms are long-lived and quiet between events. Without a generous
+		# read timeout the proxy closes a socket that is merely idle, and every
+		# client reconnects for no reason.
+		transport http {
+			read_timeout 24h
+			write_timeout 24h
+		}
+	}
+
+	encode gzip
+	log {
+		output file /var/log/caddy/cocine.log
+		# Room codes travel in websocket frames rather than URLs, so ordinary
+		# access logging cannot leak one. /health carries no codes by design.
+		format console
+	}
+}
