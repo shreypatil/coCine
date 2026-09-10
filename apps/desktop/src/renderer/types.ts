@@ -62,6 +62,8 @@ export interface State {
    *  keeps the native surface in a child window. Both are supported while the
    *  two are being compared -- see main/player-engine.ts. */
   playerEngine: 'mpv' | 'html'
+  /** The film's own volume, 0 to 100, as the viewer set it. */
+  volume: number
   /** A film being converted so the <video> engine can open it, or null. */
   converting: {
     name: string
@@ -171,6 +173,7 @@ declare global {
       /** Overlay only: what the main window is typing, for it to draw. */
       onOverlayDraft: (cb: (text: string | null) => void) => () => void
       /** Subtitle files beside the film, and the text of one of them. */
+      setFilmVolume?: (percent: number) => Promise<unknown>
       subtitlesBeside?: () => Promise<{ files: SubtitleFile[] }>
       readSubtitles?: (path: string) => Promise<{ text: string }>
       /** The <video> player: commands from the main process, and the state

@@ -76,6 +76,8 @@ const api = {
   sendPlayerState: (s: unknown) => ipcRenderer.send('player:state', s),
   sendPlayerEvent: (e: { kind: string; message?: string }) => ipcRenderer.send('player:event', e),
   /** Subtitle files sitting beside the film, and the text of one. */
+  /** The film's own volume, 0 to 100. Voice ducking is applied on top. */
+  setFilmVolume: (percent: number) => ipcRenderer.invoke('film:volume', percent),
   subtitlesBeside: () => ipcRenderer.invoke('subs:beside'),
   readSubtitles: (path: string) => ipcRenderer.invoke('subs:read', path),
   sendSignal: (to: string, payload: unknown) => ipcRenderer.invoke('voice:signal', to, payload),

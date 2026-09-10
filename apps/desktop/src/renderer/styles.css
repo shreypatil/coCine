@@ -1111,3 +1111,29 @@ body.overlay-body { background: transparent; }
   background: linear-gradient(90deg, #7B5CFF, #D14FA8);
   transition: width .3s ease;
 }
+
+
+/* ------------------------------------- controls over the film in fullscreen
+   There is no footer in fullscreen -- the whole screen is the film -- so these
+   are drawn above it. Hidden until asked for: a bar across a film somebody is
+   watching is what a player should not do. */
+.stagebar {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 5;
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 20px 16px;
+  background: linear-gradient(180deg, transparent, rgba(6, 4, 12, .82) 46%);
+  opacity: 0; transform: translateY(10px);
+  transition: opacity .18s ease, transform .18s ease;
+  pointer-events: none;
+}
+.stagebar.shown { opacity: 1; transform: none; pointer-events: auto; }
+
+.stagevol { display: flex; align-items: center; gap: 6px; }
+.volslider {
+  width: 84px; height: 3px; -webkit-appearance: none; appearance: none;
+  background: rgba(255, 255, 255, .25); border-radius: 2px; cursor: pointer;
+}
+.volslider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 11px; height: 11px; border-radius: 50%; background: #fff;
+}

@@ -5,6 +5,7 @@ import { FilmPicker } from './FilmPicker.js'
 import { hhmm, initials, tint } from './format.js'
 import { attachVideoEngine } from './videoEngine.js'
 import { StageChat } from './StageChat.js'
+import { StageControls, useStageControls } from './StageControls.js'
 import {
   SubtitleLayer, SubtitleControls, useSubtitles, DEFAULT_SUBTITLE_STYLE, type SubtitleStyle
 } from './Subtitles.js'
@@ -376,6 +377,12 @@ export function App (): ReactElement {
 
   const { cues: subCues, error: subError } = useSubtitles(subPath)
 
+  // Fullscreen has no footer, so the controls are drawn over the film -- hidden
+  // until asked for, because a bar across a film somebody is watching is
+  // exactly what a player should not do.
+  const overFilm = s?.playerEngine === 'html' && !!s?.fullscreen
+  const bar = useStageControls(overFilm)
+
   const onDrop = (e: ReactDragEvent): void => {
     e.preventDefault()
     setDropping(false)
@@ -544,10 +551,35 @@ export function App (): ReactElement {
             open -- so this is the one moment anything drawn here can be seen,
             and it is worth saying what to do rather than showing a black
             rectangle. Nothing inside may change the box's size. */}
-        <div className="stage" ref={slotRef} data-testid="stage">
+        <div
+          className="stage"
+          ref={slotRef}
+          data-testid="stage"
+          // Only in fullscreen, and only where the film is in this window:
+          // windowed playback has a footer that is always there, and mpv's
+          // surface is a foreign window that swallows the click anyway.
+          onClick={overFilm ? bar.toggle : undefined}
+        >
           {/* Under the mpv engine this box stays empty and a native surface is
               positioned over it. Under the <video> engine the film is here, in
               this window, with everything else drawn above it in ordinary DOM. */}
+          {overFilm && (
+            <StageControls
+              visible={bar.visible}
+              paused={s?.paused ?? true}
+              positionSec={s?.positionSec ?? 0}
+              durationSec={s?.durationSec ?? 0}
+              volume={s?.volume ?? 100}
+              mayControl={!s?.connected || !!s?.mayControl}
+              seekable={seekable}
+              onPlayPause={togglePlay}
+              onSeek={sec => void guard(() => window.cocine.seek(clampSeek(sec)))}
+              onVolume={v => void window.cocine.setFilmVolume?.(v)}
+              onLeaveFullscreen={() => void window.cocine.setFullScreen(false)}
+              onHold={bar.hold}
+              onRelease={bar.release}
+            />
+          )}
           {s?.playerEngine === 'html' && subPath && (
             <SubtitleLayer cues={subCues} positionSec={s?.positionSec ?? 0} style={subStyle} />
           )}

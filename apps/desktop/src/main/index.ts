@@ -44,6 +44,12 @@ let overlay: ChatOverlay | null = null
  */
 let notifyState: () => void = () => {}
 
+/** The film's own volume as the viewer set it, and whether a voice is
+ *  currently quietening it. Both write to the same control, so both live here
+ *  rather than one of them living in the element. */
+let filmVolume = 100
+let ducked = false
+
 /** A film being made playable by the <video> engine, or null. */
 let converting: {
   name: string; reason: string; slow: boolean; progress: number | null
@@ -174,6 +180,8 @@ const state = (): Record<string, unknown> => {
     ready: !!player,
     /** Which player is running; the renderer mounts a <video> for 'html'. */
     playerEngine: video?.engine ?? 'mpv',
+    /** The film's volume as the viewer set it, 0 to 100. */
+    volume: filmVolume,
     /** A film being converted so the <video> engine can open it. */
     converting,
     connected: !!room,
@@ -518,6 +526,10 @@ const handlers = createHandlers({
     return client as unknown as RoomLike
   },
   getMediaPath: () => mediaPath,
+  getVolume: () => filmVolume,
+  setVolume: (p: number) => { filmVolume = p; notifyState() },
+  isDucked: () => ducked,
+  setDucked: (d: boolean) => { ducked = d },
   /**
    * Make a film the <video> engine can open, converting it if it cannot.
    *

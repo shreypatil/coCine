@@ -112,6 +112,13 @@ export interface HandlerDeps {
   }) => Promise<RoomLike>
   getMediaPath: () => string | null
   setMediaPath: (path: string | null) => void
+  /** The film's volume as the viewer set it, 0 to 100, and whether the call is
+   *  currently quietening it. Held in the main process because both write to
+   *  the same control. */
+  getVolume?: () => number
+  setVolume?: (percent: number) => void
+  isDucked?: () => boolean
+  setDucked?: (ducked: boolean) => void
   /**
    * Convert a film the <video> engine cannot open, returning the path to play.
    * Absent under the mpv engine, which needs none of it.
@@ -186,6 +193,13 @@ export function explainConnectError (err: unknown, url: string): Error {
 export const VIDEO_EXTENSIONS = ['mkv', 'mp4', 'avi', 'mov', 'webm', 'm4v', 'ts', 'mpg', 'mpeg', 'wmv', 'flv', 'ogv']
 
 export function createHandlers (deps: HandlerDeps): Record<string, (...args: never[]) => unknown> {
+  /** What the player should actually be set to: the viewer's volume, reduced
+   *  while somebody is talking. */
+  const effectiveVolume = (): number => {
+    const chosen = deps.getVolume?.() ?? 100
+    return deps.isDucked?.() ? Math.round(chosen * 0.35) : chosen
+  }
+
   const log = deps.log ?? (() => {})
 
   /**
@@ -576,7 +590,26 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     'voice:duck': async (ducked: boolean) => {
       const player = deps.getVideo()?.player
       if (!player) return
-      await player.setVolume?.(ducked ? 35 : 100)
+      deps.setDucked?.(ducked)
+      // Ducking is a *fraction* of whatever the viewer chose, not a fixed
+      // level. Setting 100 here would undo their volume every time somebody
+      // stopped talking, which is worse than not ducking at all.
+      await player.setVolume?.(effectiveVolume())
+    },
+
+    /**
+     * The film's own volume, nothing to do with the call.
+     *
+     * Kept in the main process rather than in the element, because ducking also
+     * writes to the same control: whichever of them wrote last would otherwise
+     * win, and the viewer's choice would be silently discarded whenever
+     * somebody spoke.
+     */
+    'film:volume': async (percent: number) => {
+      const clamped = Math.max(0, Math.min(100, Math.round(percent)))
+      deps.setVolume?.(clamped)
+      await deps.getVideo()?.player?.setVolume?.(effectiveVolume())
+      return { volume: clamped }
     },
 
     /**

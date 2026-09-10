@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
 import { execFileSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
@@ -405,4 +405,136 @@ describe('a format Chromium refuses (B1.5)', () => {
       { timeout: 60_000 }
     ).toBe(before)
   }, 120_000)
+})
+
+describe('controls over the film in fullscreen', () => {
+  /**
+   * There is no footer in fullscreen -- the whole screen is the film -- so the
+   * controls are drawn above it. The third thing in this phase that is trivial
+   * with the film in this window and was impossible under mpv, where nothing
+   * could be put above the surface at all.
+   */
+  beforeAll(async () => {
+    await app.evaluate(async ({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setFullScreen(true)
+    })
+    await page.waitForFunction(
+      () => !!document.querySelector('[data-testid="stagebar"]'),
+      null, { timeout: 20_000 }
+    )
+  }, 60_000)
+
+  afterAll(async () => {
+    await app.evaluate(async ({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setFullScreen(false)
+    })
+  })
+
+  const shown = (): Promise<boolean> => page.evaluate(() =>
+    document.querySelector('[data-testid="stagebar"]')?.classList.contains('shown') ?? false)
+
+  /**
+   * Put the bar in a known state before each test.
+   *
+   * A click *toggles*, so a test running after one that left the bar up would
+   * hide it and then wait for it to appear -- which is what these did until the
+   * pointer was moved away first. Order-dependence in a suite is its own bug.
+   */
+  beforeEach(async () => {
+    await page.mouse.move(5, 5)                 // release any hover hold
+    if (await shown()) await expect.poll(shown, { timeout: 15_000 }).toBe(false)
+  })
+
+  /** Show the bar and keep it up, the way a hand on it would. */
+  const openBar = async (): Promise<void> => {
+    if (!await shown()) await page.click('[data-testid="stage"]', { position: { x: 200, y: 120 } })
+    await expect.poll(shown, { timeout: 10_000 }).toBe(true)
+    await page.hover('[data-testid="stagebar"]')
+  }
+
+  /**
+   * Press something on the bar, making sure the bar is up first.
+   *
+   * Whether it stays up under the pointer is asserted on its own above; these
+   * tests are about what the buttons *do*, and they should not fail because of
+   * a few milliseconds of timing around the countdown.
+   */
+  const pressOnBar = async (id: string): Promise<void> => {
+    await openBar()
+    await page.click(`[data-testid="${id}"]`)
+  }
+
+  it('stays out of the way until it is asked for', async () => {
+    // A bar across the bottom of a film somebody is watching is exactly what a
+    // player should not do.
+    expect(await shown()).toBe(false)
+    expect(await page.evaluate(() =>
+      getComputedStyle(document.querySelector('[data-testid="stagebar"]')!).pointerEvents
+    )).toBe('none')
+  }, 30_000)
+
+  it('appears on a click on the film, and goes away again on its own', async () => {
+    // Deliberately not hovering it afterwards: the point is that it hides
+    // itself when nobody is using it.
+    await page.click('[data-testid="stage"]', { position: { x: 200, y: 120 } })
+    await expect.poll(shown, { timeout: 10_000 }).toBe(true)
+    // It takes itself away after a few quiet seconds rather than staying up.
+    await expect.poll(shown, { timeout: 15_000 }).toBe(false)
+  }, 60_000)
+
+  it('carries play, seek, volume and a way out of fullscreen', async () => {
+    await openBar()
+    for (const id of ['stageplaypause', 'stagescrub', 'stagevolume', 'stagemute', 'stagefullscreen']) {
+      expect(await page.locator(`[data-testid="${id}"]`).count(), id).toBe(1)
+    }
+    expect(await page.textContent('[data-testid="stageduration"]')).not.toBe('00:00:00')
+  }, 60_000)
+
+  it('does not vanish while the pointer is resting on it', async () => {
+    // The most irritating thing a control bar can do is disappear mid-drag. A
+    // hand resting still on the volume slider is using it just as much as one
+    // that is moving, so the countdown is suspended by the pointer being there
+    // rather than by movement.
+    await openBar()
+    // Comfortably longer than the countdown, without touching anything.
+    await new Promise(r => setTimeout(r, 5000))
+    expect(await shown(), 'the bar hid itself from under the pointer').toBe(true)
+
+    // And it does go once the pointer leaves.
+    await page.mouse.move(10, 10)
+    await expect.poll(shown, { timeout: 15_000 }).toBe(false)
+  }, 60_000)
+
+  it('changes the film volume, and mutes and unmutes', async () => {
+    await openBar()
+    await page.locator('[data-testid="stagevolume"]').fill('40')
+    await expect.poll(async () => page.evaluate(() => {
+      const v = document.querySelector('[data-testid="film"]') as HTMLVideoElement | null
+      return Math.round((v?.volume ?? 1) * 100)
+    }), { timeout: 15_000 }).toBe(40)
+
+    await pressOnBar('stagemute')
+    await expect.poll(async () => page.evaluate(() => {
+      const v = document.querySelector('[data-testid="film"]') as HTMLVideoElement | null
+      return v?.muted ?? false
+    }), { timeout: 15_000 }).toBe(true)
+
+    await pressOnBar('stagemute')
+    await expect.poll(async () => page.evaluate(() => {
+      const v = document.querySelector('[data-testid="film"]') as HTMLVideoElement | null
+      return Math.round((v?.volume ?? 0) * 100)
+    }), { timeout: 15_000 }).toBe(100)
+  }, 90_000)
+
+  it('leaves fullscreen from its own button', async () => {
+    await pressOnBar('stagefullscreen')
+    await expect.poll(
+      () => app.evaluate(async ({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0]?.isFullScreen() ?? false),
+      { timeout: 20_000 }
+    ).toBe(false)
+    // And the bar goes with it: the footer is back, and two sets of controls
+    // over a windowed film would be one too many.
+    expect(await page.locator('[data-testid="stagebar"]').count()).toBe(0)
+  }, 60_000)
 })
