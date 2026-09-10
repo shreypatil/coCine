@@ -79,6 +79,9 @@ const api = {
   /** The film's own volume, 0 to 100. Voice ducking is applied on top. */
   setFilmVolume: (percent: number) => ipcRenderer.invoke('film:volume', percent),
   subtitlesBeside: () => ipcRenderer.invoke('subs:beside'),
+  /** Subtitle tracks inside the film, which the media element never reports. */
+  embeddedSubtitles: () => ipcRenderer.invoke('subs:embedded'),
+  extractSubtitle: (index: number) => ipcRenderer.invoke('subs:extract', index),
   readSubtitles: (path: string) => ipcRenderer.invoke('subs:read', path),
   sendSignal: (to: string, payload: unknown) => ipcRenderer.invoke('voice:signal', to, payload),
   setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => ipcRenderer.invoke('voice:state', v),

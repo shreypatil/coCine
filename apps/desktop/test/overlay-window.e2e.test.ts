@@ -97,7 +97,13 @@ beforeAll(async () => {
   const port = await server.listen()
 
   // Deliberately not COCINE_HEADLESS: this test is about the native windows.
-  app = await electron.launch({ args: [join(process.cwd(), 'apps/desktop')] })
+  app = await electron.launch({
+    args: [join(process.cwd(), 'apps/desktop')],
+    // This suite is about the X11 shaped overlay window, which only the mpv
+    // engine uses -- the <video> engine draws chat as ordinary DOM in the main
+    // window and creates no second window at all.
+    env: { ...process.env, COCINE_PLAYER: 'mpv' }
+  })
   // firstWindow() is whichever window Chromium reports first, and that is
   // usually the video surface -- a bare data: URL with no interface in it.
   const deadline = Date.now() + 30_000

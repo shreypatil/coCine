@@ -252,7 +252,7 @@ Requirement 3, and the one that is genuinely new rather than a repair.
 **Exit:** a test with a deliberately lagging peer proves the clamp holds, and a
 late joiner cannot seek backwards past what they hold.
 
-### B1.4 — Subtitles — **DONE** (except ASS)
+### B1.4 — Subtitles — **DONE**
 
 - External `.srt` and `.ass` alongside the film, and drag-and-drop.
 - Embedded tracks: `textTracks` is empty, so they have to be extracted. FFmpeg
@@ -263,7 +263,7 @@ late joiner cannot seek backwards past what they hold.
 - Controls for colour, size, position and delay, which requirement 6 asks for
   and which libass supports directly.
 
-### B1.5 — The formats Chromium refuses — **DONE** (except bundling ffmpeg)
+### B1.5 — The formats Chromium refuses — **DONE**
 
 Only AVI and MPEG-2 among the things tested, so this is a fallback path rather
 than a pipeline everything goes through.
@@ -274,24 +274,32 @@ than a pipeline everything goes through.
 - FFmpeg has to be bundled, which is the same packaging problem `fetch-mpv.mjs`
   already solves for mpv and can be adapted from.
 
-### B1.6 — Decide what ships where — **the open question, and yours**
+### B1.6 — Decided: the `<video>` engine ships, mpv stays selectable
 
-Everything above is built and both engines run. What is left is a judgement
-that needs a person and a real film, on each platform that matters:
+**The `<video>` engine is the default on every platform.** `COCINE_PLAYER=mpv`
+still selects the other one, and nothing about it was removed.
 
-    COCINE_PLAYER=html npm run desktop     # the <video> engine
-    COCINE_PLAYER=mpv  npm run desktop     # today's behaviour
+The drift figures alone would have favoured mpv -- p99 26.9 ms against 48.7 ms
+at five peers, level at ten, both well inside the 100 ms budget. Everything else
+favoured the new engine, and one thing decided it:
 
-What the numbers say, so the comparison starts from something: the `<video>`
-engine seeks exactly where mpv needs `--hr-seek` to land within a frame, decodes
-4K HEVC without dropping a frame, and holds a five-peer room to a p99 drift of
-48.7 ms; mpv holds the same room to 26.9 ms. Both are inside the 100 ms budget.
-Everything the numbers cannot answer -- whether it *feels* right -- is what the
-manual comparison is for.
+- **mpv's picture is broken in ordinary use.** Entering fullscreen turns it
+  black permanently and a film starts black about half the time, measured
+  rather than inferred, and forcing a software output makes it worse. The
+  `<video>` engine shows no black frame at any point in the same test.
+- Chat over the film, subtitles and the fullscreen controls exist *only*
+  because the film is in the window; none could be drawn above mpv's surface.
+- Wayland works without forcing `--ozone-platform=x11`.
 
-Two things still outstanding under the `<video>` engine, both listed rather than
-hidden: Advanced SubStation subtitles need libass, and ffmpeg has to be bundled
-for a shipped build the way mpv already is.
+mpv earns its place still: it decodes natively what this engine has to convert
+first, which is the better answer for a library of old rips, and it is the path
+with years of other people's use behind it.
+
+**Both gaps are closed.** Advanced SubStation is rendered by libass compiled to
+WebAssembly, and subtitle tracks *inside* a film -- which the media element never
+reports -- are listed with ffprobe and extracted with ffmpeg. ffmpeg itself now
+ships for every platform, Linux included: the `.deb` can declare a dependency
+but an AppImage cannot, and the AppImage is what a stranger downloads.
 
 ### B1.6 — the original scope
 

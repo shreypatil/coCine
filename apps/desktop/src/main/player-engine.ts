@@ -26,12 +26,26 @@
 export type PlayerEngine = 'mpv' | 'html'
 
 /**
- * The default per platform, for when nothing has been chosen explicitly.
+ * The default per platform.
  *
- * mpv everywhere for now. It is the shipped, exercised path, and B1 has not yet
- * wired the `<video>` player into the renderer -- see `engineAvailable`. When
- * that lands and both have been tried by hand, this is the line to change, and
- * it is deliberately a function of platform so the answer can differ.
+ * The `<video>` engine everywhere, decided after using both. The drift figures
+ * favour mpv slightly -- 26.9 ms against 48.7 ms at five peers, both inside the
+ * 100 ms budget, and level at ten -- and everything else favours this one:
+ *
+ * - mpv's picture is broken in ordinary use. Entering fullscreen turns it black
+ *   permanently, and a film starts black about half the time. Measured, and
+ *   forcing a software output is worse rather than better.
+ * - Chat over the film, subtitles and the fullscreen controls all exist only
+ *   because the film is in the window. None could be drawn above mpv's surface.
+ * - Wayland works without forcing `--ozone-platform=x11`, which restores native
+ *   fractional scaling.
+ *
+ * mpv stays and stays selectable: `COCINE_PLAYER=mpv`. It decodes formats this
+ * engine has to convert first, which is a real answer for a library of old
+ * rips, and it is the path with years of other people's use behind it.
+ *
+ * Still a function of platform, because the answer need not be the same
+ * everywhere and the Windows and macOS builds have not been used by hand yet.
  */
 export function defaultEngine (platform: NodeJS.Platform = process.platform): PlayerEngine {
   switch (platform) {
@@ -39,7 +53,7 @@ export function defaultEngine (platform: NodeJS.Platform = process.platform): Pl
     case 'win32':
     case 'darwin':
     default:
-      return 'mpv'
+      return 'html'
   }
 }
 

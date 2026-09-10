@@ -27,6 +27,7 @@
     "dist:linux": "npm run dist:linux --workspace @cocine/desktop",
     "dist:win": "npm run dist:win --workspace @cocine/desktop",
     "fetch-mpv": "node scripts/fetch-mpv.mjs",
+    "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs",
     "fetch-native": "node scripts/fetch-native.mjs",
     "audit-native": "node scripts/audit-native.mjs"
   },
@@ -49,6 +50,7 @@
     "vitest": "^5.0.0"
   },
   "dependencies": {
+    "jassub": "^2.5.16",
     "x11": "^4.1.0"
   }
 }

@@ -50,7 +50,8 @@ npm run nat-check # what this machine's network will do to a peer connection
 Building installers:
 
 ```bash
-node scripts/fetch-mpv.mjs win   # mpv itself; only Windows and macOS need it
+node scripts/fetch-mpv.mjs win      # mpv; only Windows and macOS need it
+node scripts/fetch-ffmpeg.mjs linux # ffmpeg; every platform needs it
 COCINE_DEFAULT_SERVER=wss://your-server npm run dist:linux
 COCINE_DEFAULT_SERVER=wss://your-server npm run dist:win
 ```
@@ -69,8 +70,9 @@ WebRTC binary and died on launch both times; the details are in
 The phase scripts are pass/fail against the plan's exit criteria and exit
 non-zero on failure, so they work as CI gates rather than as demos.
 
-Requires `mpv` and `ffmpeg` on PATH. Test films are generated on first run and
-cached in `.fixtures/`.
+A packaged build ships both mpv and ffmpeg, so an installed copy needs nothing
+else. Running from source uses whatever is on PATH; test films are generated on
+first run and cached in `.fixtures/`.
 
 **Documentation** lives in [`docs/`](docs/) and is published with GitHub Pages
 straight from `main` — a guide for [people using it](docs/using.html), an

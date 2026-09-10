@@ -110,6 +110,34 @@ export function StageControls ({
       onMouseMove={onHold}
       onMouseLeave={onRelease}
     >
+      {canChat && (
+        <input
+          ref={chatRef}
+          className="stagechatinput"
+          data-testid="stageinput"
+          value={draft}
+          maxLength={800}
+          placeholder="Say something…"
+          aria-label="Message the room"
+          onChange={e => onDraftChange(e.target.value)}
+          // Focus is reported as focus and nothing else. It used to also claim
+          // the *pointer* hold, which blurring never gave back -- so once
+          // anybody had clicked into the chat box, the bar believed a pointer
+          // was resting on it for the rest of the session and never hid again.
+          // Holding it open while typing is `keepOpen`'s job, and that one is
+          // released on blur.
+          onFocus={() => onChatFocus(true)}
+          onBlur={() => onChatFocus(false)}
+          onKeyDown={e => {
+            // Kept here so the film's own shortcuts -- space, the arrow keys --
+            // do not fire while somebody is typing a message into it.
+            e.stopPropagation()
+            if (e.key === 'Enter') { e.preventDefault(); onSend() }
+            if (e.key === 'Escape') { e.preventDefault(); e.currentTarget.blur() }
+          }}
+        />
+      )}
+
       <button
         className="play" data-testid="stageplaypause"
         disabled={!mayControl}
@@ -165,34 +193,6 @@ export function StageControls ({
           aria-label="Film volume"
         />
       </span>
-
-      {canChat && (
-        <input
-          ref={chatRef}
-          className="stagechatinput"
-          data-testid="stageinput"
-          value={draft}
-          maxLength={800}
-          placeholder="Say something…"
-          aria-label="Message the room"
-          onChange={e => onDraftChange(e.target.value)}
-          // Focus is reported as focus and nothing else. It used to also claim
-          // the *pointer* hold, which blurring never gave back -- so once
-          // anybody had clicked into the chat box, the bar believed a pointer
-          // was resting on it for the rest of the session and never hid again.
-          // Holding it open while typing is `keepOpen`'s job, and that one is
-          // released on blur.
-          onFocus={() => onChatFocus(true)}
-          onBlur={() => onChatFocus(false)}
-          onKeyDown={e => {
-            // Kept here so the film's own shortcuts -- space, the arrow keys --
-            // do not fire while somebody is typing a message into it.
-            e.stopPropagation()
-            if (e.key === 'Enter') { e.preventDefault(); onSend() }
-            if (e.key === 'Escape') { e.preventDefault(); e.currentTarget.blur() }
-          }}
-        />
-      )}
 
       <button
         className="icon" data-testid="stagefullscreen"

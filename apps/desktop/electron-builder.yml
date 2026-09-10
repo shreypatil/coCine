@@ -33,6 +33,13 @@ extraResources:
   - from: resources/mpv/${os}
     to: mpv
     filter: ['**/*']
+  # ffmpeg, for the containers the <video> engine cannot open. Fetched for every
+  # platform including Linux by scripts/fetch-ffmpeg.mjs -- the .deb can declare
+  # a dependency but an AppImage cannot, and the AppImage is what a stranger
+  # downloads.
+  - from: resources/ffmpeg/${os}
+    to: ffmpeg
+    filter: ['**/*']
 
 # Unsigned, deliberately. The plan scoped this to friends first: among people who
 # trust you, a right-click-to-open on macOS is tolerable, and certificates have
@@ -134,6 +141,9 @@ deb:
   # and says so plainly when it is not.
   depends:
     - mpv
+    # Also bundled, so this is belt and braces: apt's copy is smaller, newer and
+    # patched by the distribution, and is preferred when it is there.
+    - ffmpeg
     - libgtk-3-0
     - libnotify4
     - libnss3

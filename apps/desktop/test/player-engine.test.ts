@@ -19,10 +19,14 @@ import {
  */
 
 describe('choosing an engine', () => {
-  it('runs mpv by default, which is the shipped and exercised path', () => {
-    expect(playerEngine({}, 'linux')).toBe('mpv')
-    expect(playerEngine({}, 'win32')).toBe('mpv')
-    expect(playerEngine({}, 'darwin')).toBe('mpv')
+  it('runs the <video> engine by default', () => {
+    // Decided after using both. The drift figures favour mpv slightly and
+    // everything else favours this one -- most decisively, mpv's picture goes
+    // black on entering fullscreen and stays black, which is measured in
+    // black-screen.e2e.test.ts and written up in docs/TODO.md.
+    expect(playerEngine({}, 'linux')).toBe('html')
+    expect(playerEngine({}, 'win32')).toBe('html')
+    expect(playerEngine({}, 'darwin')).toBe('html')
   })
 
   it('honours an explicit choice, which is how the two get compared', () => {
@@ -38,8 +42,8 @@ describe('choosing an engine', () => {
   it('ignores a value it does not recognise rather than refusing to start', () => {
     // A typo in an environment variable should not stop the application; it
     // should start the engine that works.
-    expect(playerEngine({ COCINE_PLAYER: 'vlc' }, 'linux')).toBe('mpv')
-    expect(playerEngine({ COCINE_PLAYER: '' }, 'linux')).toBe('mpv')
+    expect(playerEngine({ COCINE_PLAYER: 'vlc' }, 'linux')).toBe('html')
+    expect(playerEngine({ COCINE_PLAYER: '' }, 'linux')).toBe('html')
   })
 
   it('can answer differently per platform, which is the point of taking one', () => {
@@ -63,6 +67,8 @@ describe('an engine that cannot run here', () => {
   it('runs what was asked for, and says nothing when it can', () => {
     const said: string[] = []
     expect(resolveEngine(m => said.push(m), { COCINE_PLAYER: 'html' }, 'linux')).toBe('html')
+    // mpv stays selectable: it decodes formats the default engine converts
+    // first, which is a real answer for a library of old rips.
     expect(resolveEngine(m => said.push(m), { COCINE_PLAYER: 'mpv' }, 'linux')).toBe('mpv')
     expect(said).toEqual([])
   })

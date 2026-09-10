@@ -13,4 +13,8 @@ export { ensureTestVideo } from './fixture.js'
 export type { FixtureOptions } from './fixture.js'
 export type { PlayerController, PlayerOptions } from './types.js'
 export { locateMpv, bundledMpvPath, MpvNotFoundError, INSTALL_HINTS } from './locate.js'
+export {
+  locateFfmpeg, locateFfTool, bundledFfmpegPath, ffmpegInstallHint,
+  linuxFfmpegHint, FfmpegNotFoundError, FFMPEG_INSTALL_HINTS
+} from './locate.js'
 export type { LocateOptions } from './locate.js'

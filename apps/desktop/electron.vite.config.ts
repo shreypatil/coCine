@@ -29,6 +29,11 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(here, 'src/renderer'),
+    // libass ships its own worker and constructs it with `new Worker(new
+    // URL(...), { type: 'module' })`. Vite bundles that worker itself, and its
+    // default IIFE output cannot code-split, which fails the whole build with
+    // an error naming rollup rather than the dependency.
+    worker: { format: 'es' },
     // With `root` pointed at src/renderer, outDir resolves relative to it and
     // the build escapes the package. Pin it.
     build: {

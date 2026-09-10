@@ -115,6 +115,12 @@ export interface HandlerDeps {
   /** The film's volume as the viewer set it, 0 to 100, and whether the call is
    *  currently quietening it. Held in the main process because both write to
    *  the same control. */
+  /** Subtitle tracks inside the film, and pulling one out. */
+  listEmbeddedSubtitles?: (film: string) => Promise<Array<{
+    index: number; language: string | null; title: string | null
+    codec: string; drawable: boolean
+  }>>
+  extractEmbeddedSubtitle?: (film: string, index: number) => Promise<string>
   getVolume?: () => number
   setVolume?: (percent: number) => void
   isDucked?: () => boolean
@@ -318,6 +324,26 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
         // The film's own subtitles first, then everything else alphabetically.
         .sort((a, b) => Number(b.matches) - Number(a.matches) || a.name.localeCompare(b.name))
       return { files }
+    },
+
+    /**
+     * Subtitle tracks inside the film itself.
+     *
+     * The media element reports none for a Matroska carrying three of them --
+     * Chromium demuxes video and audio and does not surface the rest -- so the
+     * only way to offer them is to look with ffprobe and extract with ffmpeg.
+     */
+    'subs:embedded': async () => {
+      const film = deps.getMediaPath()
+      if (!film || !deps.listEmbeddedSubtitles) return { tracks: [] }
+      return { tracks: await deps.listEmbeddedSubtitles(film) }
+    },
+
+    /** Pull one out to a file the renderer can read, and return its path. */
+    'subs:extract': async (index: number) => {
+      const film = deps.getMediaPath()
+      if (!film || !deps.extractEmbeddedSubtitle) throw new Error('no film is open')
+      return { path: await deps.extractEmbeddedSubtitle(film, index) }
     },
 
     /** The text of one subtitle file, parsed in the renderer that draws it. */

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  parseSubtitles, parseTimestamp, cuesAt, isSubtitleFile, isUnsupportedSubtitleFile
+  parseSubtitles, parseTimestamp, cuesAt, isSubtitleFile, isUnsupportedSubtitleFile,
+  subtitleKind
 } from '../src/subtitles.js'
 
 /**
@@ -175,11 +176,27 @@ describe('which files to offer to open', () => {
     expect(isSubtitleFile('film.mkv')).toBe(false)
   })
 
-  it('names the formats that need libass rather than pretending to read them', () => {
-    // Advanced SubStation exists for styling -- positioning, karaoke,
-    // per-character animation. Reading the text and dropping all of that would
-    // look like support while producing something visibly wrong.
-    for (const name of ['film.ass', 'film.ssa', 'film.sup', 'film.idx']) {
+  it('sends Advanced SubStation to libass rather than parsing it here', () => {
+    // Its whole reason for existing is styling -- positioning, karaoke,
+    // per-character animation -- so reading the text and dropping all of that
+    // would look like support while producing something visibly wrong. It is
+    // accepted, and drawn by something that understands it.
+    for (const name of ['film.ass', 'film.SSA']) {
+      expect(subtitleKind(name), name).toBe('ass')
+      expect(isSubtitleFile(name), name).toBe(true)
+      expect(isUnsupportedSubtitleFile(name), name).toBe(false)
+    }
+  })
+
+  it('parses the text formats here', () => {
+    expect(subtitleKind('film.srt')).toBe('text')
+    expect(subtitleKind('film.vtt')).toBe('text')
+    expect(subtitleKind('film.mkv')).toBeNull()
+  })
+
+  it('still names the bitmap formats, which are images rather than text', () => {
+    // VobSub and PGS need a decoder and a compositor, not a parser.
+    for (const name of ['film.sup', 'film.idx', 'film.sub']) {
       expect(isUnsupportedSubtitleFile(name), name).toBe(true)
       expect(isSubtitleFile(name), name).toBe(false)
     }

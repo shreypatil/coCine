@@ -1017,7 +1017,9 @@ body.overlay-body { background: transparent; }
    back. */
 .stagechat {
   position: absolute; inset: 0; z-index: 3;
-  display: flex; flex-direction: column; justify-content: flex-end;
+  /* Top-left rather than bottom-left: the control bar lives along the bottom
+     now and was covering the newest lines, which are the ones worth reading. */
+  display: flex; flex-direction: column; justify-content: flex-start;
   gap: 8px; padding: 22px; font-size: 12.5px;
   pointer-events: none;
 }
@@ -1083,16 +1085,24 @@ body.overlay-body { background: transparent; }
 .subs-line { margin: 0 0 .25em; }
 .subs-line:last-child { margin-bottom: 0; }
 
-.subs-panel .input { width: 100%; margin-bottom: 8px; }
-.subs-style { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
-.subs-style label {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 11px; color: var(--tx2);
+/* The panel borrows `.opts`, `.opt` and `.sel` from the rest of the sidebar;
+   only the slider rows need anything of their own, because a range beside its
+   label is a shape the sidebar did not have before. */
+.subs-panel .opts { margin-top: 2px; }
+.subs-panel .subrow {
+  display: flex; align-items: center; gap: 9px;
 }
-.subs-style label input[type="range"] { flex: 1; }
-.subs-style label input[type="color"] {
-  width: 28px; height: 20px; padding: 0; border: 0; background: none;
+.subs-panel .subrow input[type="range"] { flex: 1; margin: 0; }
+.subs-panel .subrow input[type="color"] {
+  width: 30px; height: 21px; padding: 0;
+  background: var(--s3); border: 1px solid var(--line);
+  border-radius: var(--r-ctl); cursor: pointer;
 }
+.subs-panel .subval {
+  min-width: 34px; text-align: right;
+  font-size: 10.5px; letter-spacing: 0; color: var(--tx3);
+}
+.subs-panel .mini { align-self: flex-start; margin-top: 2px; }
 
 
 /* A film being made playable by the <video> engine (B1.5). */
@@ -1142,8 +1152,11 @@ body.overlay-body { background: transparent; }
 /* The chat box in the fullscreen bar. Visible, because a composer only a
    keyboard shortcut could reach meant there was in practice no way to type in
    fullscreen unless you already knew the shortcut. */
+/* Leftmost on the bar, so it reads as a place to type rather than an
+   afterthought tucked beside the fullscreen button. */
 .stagechatinput {
-  flex: 0 1 240px; min-width: 120px;
+  order: -1;
+  flex: 0 1 220px; min-width: 110px;
   padding: 6px 11px;
   background: rgba(255, 255, 255, .1);
   border: 1px solid transparent; border-radius: 999px;

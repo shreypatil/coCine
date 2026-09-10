@@ -94,6 +94,33 @@ if (gaps.length) {
   process.exit(1)
 }
 
+/**
+ * The tools that have to ship beside the application.
+ *
+ * A build that quietly omits them produces an installer that works perfectly on
+ * this machine -- where both are on PATH -- and fails for the person it was
+ * built for, which is exactly how the Windows installer shipped twice with no
+ * WebRTC. Named as a warning rather than a failure: a development build is
+ * legitimate, and PATH is a real answer there.
+ */
+const bundled = [
+  { name: 'ffmpeg', dir: join(app, 'resources', 'ffmpeg', target), needs: ['ffmpeg', 'ffprobe'] },
+  // Linux packages declare mpv as a dependency instead of bundling it.
+  ...(target === 'linux' ? [] : [{ name: 'mpv', dir: join(app, 'resources', 'mpv', target), needs: ['mpv'] }])
+]
+for (const b of bundled) {
+  const exe = target === 'win' ? '.exe' : ''
+  const missing = b.needs.filter(n => !existsSync(join(b.dir, `${n}${exe}`)))
+  if (missing.length) {
+    console.warn(
+      `\n  ! ${b.name} is not staged for ${target}: ${missing.join(', ')} missing from ${b.dir}\n` +
+      `    The build will proceed and the installed copy will fall back to PATH,\n` +
+      `    which the person who installs it almost certainly has not got.\n` +
+      `    Fix: node scripts/fetch-${b.name}.mjs ${target}\n`
+    )
+  }
+}
+
 try {
   swapIn()
   run('npx', ['electron-vite', 'build'], app)

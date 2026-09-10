@@ -511,9 +511,10 @@ film fills the screen — and 0.381/0.202 again on the way back. Four opens and
 plays in a row, no black frame anywhere. That is the practical answer today:
 `COCINE_PLAYER=html`.
 
-Whether to fix mpv's output or to make the `<video>` engine the default is the
-B1.6 decision, and it now has a good deal more evidence behind it than the drift
-figures alone.
+**Decided:** the `<video>` engine is the default on every platform, and mpv
+stays selectable with `COCINE_PLAYER=mpv`. Fixing mpv's output is still worth
+doing -- it decodes natively what the default engine converts first -- but it is
+no longer in anybody's way.
 
 ### Piece scheduler measured no better than stock WebTorrent
 

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { locateMpv, bundledMpvPath, MpvNotFoundError, INSTALL_HINTS, linuxInstallHint } from '../src/locate.js'
+import { locateFfmpeg, locateFfTool, bundledFfmpegPath, linuxFfmpegHint } from '../src/locate.js'
 
 /**
  * Someone installing coCine from a link has no reason to own a media player, so
@@ -123,5 +124,102 @@ describe('telling someone how to install mpv', () => {
   it('falls back to something honest when it cannot tell', () => {
     expect(linuxInstallHint(null)).toBe(INSTALL_HINTS.linux)
     expect(linuxInstallHint(release('someobscuredistro'))).toBe(INSTALL_HINTS.linux)
+  })
+})
+
+
+describe('finding ffmpeg', () => {
+  /**
+   * ffmpeg is how the `<video>` engine plays the containers Chromium refuses.
+   * It is found the same way mpv is and for the same reason -- somebody who
+   * installed from a link owns no media toolchain -- with one deliberate
+   * difference: it is **optional**. Most films need no conversion, and refusing
+   * to play them because a tool they do not use is missing would be absurd, so
+   * absence is null rather than an exception.
+   */
+
+  it('prefers a copy shipped beside the application over one on PATH', () => {
+    const res = join(dir, 'ff-resources')
+    fake(bundledFfmpegPath(res, 'ffmpeg', 'linux'))
+    fake(bundledFfmpegPath(res, 'ffprobe', 'linux'))
+    const onPath = join(dir, 'ff-bin')
+    fake(join(onPath, 'ffmpeg'))
+    fake(join(onPath, 'ffprobe'))
+
+    const found = locateFfmpeg({ resourcesPath: res, platform: 'linux', env: { PATH: onPath } })
+    expect(found?.ffmpeg).toBe(bundledFfmpegPath(res, 'ffmpeg', 'linux'))
+  })
+
+  it('falls back to PATH, which is the whole answer in development', () => {
+    const onPath = join(dir, 'ff-only-path')
+    fake(join(onPath, 'ffmpeg'))
+    fake(join(onPath, 'ffprobe'))
+    const found = locateFfmpeg({ platform: 'linux', env: { PATH: onPath } })
+    expect(found).toEqual({
+      ffmpeg: join(onPath, 'ffmpeg'),
+      ffprobe: join(onPath, 'ffprobe')
+    })
+  })
+
+  it('returns null rather than throwing when there is none', () => {
+    // The caller decides. Most films need nothing, and the media element gets
+    // its chance to say for itself whether it can play the file.
+    expect(locateFfmpeg({ platform: 'linux', env: { PATH: join(dir, 'nothing-here') } })).toBeNull()
+  })
+
+  it('refuses one tool without the other, which is no use', () => {
+    // A conversion needs ffprobe to decide and ffmpeg to do it.
+    const half = join(dir, 'ff-half')
+    fake(join(half, 'ffmpeg'))
+    expect(locateFfmpeg({ platform: 'linux', env: { PATH: half } })).toBeNull()
+  })
+
+  it('takes a directory from COCINE_FFMPEG, for an unusual install', () => {
+    const custom = join(dir, 'ff-custom')
+    fake(join(custom, 'ffmpeg'))
+    fake(join(custom, 'ffprobe'))
+    const found = locateFfmpeg({ platform: 'linux', env: { COCINE_FFMPEG: custom, PATH: '' } })
+    expect(found?.ffmpeg).toBe(join(custom, 'ffmpeg'))
+  })
+
+  it('ignores a COCINE_FFMPEG that points nowhere rather than failing', () => {
+    // An override that is wrong must not stop films that need no conversion.
+    const onPath = join(dir, 'ff-fallback')
+    fake(join(onPath, 'ffmpeg'))
+    fake(join(onPath, 'ffprobe'))
+    const found = locateFfmpeg({
+      platform: 'linux', env: { COCINE_FFMPEG: join(dir, 'absent'), PATH: onPath }
+    })
+    expect(found?.ffmpeg).toBe(join(onPath, 'ffmpeg'))
+  })
+
+  it('looks for the .exe names on Windows', () => {
+    const res = join(dir, 'ff-win')
+    fake(bundledFfmpegPath(res, 'ffmpeg', 'win32'))
+    fake(bundledFfmpegPath(res, 'ffprobe', 'win32'))
+    expect(locateFfTool('ffmpeg', { resourcesPath: res, platform: 'win32', env: {} }))
+      .toMatch(/ffmpeg\.exe$/)
+  })
+
+  it('ignores a file that is not executable', () => {
+    const notExec = join(dir, 'ff-noexec')
+    fake(join(notExec, 'ffmpeg'), false)
+    fake(join(notExec, 'ffprobe'), false)
+    expect(locateFfmpeg({ platform: 'linux', env: { PATH: notExec } })).toBeNull()
+  })
+})
+
+describe('telling someone how to install ffmpeg', () => {
+  it('names this distribution\'s package manager rather than listing four', () => {
+    // Whoever reads this followed a link and now needs a command they did not
+    // write; naming the wrong package manager makes it useless.
+    expect(linuxFfmpegHint('ID=ubuntu')).toBe('sudo apt install ffmpeg')
+    expect(linuxFfmpegHint('ID=fedora')).toBe('sudo dnf install ffmpeg')
+    expect(linuxFfmpegHint('ID=arch')).toBe('sudo pacman -S ffmpeg')
+    expect(linuxFfmpegHint('ID=manjaro\nID_LIKE=arch')).toBe('sudo pacman -S ffmpeg')
+  })
+
+  it('falls back to something usable when the system will not say', () => {
+    expect(linuxFfmpegHint(null)).toContain('ffmpeg')
   })
 })

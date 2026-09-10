@@ -121,7 +121,14 @@ beforeAll(async () => {
   // native surface, which is the thing one of these tests counts.
   app = await electron.launch({
     args: [join(process.cwd(), 'apps/desktop')],
-    env: { ...process.env, HOME: home, COCINE_DEBUG: '1' }
+    env: {
+      ...process.env,
+      // This suite is about mpv's native surface -- the child window, its geometry
+    // and its pixels -- none of which exists under the default engine now.
+      COCINE_PLAYER: 'mpv',
+      HOME: home,
+      COCINE_DEBUG: '1'
+    }
   })
   app.on('console', m => logs.push(m.text()))
 

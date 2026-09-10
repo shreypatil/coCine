@@ -11,6 +11,10 @@ out/
 # hundred megabytes per platform, and reproducible, so they are not committed.
 apps/desktop/resources/mpv/*/*
 !apps/desktop/resources/mpv/*/.gitkeep
+# ffmpeg is fetched per platform by scripts/fetch-ffmpeg.mjs. 150 MB of binary
+# has no business in a git history.
+apps/desktop/resources/ffmpeg/*/*
+!apps/desktop/resources/ffmpeg/*/.gitkeep
 
 # Built installers.
 release/

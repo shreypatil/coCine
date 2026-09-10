@@ -13,12 +13,12 @@
  * (`.vtt`). Both are line-oriented and near enough identical once the timestamp
  * separator is normalised.
  *
- * **Advanced SubStation (`.ass`) is deliberately not parsed.** Its whole reason
- * for existing is styling -- positioning, karaoke, per-character animation --
- * and a parser that read the text and dropped all of that would look like
- * support while producing something visibly wrong. Rendering it properly means
- * libass, which is a WebAssembly dependency and its own piece of work; until
- * then, saying so is more honest than approximating it.
+ * **Advanced SubStation (`.ass`) is deliberately not parsed here.** Its whole
+ * reason for existing is styling -- positioning, karaoke, per-character
+ * animation -- and a parser that read the text and dropped all of that would
+ * look like support while producing something visibly wrong. It is rendered by
+ * libass instead, compiled to WebAssembly, which is what actually understands
+ * the format; this module only has to recognise it and stand aside.
  */
 
 export interface Cue {
@@ -108,12 +108,34 @@ export function cuesAt (cues: Cue[], positionSec: number, offsetSec = 0): Cue[] 
   return cues.filter(c => t >= c.fromSec && t < c.toSec)
 }
 
-/** Whether a filename looks like subtitles this can read. */
-export function isSubtitleFile (name: string): boolean {
-  return /\.(srt|vtt)$/i.test(name)
+/**
+ * How a subtitle file has to be drawn, or null if it cannot be.
+ *
+ * `text` is parsed here and drawn as DOM, which is what makes the size, colour
+ * and position controls possible. `ass` is handed to libass, which owns its own
+ * appearance -- the styling *is* the format, so a viewer's size and colour
+ * preferences do not apply and are hidden for it.
+ */
+export type SubtitleKind = 'text' | 'ass'
+
+export function subtitleKind (name: string): SubtitleKind | null {
+  if (/\.(srt|vtt)$/i.test(name)) return 'text'
+  if (/\.(ass|ssa)$/i.test(name)) return 'ass'
+  return null
 }
 
-/** Whether a filename is a subtitle format that needs libass to look right. */
+/** Whether a filename is subtitles coCine can draw at all. */
+export function isSubtitleFile (name: string): boolean {
+  return subtitleKind(name) !== null
+}
+
+/**
+ * Formats still not drawn: the bitmap ones.
+ *
+ * VobSub and PGS are images per frame rather than text, so they need a decoder
+ * and a compositor rather than a parser. Named rather than hidden, because
+ * somebody can see the file in the folder.
+ */
 export function isUnsupportedSubtitleFile (name: string): boolean {
-  return /\.(ass|ssa|sub|idx|sup)$/i.test(name)
+  return /\.(sub|idx|sup)$/i.test(name)
 }

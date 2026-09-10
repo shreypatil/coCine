@@ -13,7 +13,7 @@ import { sourceId, type Media } from '@cocine/protocol'
 import { MpvNotFoundError } from '@cocine/player'
 import { startUpdates } from './updates.js'
 import { ChatOverlay } from './chat-overlay.js'
-import { ensurePlayable, conversionDir } from './convert.js'
+import { ensurePlayable, conversionDir, embeddedSubtitles, extractSubtitle } from './convert.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -526,6 +526,15 @@ const handlers = createHandlers({
     return client as unknown as RoomLike
   },
   getMediaPath: () => mediaPath,
+  listEmbeddedSubtitles: (film: string) => embeddedSubtitles(film, process.resourcesPath),
+  extractEmbeddedSubtitle: async (film: string, index: number) => {
+    const tracks = await embeddedSubtitles(film, process.resourcesPath)
+    const track = tracks.find(t => t.index === index)
+    if (!track) throw new Error('that subtitle track is not in this film')
+    return extractSubtitle(
+      film, track, join(app.getPath('userData'), 'subtitles'), process.resourcesPath
+    )
+  },
   getVolume: () => filmVolume,
   setVolume: (p: number) => { filmVolume = p; notifyState() },
   isDucked: () => ducked,
@@ -542,6 +551,8 @@ const handlers = createHandlers({
     const result = await ensurePlayable({
       input: path,
       outputDir: conversionDir(app.getPath('userData')),
+      // A copy shipped beside the application is preferred over PATH.
+      resourcesPath: process.resourcesPath,
       onProgress: p => {
         converting = {
           name: basename(p.path),

@@ -7,9 +7,10 @@ import { attachVideoEngine } from './videoEngine.js'
 import { StageChat } from './StageChat.js'
 import { StageControls, useStageControls } from './StageControls.js'
 import {
-  SubtitleLayer, SubtitleControls, useSubtitles, DEFAULT_SUBTITLE_STYLE, type SubtitleStyle
+  SubtitleLayer, AssLayer, SubtitleControls, useSubtitles, DEFAULT_SUBTITLE_STYLE,
+  type SubtitleStyle
 } from './Subtitles.js'
-import type { SubtitleFile } from './types.js'
+import type { SubtitleFile, EmbeddedSubtitle } from './types.js'
 import type { Library, State, StoredFilm } from './types.js'
 import './types.js'
 
@@ -149,6 +150,7 @@ export function App (): ReactElement {
   const [library, setLibrary] = useState<Library | null>(null)
   /** Subtitle files beside the film, which of them is on, and how it looks. */
   const [subFiles, setSubFiles] = useState<SubtitleFile[]>([])
+  const [subEmbedded, setSubEmbedded] = useState<EmbeddedSubtitle[]>([])
   const [subPath, setSubPath] = useState<string | null>(null)
   const [subStyle, setSubStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE)
   /**
@@ -380,17 +382,34 @@ export function App (): ReactElement {
     void window.cocine.subtitlesBeside?.()
       .then(r => setSubFiles(r.files))
       .catch(() => setSubFiles([]))
+    void window.cocine.embeddedSubtitles?.()
+      .then(r => setSubEmbedded(r.tracks))
+      .catch(() => setSubEmbedded([]))
+  }, [])
+
+  /**
+   * Choosing a track. An embedded one has to be pulled out of the film first,
+   * which is why this is not simply setState -- the renderer needs a file.
+   */
+  const pickSubtitles = useCallback((value: string | null) => {
+    if (!value) { setSubPath(null); return }
+    if (!value.startsWith('embedded:')) { setSubPath(value); return }
+    const index = Number(value.slice('embedded:'.length))
+    void window.cocine.extractSubtitle?.(index)
+      .then(r => setSubPath(r.path))
+      .catch((e: unknown) => setSubPath(null) ??
+        console.error('[subtitles] could not extract:', e))
   }, [])
 
   // A new film means new subtitles, and the old choice is meaningless against
   // it -- keeping it would draw one film's dialogue over another's picture.
   useEffect(() => {
     setSubPath(null)
-    if (!s?.mediaName) { setSubFiles([]); return }
+    if (!s?.mediaName) { setSubFiles([]); setSubEmbedded([]); return }
     findSubtitles()
   }, [s?.mediaName, findSubtitles])
 
-  const { cues: subCues, error: subError } = useSubtitles(subPath)
+  const { cues: subCues, assContent, kind: subKind, error: subError } = useSubtitles(subPath)
 
   // Fullscreen has no footer, so the controls are drawn over the film -- hidden
   // until asked for, because a bar across a film somebody is watching is
@@ -606,8 +625,11 @@ export function App (): ReactElement {
               hovering={bar.hovering()}
             />
           )}
-          {s?.playerEngine === 'html' && subPath && (
+          {s?.playerEngine === 'html' && subPath && subKind === 'text' && (
             <SubtitleLayer cues={subCues} positionSec={s?.positionSec ?? 0} style={subStyle} />
+          )}
+          {s?.playerEngine === 'html' && subPath && subKind === 'ass' && assContent && (
+            <AssLayer video={videoRef.current} content={assContent} />
           )}
           {s?.playerEngine === 'html' && s?.fullscreen && s?.connected && (
             <StageChat
@@ -980,9 +1002,11 @@ export function App (): ReactElement {
             {s?.playerEngine === 'html' && s?.mediaName && (
               <SubtitleControls
                 files={subFiles}
+                embedded={subEmbedded}
                 activePath={subPath}
+                kind={subKind}
                 style={subStyle}
-                onPick={setSubPath}
+                onPick={pickSubtitles}
                 onStyle={setSubStyle}
                 onRefresh={findSubtitles}
               />

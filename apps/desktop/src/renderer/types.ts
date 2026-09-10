@@ -57,6 +57,15 @@ export interface SubtitleFile {
   matches: boolean
 }
 
+export interface EmbeddedSubtitle {
+  index: number
+  language: string | null
+  title: string | null
+  codec: string
+  /** Whether it is text rather than a bitmap, so it can be drawn. */
+  drawable: boolean
+}
+
 export interface State {
   /** Which player is running. 'html' renders a <video> in this window; 'mpv'
    *  keeps the native surface in a child window. Both are supported while the
@@ -175,6 +184,8 @@ declare global {
       /** Subtitle files beside the film, and the text of one of them. */
       setFilmVolume?: (percent: number) => Promise<unknown>
       subtitlesBeside?: () => Promise<{ files: SubtitleFile[] }>
+      embeddedSubtitles?: () => Promise<{ tracks: EmbeddedSubtitle[] }>
+      extractSubtitle?: (index: number) => Promise<{ path: string }>
       readSubtitles?: (path: string) => Promise<{ text: string }>
       /** The <video> player: commands from the main process, and the state
        *  and events it pushes back. Present only under COCINE_PLAYER=html. */
