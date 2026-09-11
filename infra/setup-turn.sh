@@ -76,6 +76,11 @@ sleep 2
 systemctl is-active --quiet coturn && echo "  coturn is running" || {
   echo "  coturn did not start. journalctl -u coturn -n 50" >&2; exit 1; }
 
+# The same trim as the signalling box; see setup.sh for why the cloud agent and
+# tuned are left alone.
+systemctl disable --now pmlogger pmie pmcd >/dev/null 2>&1 || true
+systemctl disable --now rpcbind.socket rpcbind >/dev/null 2>&1 || true
+
 # Reclamation applies to this instance as much as the other one, and it idles
 # harder -- a relay does nothing at all unless somebody's call needs it. Point
 # the keepalive at the signalling server's /health when we were told where that

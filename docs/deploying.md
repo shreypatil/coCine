@@ -352,6 +352,28 @@ settings, so nobody is stuck with it.
 
 ---
 
+## What the setup leaves running
+
+`setup.sh` disables Performance Co-Pilot and `rpcbind`, worth about 45 MB of
+the 945 MB. It deliberately leaves two things that look equally disposable:
+
+**The Oracle Cloud Agent** is the largest single consumer at around 156 MB, and
+it runs the `gomon` plugin that reports CPU and network metrics to OCI
+Monitoring — which is what the idle-reclamation policy reads. Disabling it
+would leave the keepalive burning CPU that Oracle never observes, on an
+instance reporting no metrics at all. It is the one service on the box that
+must not be touched.
+
+**`tuned`** is not the generic daemon here. Its profile is
+`oci-rps-xps oci-busy-polling oci-cpu-power oci-nic` — Oracle's own packet
+steering and NIC tuning, which is a poor thing to trade away on a machine whose
+entire job is network traffic.
+
+Memory is not tight either way: about 485 MB is available against a stack that
+wants roughly 170 MB.
+
+---
+
 ## The keepalive, and why it exists
 
 Oracle **terminates** — not stops — an Always Free instance it judges idle:

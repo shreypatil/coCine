@@ -121,6 +121,33 @@ install -m 644 "$HERE/cocine-keepalive.timer" /etc/systemd/system/
 mkdir -p /opt/cocine/infra
 install -m 755 "$HERE/keepalive.sh" /opt/cocine/infra/keepalive.sh
 
+# --- trim ---------------------------------------------------------------------
+# Oracle Linux ships services this box has no use for. Worth about 45 MB of the
+# 945 MB, which is housekeeping rather than rescue -- but a rebuild should not
+# have to rediscover it.
+#
+# Only these two. Two neighbouring candidates must stay, and the reasons are
+# worth recording because both look disposable:
+#
+#   oracle-cloud-agent (156 MB, the largest single consumer) runs the `gomon`
+#   plugin that reports CPU and network metrics to OCI Monitoring -- which is
+#   exactly what the idle-reclamation policy reads. Disabling it would leave
+#   keepalive.sh burning CPU that Oracle never observes, while the instance
+#   reported no metrics at all.
+#
+#   tuned is not generic tuned here: its profile is
+#   `oci-rps-xps oci-busy-polling oci-cpu-power oci-nic`, which is Oracle's own
+#   packet steering and NIC tuning. Not a trade worth making on a box whose
+#   whole job is network traffic.
+#
+# PCP was checked rather than assumed -- `gomon` contains the strings "pcp" and
+# "Pc"/"Pd", which look like a dependency and are Go runtime artefacts and a
+# Unicode category table. The agent does not require the package, gomon holds
+# no descriptors on any PCP path, and nothing connects to pmcd.
+say "trimming unused services"
+systemctl disable --now pmlogger pmie pmcd >/dev/null 2>&1 || true
+systemctl disable --now rpcbind.socket rpcbind >/dev/null 2>&1 || true
+
 # --- firewall ----------------------------------------------------------------
 # Oracle Linux images ship iptables rules that reject almost everything, which
 # is the reason "I opened the port in the console and it still does not work"
