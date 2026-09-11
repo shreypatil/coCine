@@ -122,6 +122,21 @@ than assembling those by hand.
   in.
 - **SSH keys:** paste your own public key (`~/.ssh/id_ed25519.pub`) rather than
   having Oracle generate one, which it offers to let you download exactly once.
+- **Instance metadata service:** version 2 only. Nothing here reads instance
+  metadata, and v1 answers an unauthenticated GET, which is what turns a
+  server-side request forgery anywhere in the stack into a credential leak.
+- **Live migration:** enable it if the shape offers it. It moves a running
+  instance to healthy hardware during Oracle's maintenance instead of
+  rebooting it, and a reboot ends every room in progress -- they are held in
+  memory on purpose.
+- **Cloud-init script:** leave it empty. It could only install Node and Caddy,
+  which `setup.sh` does anyway, since the server bundle is built on your
+  machine and is not anywhere a booting instance could fetch it. What it would
+  really do is split the definition of the machine between this repository and
+  a console text box that is not in git -- exactly the wrong trade at the
+  moment you are rebuilding in a hurry. Publishing the bundle as a release
+  artifact would make a cloud-init path worth having; until then it is one more
+  place to look.
 - **Boot volume:** the default is right. Always Free covers around 200 GB in
   total, so two default boot volumes leave room. Do not raise the size or the
   performance setting; either takes you past the allowance and is billed.
