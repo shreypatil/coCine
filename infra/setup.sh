@@ -193,6 +193,10 @@ say "user and directories"
 id -u cocine >/dev/null 2>&1 || useradd --system --home /opt/cocine --shell /usr/sbin/nologin cocine
 mkdir -p /opt/cocine /etc/cocine /var/log/caddy
 chown -R cocine:cocine /opt/cocine
+# Caddy runs as its own user and writes the access log itself. Without this it
+# starts, fails to open the log, and exits 1 -- leaving the server healthy on
+# 127.0.0.1:8787 and nothing at all listening on 443.
+id -u caddy >/dev/null 2>&1 && chown -R caddy:caddy /var/log/caddy || true
 
 # --- the server --------------------------------------------------------------
 # `server.mjs` is built on your machine with `npm run build:server` and copied
@@ -274,6 +278,7 @@ say "starting"
 systemctl daemon-reload
 systemctl enable --now cocine-server.service
 systemctl enable --now cocine-keepalive.timer
+systemctl enable caddy >/dev/null 2>&1 || true
 systemctl restart caddy
 
 sleep 2
