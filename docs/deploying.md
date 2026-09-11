@@ -122,8 +122,17 @@ than assembling those by hand.
   in.
 - **SSH keys:** paste your own public key (`~/.ssh/id_ed25519.pub`) rather than
   having Oracle generate one, which it offers to let you download exactly once.
-- **Boot volume:** the default is right. Always Free covers 200 GB in total;
-  two instances at the 50 GB minimum leave room.
+- **Boot volume:** the default is right. Always Free covers around 200 GB in
+  total, so two default boot volumes leave room. Do not raise the size or the
+  performance setting; either takes you past the allowance and is billed.
+
+Ignore *Estimate cost*. It prices everything at list price and never asks
+whether the free allowance covers it, so it will quote a couple of dollars a
+month for the boot volume on an instance that is free. The label on the shape
+is the signal that matters, not the estimate. If that is uncomfortable, set a
+budget alert for a dollar under *Billing & Cost Management → Budgets*, which is
+worth doing once anyway -- an unnoticed charge is a silent failure, which is
+the same reason the keepalive exists.
 
 Note both public IPs. They are *ephemeral* by default and are released when an
 instance is terminated, which matters here — reclamation means a rebuild will
