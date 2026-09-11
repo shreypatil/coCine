@@ -93,13 +93,24 @@ instance's. This is the one that catches people, and it has its own step below.
 
 ## 1. The network
 
-Make this before the instances; the instance form will ask for it.
+Make this before the instances; the instance form will ask for it, and a
+**greyed-out VCN dropdown on that form means you are here instead** — an empty
+dropdown is a disabled one. Both instances share the one VCN, so this is done
+once.
 
 *Networking → Virtual cloud networks → Start VCN Wizard →
-"Create VCN with Internet Connectivity"*. Give it a name, accept every default,
-create. The wizard builds the VCN, a public and a private subnet, an internet
-gateway, route tables and a default security list — which is a good deal more
-than assembling those by hand.
+"Create VCN with Internet Connectivity"*. Check the compartment selector is the
+same one you will create the instances in, give it a name, and accept every
+default — the offered `10.0.0.0/16` with a `10.0.0.0/24` public subnet and a
+`10.0.1.0/24` private one. Nothing here has another network to avoid
+colliding with, so the ranges do not matter.
+
+The wizard builds the VCN, both subnets, an internet gateway, a NAT gateway,
+route tables and a default security list — a good deal more than assembling
+those by hand, and the security list is what step 3 edits.
+
+The instance form also offers to create a VCN inline. Use the wizard instead;
+the rest of this document assumes the layout it produces.
 
 ## 2. Create the instances
 
