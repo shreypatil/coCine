@@ -198,15 +198,20 @@ budget alert for a dollar under *Billing & Cost Management → Budgets*, which i
 worth doing once anyway -- an unnoticed charge is a silent failure, which is
 the same reason the keepalive exists.
 
-Leave the instance's own IPv6 assignment until the IPv4 path works end to end.
-The VCN is ready for it from step 1, and the server binds dual-stack already, so
-finishing the job later is three things: an address on the VNIC, `::/0` copies
-of the step 3 ingress rules, and an `AAAA` record.
+Do assign an IPv6 address while you are here. It is inert inbound — nothing
+reaches the instance over IPv6 until the security list has `::/0` rules, which
+it will not until step 3 — and it saves returning to the VNIC later. It does
+change outbound behaviour, since the instance may now prefer IPv6 for its own
+connections; if `setup.sh` later hangs in the package step rather than failing,
+suspect that first and check with
+`curl -6 -sS --max-time 5 https://rpm.nodesource.com`.
 
-**The `AAAA` record goes last, after IPv6 has been tested.** Clients try IPv6
-first when one exists, so a half-configured path fails in the worst way
-available here — perfect on your machine, hanging for somebody on a mobile
-network, and invisible in the logs because their connection never arrived.
+**The `AAAA` record is the piece that waits**, until IPv6 has actually been
+tested. Clients prefer IPv6 when one is published, so a half-configured path
+fails in the worst way available here — perfect on your machine, hanging for
+somebody on a mobile network, and invisible in the logs because their
+connection never arrived. The server binds dual-stack already, so what remains
+after this is the `::/0` ingress rules, a test, and then the record.
 
 Note both public IPs. They are *ephemeral* by default and are released when an
 instance is terminated, which matters here — reclamation means a rebuild will
