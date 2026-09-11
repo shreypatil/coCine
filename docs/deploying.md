@@ -105,6 +105,11 @@ default — the offered `10.0.0.0/16` with a `10.0.0.0/24` public subnet and a
 `10.0.1.0/24` private one. Nothing here has another network to avoid
 colliding with, so the ranges do not matter.
 
+Do tick the IPv6 option. It costs nothing, exposes nothing on its own, and the
+wizard does the part that is tedious by hand: an IPv6 block on the VCN, matching
+blocks on the subnets, and a `::/0` route to the internet gateway. Adding that
+to an existing VCN later is the annoying version of this.
+
 The wizard builds the VCN, both subnets, an internet gateway, a NAT gateway,
 route tables and a default security list — a good deal more than assembling
 those by hand, and the security list is what step 3 edits.
@@ -167,12 +172,15 @@ budget alert for a dollar under *Billing & Cost Management → Budgets*, which i
 worth doing once anyway -- an unnoticed charge is a silent failure, which is
 the same reason the keepalive exists.
 
-Skip the IPv6 option for now. It needs an IPv6 CIDR block on the VCN and the
-subnet and route rules to match, none of which the wizard creates, and it is an
-unhappy thing to debug on a first run. It is worth returning to: the server
-already binds dual-stack, so it would answer over IPv6 as soon as an address
-exists without any change here, and IPv6 can be added to an existing VCN and
-subnet later without rebuilding anything.
+Leave the instance's own IPv6 assignment until the IPv4 path works end to end.
+The VCN is ready for it from step 1, and the server binds dual-stack already, so
+finishing the job later is three things: an address on the VNIC, `::/0` copies
+of the step 3 ingress rules, and an `AAAA` record.
+
+**The `AAAA` record goes last, after IPv6 has been tested.** Clients try IPv6
+first when one exists, so a half-configured path fails in the worst way
+available here — perfect on your machine, hanging for somebody on a mobile
+network, and invisible in the logs because their connection never arrived.
 
 Note both public IPs. They are *ephemeral* by default and are released when an
 instance is terminated, which matters here — reclamation means a rebuild will
