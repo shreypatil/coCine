@@ -118,8 +118,15 @@ than assembling those by hand.
   list that first appears — it is under **Specialty and previous generation**.
   Look for the "Always Free eligible" label; the account allows two of them.
 - **Networking:** the VCN from step 1, its **public** subnet, and
-  *Assign a public IPv4 address* — a machine on the private subnet has no way
-  in.
+  *Assign a public IPv4 address*. The form is describing the instance's primary
+  VNIC — the virtual network card that will hold its addresses — and **a
+  primary VNIC's subnet cannot be changed afterwards**, so this is the only
+  answer in the form that costs an instance to get wrong. A private-subnet
+  machine has no inbound path at all, not even SSH. The VNIC name is cosmetic;
+  leave the private address automatic; leave network security groups unchecked,
+  since the subnet's security list is doing that job in step 3. If the VCN is
+  missing from the dropdown, the compartment selector beside it is pointing
+  somewhere else.
 - **SSH keys:** paste your own public key (`~/.ssh/id_ed25519.pub`) rather than
   having Oracle generate one, which it offers to let you download exactly once.
 - **Instance metadata service:** version 2 only. Nothing here reads instance
@@ -148,6 +155,13 @@ is the signal that matters, not the estimate. If that is uncomfortable, set a
 budget alert for a dollar under *Billing & Cost Management → Budgets*, which is
 worth doing once anyway -- an unnoticed charge is a silent failure, which is
 the same reason the keepalive exists.
+
+Skip the IPv6 option for now. It needs an IPv6 CIDR block on the VCN and the
+subnet and route rules to match, none of which the wizard creates, and it is an
+unhappy thing to debug on a first run. It is worth returning to: the server
+already binds dual-stack, so it would answer over IPv6 as soon as an address
+exists without any change here, and IPv6 can be added to an existing VCN and
+subnet later without rebuilding anything.
 
 Note both public IPs. They are *ephemeral* by default and are released when an
 instance is terminated, which matters here — reclamation means a rebuild will
