@@ -153,7 +153,10 @@ the rest of this document assumes the layout it produces.
   VNIC — the virtual network card that will hold its addresses — and **a
   primary VNIC's subnet cannot be changed afterwards**, so this is the only
   answer in the form that costs an instance to get wrong. A private-subnet
-  machine has no inbound path at all, not even SSH. The VNIC name is cosmetic;
+  machine has no inbound path at all, not even SSH. Both subnets already exist
+  — the wizard made them — and if the names are ambiguous, the subnet list has
+  an Access column reading Public or Private, and the wizard's public subnet is
+  the `10.0.0.0/24` one. The VNIC name is cosmetic;
   leave the private address automatic; leave network security groups unchecked,
   since the subnet's security list is doing that job in step 3. If the VCN is
   missing from the dropdown, the compartment selector beside it is pointing
