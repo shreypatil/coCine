@@ -148,11 +148,25 @@ certbot certonly --standalone -d "$DOMAIN" --agree-tos --register-unsafely-witho
 # tested: apps/server/test/turn-denials.test.ts reads that exact file and checks
 # a relay cannot be pointed at loopback, private ranges, link-local, or the
 # IPv4-mapped forms of any of them.
-sed -e "s/^static-auth-secret=.*/static-auth-secret=${SECRET}/" \
-    -e "s/^realm=.*/realm=${DOMAIN}/" \
-    -e "s#^# cert=.*#cert=/etc/letsencrypt/live/${DOMAIN}/fullchain.pem#" \
-    -e "s#^# pkey=.*#pkey=/etc/letsencrypt/live/${DOMAIN}/privkey.pem#" \
+# `|` as the delimiter, not `#`. The cert lines are commented out in the
+# template, so the pattern itself begins with `#` -- which with `s#...#...#`
+# terminates the pattern early and fails with "unknown option to `s'". The
+# paths contain `/`, so that is not available either.
+sed -e "s|^static-auth-secret=.*|static-auth-secret=${SECRET}|" \
+    -e "s|^realm=.*|realm=${DOMAIN}|" \
+    -e "s|^# *cert=.*|cert=/etc/letsencrypt/live/${DOMAIN}/fullchain.pem|" \
+    -e "s|^# *pkey=.*|pkey=/etc/letsencrypt/live/${DOMAIN}/privkey.pem|" \
     "$HERE/turnserver.conf" > /etc/coturn/turnserver.conf
+
+# The substitutions are load-bearing: a template that still says CHANGE-ME
+# would start a relay that rejects every credential the server mints, and the
+# symptom is indistinguishable from a wrong secret.
+for required in "static-auth-secret=${SECRET}" "realm=${DOMAIN}" \
+                "cert=/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" \
+                "pkey=/etc/letsencrypt/live/${DOMAIN}/privkey.pem"; do
+  grep -qxF "$required" /etc/coturn/turnserver.conf || {
+    echo "  turnserver.conf substitution failed for: ${required%%=*}" >&2; exit 1; }
+done
 chmod 640 /etc/coturn/turnserver.conf
 
 # Renewal. certbot renews every ninety days and coturn goes on serving the
