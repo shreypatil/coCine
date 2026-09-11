@@ -151,7 +151,7 @@ declare global {
       openPath: (path: string) => Promise<{ path: string; name: string; durationSec: number | null }>
       pathForFile: (f: File) => string | null
       getIdentity: () => Promise<{ id: string; name: string; server: string; lastCode: string | null }>
-      getDefaultServer: () => Promise<string>
+      getServers: () => Promise<{ dflt: string; shared: string }>
       listFilms: () => Promise<Library>
       removeFilm: (infoHash: string) => Promise<void>
       /** Hand the open film to the room; nothing leaves this machine before it. */

@@ -89,6 +89,9 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
       },
       pathForFile: () => '/films/stub.mkv',
       getIdentity: () => Promise.resolve({ id: 'local-1', name: 'anjali', server: 'ws://box:9000', lastCode: 'BCDFGHJK' }),
+      // `dflt` is what this build starts with; `shared` is the public server.
+      // The settings choice must offer the second -- see identity:servers.
+      getServers: () => Promise.resolve({ dflt: 'ws://127.0.0.1:8787', shared: 'wss://shared.example.com' }),
       listFilms: () => {
         (w.__calls as Array<{ name: string; args: unknown[] }>).push({ name: 'listFilms', args: [] })
         return Promise.resolve(w.__library ?? { films: [], usedBytes: 0, freeBytes: 500 * 1024 ** 3 })
@@ -561,7 +564,24 @@ describe('remembered identity', () => {
     await page.click('[data-testid="resetserver"]')
     await expect.poll(async () =>
       await page.locator('[data-testid="serverwhich"]').count()).toBe(1)
-    expect(await page.textContent('[data-testid="serverwhich"]')).toContain('127.0.0.1:8787')
+    expect(await page.textContent('[data-testid="serverwhich"]')).toContain('shared.example.com')
+    await page.close()
+  })
+
+  it('picks the public server, not whatever this build defaults to', async () => {
+    // The reported bug: in an unpackaged run "the shared one -- nothing to set
+    // up" resolved to the *build's* default, which is ws://127.0.0.1:8787, so
+    // choosing it produced "Nothing listening at ws://127.0.0.1:8787". The two
+    // are different questions and the choice must offer the public server.
+    await open()
+    await push({ connected: false })
+    await expect.poll(async () => await page.inputValue('[data-testid="serverchoice"]')).toBe('own')
+    await page.selectOption('[data-testid="serverchoice"]', 'shared')
+    await expect.poll(async () =>
+      await page.locator('[data-testid="serverwhich"]').count()).toBe(1)
+    const said = await page.textContent('[data-testid="serverwhich"]')
+    expect(said).toContain('shared.example.com')
+    expect(said).not.toContain('127.0.0.1')
     await page.close()
   })
 

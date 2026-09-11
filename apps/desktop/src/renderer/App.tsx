@@ -21,11 +21,11 @@ const size = (b: number): string => {
 }
 /** Kept in step with the main process, which uses the same value. */
 /**
- * Filled in from the main process at startup. Previously this file kept its own
- * copy of the address, which meant "use default" pointed at localhost even on a
- * release built for the shared server.
+ * Replaced from the main process at startup, which is the only thing that knows
+ * the real address. Kept deliberately wrong-looking so a build that failed to
+ * ask is obvious rather than quietly pointing somewhere plausible.
  */
-const FALLBACK_SERVER = 'ws://127.0.0.1:8787'
+const FALLBACK_SHARED = ''
 
 /** `wss://cocine.duckdns.org` -> `cocine.duckdns.org`, for saying where rooms
  *  live without showing people a protocol scheme they did not ask about. */
@@ -143,7 +143,8 @@ export function App (): ReactElement {
   const [joinCode, setJoinCode] = useState('')
   const [name, setName] = useState('')
   const [identityLoaded, setIdentityLoaded] = useState(false)
-  const [defaultServer, setDefaultServer] = useState(FALLBACK_SERVER)
+  /** The public server. "The shared one" means this in every build. */
+  const [sharedServer, setSharedServer] = useState(FALLBACK_SHARED)
   const [draft, setDraft] = useState('')
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -213,8 +214,8 @@ export function App (): ReactElement {
   // panel is filled in rather than asking for the same three answers every launch.
   useEffect(() => {
     let live = true
-    void window.cocine.getDefaultServer?.()
-      .then(d => { if (live && d) setDefaultServer(d) })
+    void window.cocine.getServers?.()
+      .then(v => { if (live && v?.shared) setSharedServer(v.shared) })
       .catch(() => { /* keep the fallback */ })
     void window.cocine.getIdentity().then(id => {
       if (!live) return
@@ -744,16 +745,16 @@ export function App (): ReactElement {
               <label className="opt">
                 Which server
                 <select className="sel" data-testid="serverchoice"
-                  value={url === defaultServer ? 'shared' : 'own'}
-                  onChange={e => setUrl(e.target.value === 'shared' ? defaultServer : '')}>
+                  value={url === sharedServer && sharedServer ? 'shared' : 'own'}
+                  onChange={e => setUrl(e.target.value === 'shared' ? sharedServer : '')}>
                   <option value="shared">The shared one — nothing to set up</option>
                   <option value="own">My own server</option>
                 </select>
               </label>
-              {url === defaultServer
+              {url === sharedServer && sharedServer
                 ? (
                   <p className="quiet small" data-testid="serverwhich">
-                    Rooms run on {hostOf(defaultServer)}. Everyone you invite needs to be on the
+                    Rooms run on {hostOf(sharedServer)}. Everyone you invite needs to be on the
                     same server, and the film itself still goes between you rather than through it.
                   </p>
                   )
@@ -762,8 +763,10 @@ export function App (): ReactElement {
                     Server address
                     <input value={url} onChange={e => setUrl(e.target.value)} spellCheck={false}
                       placeholder="wss://cocine.example.com" data-testid="server" />
-                    <button className="mini reset" data-testid="resetserver"
-                      onClick={() => setUrl(defaultServer)}>use the shared one</button>
+                    {sharedServer && (
+                      <button className="mini reset" data-testid="resetserver"
+                        onClick={() => setUrl(sharedServer)}>use the shared one</button>
+                    )}
                   </label>
                   )}
               <div className="opts" data-testid="roomoptions">

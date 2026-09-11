@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { RoomClient } from '@cocine/client'
 import { VideoWindow } from './video-window.js'
 import { createHandlers, type RoomLike } from './handlers.js'
-import { IdentityStore, identityPathFor, defaultServer } from './identity.js'
+import { IdentityStore, identityPathFor, defaultServer, PUBLIC_SERVER } from './identity.js'
 import { FilmStore, TransferManager, OriginTransfer, installWebRtc, webRtcFailure, type MediaTransport } from '@cocine/client'
 import { sourceId, type Media } from '@cocine/protocol'
 import { MpvNotFoundError } from '@cocine/player'
@@ -579,7 +579,7 @@ const handlers = createHandlers({
   setFullScreen: on => mainWin?.setFullScreen(on),
   isFullScreen: () => mainWin?.isFullScreen() ?? false,
   getIdentity: () => identity.get(),
-  getDefaultServer: () => defaultServer(app.isPackaged),
+  getServers: () => ({ dflt: defaultServer(app.isPackaged), shared: PUBLIC_SERVER }),
   saveIdentity: patch => identity.save(patch),
   // Built on demand as well as eagerly: an early attempt can legitimately fail
   // (no tracker URL yet), and one that never retried is what made sharing

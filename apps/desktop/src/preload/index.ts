@@ -11,7 +11,7 @@ const api = {
     viewport?: { width: number; height: number }
   }) => ipcRenderer.invoke('video:slot', slot),
   getIdentity: () => ipcRenderer.invoke('identity:get'),
-  getDefaultServer: () => ipcRenderer.invoke('identity:defaultServer'),
+  getServers: () => ipcRenderer.invoke('identity:servers'),
   listFilms: () => ipcRenderer.invoke('films:list'),
   removeFilm: (infoHash: string) => ipcRenderer.invoke('films:remove', infoHash),
   receiveFilm: (info: unknown) => ipcRenderer.invoke('film:receive', info),

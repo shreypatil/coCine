@@ -742,3 +742,25 @@ describe('unloading a film, from every state it can be in', () => {
     expect(deps.getMediaPath()).toBeNull()
   })
 })
+
+describe('which servers the renderer is told about', () => {
+  // The two are different questions, and answering them with one value was the
+  // bug: in an unpackaged run the build default is localhost, so a settings
+  // choice bound to it offered "the shared one -- nothing to set up" and then
+  // failed to connect to 127.0.0.1.
+  it('reports the build default and the public server separately', async () => {
+    const { h } = build({
+      getServers: () => ({ dflt: 'ws://127.0.0.1:8787', shared: 'wss://cocine.duckdns.org' })
+    })
+    expect(await call(h, 'identity:servers')).toEqual({
+      dflt: 'ws://127.0.0.1:8787', shared: 'wss://cocine.duckdns.org'
+    })
+  })
+
+  it('answers with blanks rather than throwing when nothing provides them', async () => {
+    // A renderer that asks an older main process should fall back to showing
+    // the address field, not crash the settings panel.
+    const { h } = build()
+    expect(await call(h, 'identity:servers')).toEqual({ dflt: '', shared: '' })
+  })
+})
