@@ -152,11 +152,23 @@ certbot certonly --standalone -d "$DOMAIN" --agree-tos --register-unsafely-witho
 # template, so the pattern itself begins with `#` -- which with `s#...#...#`
 # terminates the pattern early and fails with "unknown option to `s'". The
 # paths contain `/`, so that is not available either.
+# coturn behind OCI's NAT. The instance only ever sees its private address, so
+# without this it advertises 10.x.x.x in its allocation responses and every
+# relayed call is handed an unroutable candidate -- which fails exactly like a
+# credential problem. The public address is whatever the domain resolves to;
+# certbot has already proven that points here.
+PUBLIC_IP="$(getent ahostsv4 "$DOMAIN" | awk '{print $1; exit}')"
+PRIVATE_IP="$(hostname -I | awk '{print $1}')"
+[ -n "$PUBLIC_IP" ] || { echo "  cannot resolve $DOMAIN to set external-ip" >&2; exit 1; }
+
 sed -e "s|^static-auth-secret=.*|static-auth-secret=${SECRET}|" \
     -e "s|^realm=.*|realm=${DOMAIN}|" \
     -e "s|^# *cert=.*|cert=/etc/letsencrypt/live/${DOMAIN}/fullchain.pem|" \
     -e "s|^# *pkey=.*|pkey=/etc/letsencrypt/live/${DOMAIN}/privkey.pem|" \
     "$HERE/turnserver.conf" > /etc/coturn/turnserver.conf
+
+printf '\n# Set by setup-turn.sh: this instance never sees its public address.\nexternal-ip=%s/%s\n' \
+  "$PUBLIC_IP" "$PRIVATE_IP" >> /etc/coturn/turnserver.conf
 
 # The substitutions are load-bearing: a template that still says CHANGE-ME
 # would start a relay that rejects every credential the server mints, and the
@@ -177,10 +189,22 @@ chmod 640 /etc/coturn/turnserver.conf
 mkdir -p /etc/letsencrypt/renewal-hooks/deploy
 cat > /etc/letsencrypt/renewal-hooks/deploy/cocine-coturn.sh <<'HOOK'
 #!/bin/sh
+# Renewal writes fresh files into archive/ as root-only, so the grant has to be
+# re-applied every time or turns:// silently stops working ninety days later.
+chgrp -R coturn /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null
+chmod -R g+rX   /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null
 systemctl is-active --quiet coturn && systemctl restart coturn
 HOOK
 chmod 755 /etc/letsencrypt/renewal-hooks/deploy/cocine-coturn.sh
 systemctl enable --now certbot-renew.timer 2>/dev/null ||   systemctl enable --now certbot.timer 2>/dev/null || true
+
+# certbot writes these root-only, and coturn runs as its own user. Without the
+# grant it starts, warns that it "cannot find certificate file", disables the
+# TLS and DTLS listeners, and ignores tls-listening-port entirely -- so plain
+# TURN works while turns:// on 443, the path that saves a call on a network
+# that blocks UDP, silently does not exist.
+chgrp -R coturn /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null || true
+chmod -R g+rX   /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null || true
 
 systemctl enable --now coturn
 sleep 2
@@ -210,7 +234,7 @@ cat <<NEXT
   Now on the signalling instance, in /etc/cocine/server.env:
 
       COCINE_TURN_URLS=turn:${DOMAIN}:3478,turns:${DOMAIN}:443
-      COCINE_TURN_SECRET=${SECRET}
+      COCINE_TURN_SECRET=<the secret you passed as argument 2>
 
   then: sudo systemctl restart cocine-server
 
