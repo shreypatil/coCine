@@ -30,6 +30,15 @@ Two Always Free instances, both AMD micro shapes:
 1/8-OCPU box, and voice is what people notice first when it stutters. The second
 instance is free and would otherwise sit idle.
 
+**Why a micro is enough for the relay.** `iceServersFor` in
+`apps/server/src/turn.ts` hands TURN credentials to the voice plane only; the
+transfer client is given public STUN and nothing else, so film data cannot cross
+the relay — there is no credential to fall back to and no flag to flip. That
+leaves the relay carrying Opus audio, kilobits a stream. Ten people in full mesh
+with every pair relaying is still single-digit megabits against the shape's
+50 Mbps. Were bulk allowed to relay, one 4 GB film would cross the box twice and
+this shape would be hopeless.
+
 **Why Oracle at all**, and the measurements behind it, are in
 [`phase-B-plan.md`](phase-B-plan.md#b2--a-publicly-reachable-server). The short
 version: 10 TB of egress against Render's 5 GB, rooms that survive somebody
