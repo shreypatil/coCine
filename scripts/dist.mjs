@@ -27,10 +27,18 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 const app = join(root, 'apps', 'desktop')
 
+/**
+ * `host` is the platform for which this target needs no staging at all, because
+ * npm already installed the right binaries. Whether a build is foreign is
+ * therefore a question about the machine doing it, not a property of the
+ * target -- `mac` was hardcoded foreign, which meant building a Mac app *on a
+ * Mac* would fetch arm64 binaries and swap them over the correct native ones
+ * that were already there.
+ */
 const TARGETS = {
-  win: { flag: '--win', stage: 'win32-x64', foreign: true },
-  mac: { flag: '--mac', stage: 'darwin-arm64', foreign: true },
-  linux: { flag: '--linux', stage: null, foreign: false }
+  win: { flag: '--win', stage: 'win32-x64', host: 'win32' },
+  mac: { flag: '--mac', stage: 'darwin-arm64', host: 'darwin' },
+  linux: { flag: '--linux', stage: null, host: 'linux' }
 }
 
 const target = process.argv[2]
@@ -39,13 +47,18 @@ if (!Object.keys(TARGETS).includes(target ?? '')) {
   process.exit(1)
 }
 const spec = TARGETS[target]
+/** Staging only makes sense when this machine is not the target. */
+const foreign = spec.stage !== null && process.platform !== spec.host
+if (spec.stage && !foreign) {
+  console.log(`  building ${target} on ${process.platform}: using the binaries npm installed`)
+}
 const run = (cmd, args, cwd = root) => execFileSync(cmd, args, { cwd, stdio: 'inherit' })
 
 /** Files put aside while a foreign build runs, and put back afterwards. */
 const swapped = []
 
 function swapIn () {
-  if (!spec.foreign) return
+  if (!foreign) return
   run('node', [join(here, 'fetch-native.mjs'), target])
   const manifest = JSON.parse(readFileSync(join(root, '.native', spec.stage, 'manifest.json'), 'utf8'))
   const backups = join(root, '.native', 'host-backup')
@@ -104,9 +117,14 @@ if (gaps.length) {
  * legitimate, and PATH is a real answer there.
  */
 const bundled = [
-  { name: 'ffmpeg', dir: join(app, 'resources', 'ffmpeg', target), needs: ['ffmpeg', 'ffprobe'] },
-  // Linux packages declare mpv as a dependency instead of bundling it.
-  ...(target === 'linux' ? [] : [{ name: 'mpv', dir: join(app, 'resources', 'mpv', target), needs: ['mpv'] }])
+  { name: 'ffmpeg', dir: join(app, 'resources', 'ffmpeg', target), needs: ['ffmpeg', 'ffprobe'], required: true },
+  // Linux packages declare mpv as a dependency instead of bundling it. Since
+  // B1.6 the <video> engine is the default on every platform, so mpv is only
+  // reached by someone who sets COCINE_PLAYER deliberately -- worth staging
+  // where it is easy, not worth blocking a build over.
+  ...(target === 'linux'
+    ? []
+    : [{ name: 'mpv', dir: join(app, 'resources', 'mpv', target), needs: ['mpv'], required: false }])
 ]
 for (const b of bundled) {
   const exe = target === 'win' ? '.exe' : ''
@@ -114,8 +132,11 @@ for (const b of bundled) {
   if (missing.length) {
     console.warn(
       `\n  ! ${b.name} is not staged for ${target}: ${missing.join(', ')} missing from ${b.dir}\n` +
-      `    The build will proceed and the installed copy will fall back to PATH,\n` +
-      `    which the person who installs it almost certainly has not got.\n` +
+      (b.required
+        ? `    The build will proceed and the installed copy will fall back to PATH,\n` +
+          `    which the person who installs it almost certainly has not got.\n`
+        : `    Optional: the <video> engine is the default, and mpv is only used\n` +
+          `    by someone who sets COCINE_PLAYER=mpv deliberately.\n`) +
       `    Fix: node scripts/fetch-${b.name}.mjs ${target}\n`
     )
   }

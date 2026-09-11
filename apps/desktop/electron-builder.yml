@@ -59,11 +59,15 @@ mac:
     # beside it. All four publish prebuilds for every platform, so dropping the
     # local build is exactly right.
     - '!**/node_modules/{bufferutil,utf-8-validate,utp-native,fs-native-extensions}/build/**'
-    - '!**/node_modules/@node-datachannel/!(darwin-arm64|darwin-x64)/**'
+    - '!**/node_modules/@node-datachannel/!(darwin-arm64)/**'
     - from: ../../.native/darwin-arm64/addon
       to: node_modules/@node-datachannel/darwin-arm64
   category: public.app-category.entertainment
-  target: [{ target: dmg, arch: [arm64, x64] }]
+  # Apple Silicon only, deliberately. Intel Macs would need a darwin-x64 WebRTC
+  # addon staged too, and scripts/fetch-native.mjs stages only arm64 -- an x64
+  # dmg would install and then fail to connect anybody, which is how the Windows
+  # installer shipped twice with no WebRTC at all.
+  target: [{ target: dmg, arch: [arm64] }]
   # identity: null keeps electron-builder from picking up a random keychain
   # certificate and producing a build signed with something unexpected.
   identity: null
