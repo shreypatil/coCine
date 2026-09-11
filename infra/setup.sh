@@ -177,6 +177,33 @@ say "trimming unused services"
 systemctl disable --now pmlogger pmie pmcd >/dev/null 2>&1 || true
 systemctl disable --now rpcbind.socket rpcbind >/dev/null 2>&1 || true
 
+# --- stop routine maintenance from starving the box --------------------------
+# This shape is 1/8 OCPU -- about an eighth of a core sustained, whatever nproc
+# reports. Ksplice's live kernel patching and dnf's metadata refresh each
+# saturate it completely, and while one runs nothing else gets enough CPU to be
+# useful: sshd accepts the TCP connection and then never manages to send a
+# banner, which looks exactly like a firewall problem and is not one. Left
+# alone, either firing mid-film would stall the server and every room with it.
+#
+# The fix is priority, not removal. Ksplice is applying kernel security patches
+# and should keep doing so; it just must yield, the same way keepalive.sh does.
+say "de-prioritising maintenance jobs"
+for unit in ksplice-agent dnf-makecache; do
+  mkdir -p "/etc/systemd/system/${unit}.service.d"
+  cat > "/etc/systemd/system/${unit}.service.d/nice.conf" <<'DROPIN'
+[Service]
+Nice=19
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+DROPIN
+done
+
+# Disabling the PCP services left their check timers armed, firing every ~24
+# minutes to restart what was just disabled.
+systemctl disable --now \
+  pmlogger_check.timer pmlogger_farm_check.timer pmlogger_daily.timer \
+  pmie_check.timer pmie_farm_check.timer pmie_daily.timer >/dev/null 2>&1 || true
+
 # --- firewall ----------------------------------------------------------------
 # Oracle Linux images ship iptables rules that reject almost everything, which
 # is the reason "I opened the port in the console and it still does not work"
