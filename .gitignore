@@ -32,3 +32,4 @@ release/
 *.local.conf
 .env
 .env.*
+setup_and_deploy.md
