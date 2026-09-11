@@ -206,7 +206,11 @@ systemctl enable --now certbot-renew.timer 2>/dev/null ||   systemctl enable --n
 chgrp -R coturn /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null || true
 chmod -R g+rX   /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null || true
 
-systemctl enable --now coturn
+systemctl enable coturn >/dev/null 2>&1 || true
+# restart, not `enable --now`: on a re-run coturn is already active, and
+# --now does nothing to a running service -- so a corrected turnserver.conf or
+# a fresh certificate grant would be written and never read.
+systemctl restart coturn
 sleep 2
 systemctl is-active --quiet coturn && echo "  coturn is running" || {
   echo "  coturn did not start. journalctl -u coturn -n 50" >&2; exit 1; }
