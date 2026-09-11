@@ -76,6 +76,34 @@ sleep 2
 systemctl is-active --quiet coturn && echo "  coturn is running" || {
   echo "  coturn did not start. journalctl -u coturn -n 50" >&2; exit 1; }
 
+# --- reclaim memory the image gives away -------------------------------------
+# Oracle Linux reserves a crash-dump area sized by a rule that reads
+# `crashkernel=1G-64G:448M` -- sensible on a 32 GB server, catastrophic here.
+# It takes 448 MB of the 945 MB, which is 47% of the machine, to hold a vmcore
+# nobody on this deployment would ever read; journald is what we would look at.
+#
+# It does not apply on the provisioning boot, so a fresh instance reports the
+# full 945 MB and looks fine. The reservation appears on the FIRST REBOOT, which
+# is a memorably bad time to discover it -- a 1 GB box drops to 498 MB with the
+# cloud agent already holding 156 MB of that, and sshd starts failing to fork.
+systemctl disable --now kdump >/dev/null 2>&1 || true
+grubby --update-kernel=ALL --remove-args=crashkernel >/dev/null 2>&1 || true
+grubby --update-kernel=ALL --args=crashkernel=no >/dev/null 2>&1 || true
+if grep -q 'crashkernel=[0-9]' /proc/cmdline 2>/dev/null; then
+  echo "  note: reboot to reclaim 448 MB still reserved for kdump" >&2
+fi
+
+# mcelog cannot work on the AMD family these shapes use and fails on every boot,
+# leaving a permanently red `systemctl --failed`.
+systemctl disable --now mcelog >/dev/null 2>&1 || true
+
+# Persistent logs. The journal defaults to /run and dies with the boot, so the
+# evidence of any incident is gone by the time you reboot to recover from it.
+# There are 24 GB free; this is cheap.
+mkdir -p /var/log/journal
+systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+systemctl restart systemd-journald
+
 # The same trim as the signalling box; see setup.sh for why the cloud agent and
 # tuned are left alone.
 systemctl disable --now pmlogger pmie pmcd >/dev/null 2>&1 || true

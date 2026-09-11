@@ -121,6 +121,35 @@ install -m 644 "$HERE/cocine-keepalive.timer" /etc/systemd/system/
 mkdir -p /opt/cocine/infra
 install -m 755 "$HERE/keepalive.sh" /opt/cocine/infra/keepalive.sh
 
+# --- reclaim memory the image gives away -------------------------------------
+# Oracle Linux reserves a crash-dump area sized by a rule that reads
+# `crashkernel=1G-64G:448M` -- sensible on a 32 GB server, catastrophic here.
+# It takes 448 MB of the 945 MB, which is 47% of the machine, to hold a vmcore
+# nobody on this deployment would ever read; journald is what we would look at.
+#
+# It does not apply on the provisioning boot, so a fresh instance reports the
+# full 945 MB and looks fine. The reservation appears on the FIRST REBOOT, which
+# is a memorably bad time to discover it -- a 1 GB box drops to 498 MB with the
+# cloud agent already holding 156 MB of that, and sshd starts failing to fork.
+say "reclaiming crash-dump memory"
+systemctl disable --now kdump >/dev/null 2>&1 || true
+grubby --update-kernel=ALL --remove-args=crashkernel >/dev/null 2>&1 || true
+grubby --update-kernel=ALL --args=crashkernel=no >/dev/null 2>&1 || true
+if grep -q 'crashkernel=[0-9]' /proc/cmdline 2>/dev/null; then
+  RECLAIM_PENDING=1   # reservation is live right now; a reboot gets it back
+fi
+
+# mcelog cannot work on the AMD family these shapes use and fails on every boot,
+# leaving a permanently red `systemctl --failed`.
+systemctl disable --now mcelog >/dev/null 2>&1 || true
+
+# Persistent logs. The journal defaults to /run and dies with the boot, so the
+# evidence of any incident is gone by the time you reboot to recover from it.
+# There are 24 GB free; this is cheap.
+mkdir -p /var/log/journal
+systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+systemctl restart systemd-journald
+
 # --- trim ---------------------------------------------------------------------
 # Oracle Linux ships services this box has no use for. Worth about 45 MB of the
 # 945 MB, which is housekeeping rather than rescue -- but a rebuild should not
@@ -171,6 +200,11 @@ if curl -fsS --max-time 5 http://127.0.0.1:8787/health >/dev/null; then
   echo "  server is up locally."
   echo "  Next: point ${DOMAIN} at this instance's public IP, then check"
   echo "      curl https://${DOMAIN}/health"
+  if [ -n "${RECLAIM_PENDING:-}" ]; then
+    echo
+    echo "  NOTE: 448 MB is still reserved for kdump on the running kernel."
+    echo "        Reboot to get it back -- this box has 945 MB, not 498 MB."
+  fi
   echo "  and build the desktop app with"
   echo "      COCINE_DEFAULT_SERVER=wss://${DOMAIN} npm run dist:linux"
 else

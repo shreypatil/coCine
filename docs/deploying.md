@@ -361,6 +361,33 @@ settings, so nobody is stuck with it.
 
 ---
 
+## The 448 MB the image gives away
+
+Oracle Linux sets `crashkernel=1G-64G:448M` on the kernel command line — a
+crash-dump capture area sized by a rule that is reasonable on a 32 GB server and
+takes **47% of a 1 GB micro**. `setup.sh` removes it.
+
+What makes this worth a section rather than a line in a script is when it
+appears. The reservation does not apply on the provisioning boot, so a fresh
+instance reports the full 945 MB and looks perfectly healthy. It lands on the
+**first reboot** — and a 1 GB box that drops to 498 MB, with the cloud agent
+already holding 156 MB of what is left, does not fail cleanly. It fails as a
+machine that accepts TCP on port 22 and then never completes an SSH handshake,
+because sshd cannot fork. That reads like a firewall or a network fault, and
+neither is where you should be looking.
+
+The dump would be of no use here anyway; journald is what anybody would actually
+read.
+
+While in the area, `setup.sh` also disables `mcelog`, which cannot work on the
+AMD family these shapes use and fails on every boot, and switches the journal to
+persistent storage. The journal defaults to `/run`, so it dies with the boot —
+which means the evidence of any incident is gone precisely when you reboot to
+recover from it. That is not a hypothetical: it is how the first occurrence of
+the crashkernel problem on this deployment became undiagnosable.
+
+---
+
 ## What the setup leaves running
 
 `setup.sh` disables Performance Co-Pilot and `rpcbind`, worth about 45 MB of
