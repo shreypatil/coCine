@@ -110,6 +110,14 @@ wizard does the part that is tedious by hand: an IPv6 block on the VCN, matching
 blocks on the subnets, and a `::/0` route to the internet gateway. Adding that
 to an existing VCN later is the annoying version of this.
 
+Take the **Oracle-allocated /56** and leave the other two prefix fields empty.
+BYOIPv6 is for address space you own and have imported, which you would know
+about. The ULA prefix is `fd00::/8`, the IPv6 `192.168.x.x` — private, and so
+the wrong answer for a machine whose entire job is being publicly reachable. It
+would fail looking like success: addresses appear on the instance and nothing
+outside Oracle can reach them. `ice.ts` would side with the internet, since it
+only advertises global-unicast `2000::/3` candidates.
+
 The wizard builds the VCN, both subnets, an internet gateway, a NAT gateway,
 route tables and a default security list — a good deal more than assembling
 those by hand, and the security list is what step 3 edits.
