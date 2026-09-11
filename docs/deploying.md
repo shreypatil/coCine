@@ -118,6 +118,13 @@ would fail looking like success: addresses appear on the instance and nothing
 outside Oracle can reach them. `ice.ts` would side with the internet, since it
 only advertises global-unicast `2000::/3` candidates.
 
+Leave DNS hostnames enabled and take the labels the wizard fills in. The
+`.oraclevcn.com` name it derives is internal to the VCN and unrelated to the
+public records in step 4 — easy to conflate with them, and no substitute.
+Nothing here depends on it: the two instances never speak privately, and the
+relay's keepalive reaches the signalling server at its public address like any
+other client.
+
 The wizard builds the VCN, both subnets, an internet gateway, a NAT gateway,
 route tables and a default security list — a good deal more than assembling
 those by hand, and the security list is what step 3 edits.
