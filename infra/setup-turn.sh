@@ -120,15 +120,17 @@ systemctl restart systemd-journald
 #
 # The fix is priority, not removal. Ksplice is applying kernel security patches
 # and should keep doing so; it just must yield, the same way keepalive.sh does.
-for unit in ksplice-agent dnf-makecache; do
-  mkdir -p "/etc/systemd/system/${unit}.service.d"
-  cat > "/etc/systemd/system/${unit}.service.d/nice.conf" <<'DROPIN'
+# dnf-makecache disabled, not niced: nicing it inverts priority against the dnf
+# lock. See setup.sh.
+systemctl disable --now dnf-makecache.timer >/dev/null 2>&1 || true
+rm -rf /etc/systemd/system/dnf-makecache.service.d
+mkdir -p /etc/systemd/system/ksplice-agent.service.d
+cat > /etc/systemd/system/ksplice-agent.service.d/nice.conf <<'DROPIN'
 [Service]
 Nice=19
 CPUSchedulingPolicy=idle
 IOSchedulingClass=idle
 DROPIN
-done
 
 # Disabling the PCP services left their check timers armed, firing every ~24
 # minutes to restart what was just disabled.

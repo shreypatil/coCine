@@ -35,6 +35,29 @@ say () { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 # instead -- as they originally were -- and the install is the one thing that
 # has to survive without them, which on this shape it does not.
 
+# --- swap --------------------------------------------------------------------
+# The image ships a 498 MB swapfile, which is not enough to install its own
+# packages. dnf loading metadata for six repositories reached a 748 MB resident
+# set on a 945 MB box and was OOM-killed mid-transaction -- and because the
+# kernel picks a victim by size, what dies is whatever is largest, not whatever
+# is at fault.
+#
+# 2 GB on a disk with 24 GB free. `vm.swappiness=10` keeps it out of the way in
+# normal running: the server holds rooms in memory and should not be paged out
+# during a film, but having somewhere to spill beats being killed. This is
+# provisioning headroom, not a runtime crutch.
+say "swap"
+if [ ! -f /cocine.swap ]; then
+  fallocate -l 2G /cocine.swap || dd if=/dev/zero of=/cocine.swap bs=1M count=2048 status=none
+  chmod 600 /cocine.swap
+  mkswap /cocine.swap >/dev/null
+  swapon /cocine.swap
+  grep -q '^/cocine.swap' /etc/fstab || echo '/cocine.swap none swap sw 0 0' >> /etc/fstab
+fi
+sysctl -qw vm.swappiness=10
+grep -q '^vm.swappiness' /etc/sysctl.d/99-cocine.conf 2>/dev/null \
+  || echo 'vm.swappiness=10' > /etc/sysctl.d/99-cocine.conf
+
 # --- reclaim memory the image gives away -------------------------------------
 # Oracle Linux reserves a crash-dump area sized by a rule that reads
 # `crashkernel=1G-64G:448M` -- sensible on a 32 GB server, catastrophic here.
@@ -102,15 +125,27 @@ systemctl disable --now rpcbind.socket rpcbind >/dev/null 2>&1 || true
 # The fix is priority, not removal. Ksplice is applying kernel security patches
 # and should keep doing so; it just must yield, the same way keepalive.sh does.
 say "de-prioritising maintenance jobs"
-for unit in ksplice-agent dnf-makecache; do
-  mkdir -p "/etc/systemd/system/${unit}.service.d"
-  cat > "/etc/systemd/system/${unit}.service.d/nice.conf" <<'DROPIN'
+
+# dnf-makecache is DISABLED rather than de-prioritised, and the difference
+# matters. Nicing it produced a textbook priority inversion: the refresh crawled
+# along at SCHED_IDLE holding the dnf lock, while the install that wanted the
+# lock waited behind it -- so the box sat at 41 MB free with 1.4 GB in swap,
+# achieving nothing. It was also the single largest process on the machine at
+# 677 MB resident. Scheduled refresh buys nothing anyway: dnf refreshes on
+# demand when something is installed.
+systemctl disable --now dnf-makecache.timer >/dev/null 2>&1 || true
+systemctl stop dnf-makecache.service >/dev/null 2>&1 || true
+rm -rf /etc/systemd/system/dnf-makecache.service.d
+
+# Ksplice keeps running -- it applies kernel security patches -- but yields.
+# It does not take the dnf lock, so the inversion above does not apply to it.
+mkdir -p /etc/systemd/system/ksplice-agent.service.d
+cat > /etc/systemd/system/ksplice-agent.service.d/nice.conf <<'DROPIN'
 [Service]
 Nice=19
 CPUSchedulingPolicy=idle
 IOSchedulingClass=idle
 DROPIN
-done
 
 # Disabling the PCP services left their check timers armed, firing every ~24
 # minutes to restart what was just disabled.
