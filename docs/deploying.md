@@ -105,6 +105,13 @@ than assembling those by hand.
 
 *Compute → Instances → Create instance*, twice.
 
+- **Placement:** take the defaults. *Capacity type* is **on-demand** —
+  preemptible capacity can be reclaimed at half a minute's notice, which is
+  disqualifying for a server whose job is holding a room together for two
+  hours, and it is not Always Free eligible either. Leave *fault domain*
+  unspecified: pinning one can fail if that rack is full, and splitting these
+  two instances across racks buys little, since losing signalling ends the
+  evening whether or not the relay survived.
 - **Image:** Oracle Linux (the default). `setup.sh` also handles Debian and
   Ubuntu, but the login user differs: `opc` on Oracle Linux, `ubuntu` on Ubuntu.
 - **Shape:** press *Change shape*. `VM.Standard.E2.1.Micro` is **not** in the
