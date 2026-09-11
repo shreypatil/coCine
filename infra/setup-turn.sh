@@ -26,8 +26,14 @@ if [ "$(id -u)" -ne 0 ]; then echo "run with sudo" >&2; exit 1; fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if command -v dnf >/dev/null; then dnf install -y coturn firewalld certbot
-else apt-get update -y && apt-get install -y coturn firewalld certbot; fi
+# Idle priority, and skip the 30 MB Ksplice metadata: see setup.sh. dnf at
+# normal priority makes this shape stop answering SSH mid-install.
+PKG="nice -n 19 ionice -c3"
+if command -v dnf >/dev/null; then
+  $PKG dnf --disablerepo=ol9_ksplice install -y coturn firewalld certbot
+else
+  $PKG apt-get update -y && $PKG apt-get install -y coturn firewalld certbot
+fi
 
 # The firewall comes before certbot, because the challenge needs port 80 open
 # and Oracle Linux images ship rules that reject it. Note that this only opens

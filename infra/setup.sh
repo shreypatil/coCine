@@ -28,98 +28,12 @@ if [ "$(id -u)" -ne 0 ]; then echo "run with sudo" >&2; exit 1; fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say () { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
-# --- packages ----------------------------------------------------------------
-say "packages"
-if command -v dnf >/dev/null; then
-  # Oracle Linux, which is what the micro shapes default to.
-  dnf install -y curl firewalld
-  curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
-  dnf install -y nodejs
-  dnf install -y 'dnf-command(copr)' || true
-  dnf copr enable -y @caddy/caddy || true
-  dnf install -y caddy
-else
-  apt-get update -y
-  apt-get install -y curl debian-keyring debian-archive-keyring apt-transport-https firewalld
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt-get install -y nodejs
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-    > /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -y && apt-get install -y caddy
-fi
-
-# --- user and layout ---------------------------------------------------------
-say "user and directories"
-id -u cocine >/dev/null 2>&1 || useradd --system --home /opt/cocine --shell /usr/sbin/nologin cocine
-mkdir -p /opt/cocine /etc/cocine /var/log/caddy
-chown -R cocine:cocine /opt/cocine
-
-# --- the server --------------------------------------------------------------
-# `server.mjs` is built on your machine with `npm run build:server` and copied
-# here. Nothing is compiled on the instance: a 1 GB box has no business holding
-# a toolchain, and `npm ci` at the repo root would pull Electron onto it.
-say "server"
-if [ ! -f /opt/cocine/server.mjs ]; then
-  cat >&2 <<'MISSING'
-  /opt/cocine/server.mjs is not there.
-
-  On your own machine:
-      npm run build:server
-      scp dist/server.mjs opc@<instance>:/tmp/server.mjs
-      sudo mv /tmp/server.mjs /opt/cocine/server.mjs
-
-  Then run this again.
-MISSING
-  exit 1
-fi
-
-# The bundle keeps one dependency external: the native WebRTC addon that
-# bittorrent-tracker needs. It cannot be bundled, so it is installed.
-if [ ! -d /opt/cocine/node_modules/webrtc-polyfill ]; then
-  say "the one runtime dependency"
-  sudo -u cocine bash -c 'cd /opt/cocine && npm init -y >/dev/null && npm i --omit=dev webrtc-polyfill'
-fi
-
-# --- configuration -----------------------------------------------------------
-say "configuration"
-if [ ! -f /etc/cocine/server.env ]; then
-  cat > /etc/cocine/server.env <<EOF
-PORT=8787
-
-# Not optional behind TLS. The server derives the tracker address from the Host
-# header otherwise, which gives clients ws:// on the wrong port -- and the
-# failure looks like the transfer being broken rather than the address being
-# wrong.
-COCINE_PUBLIC_HOST=wss://${DOMAIN}
-
-# Voice relay. Fill these in once coturn is running on the second instance; see
-# docs/deploying.md. Both or neither -- half a configuration hands out
-# credentials nothing will accept.
-# COCINE_TURN_URLS=turn:turn.${DOMAIN}:3478,turns:turn.${DOMAIN}:443
-# COCINE_TURN_SECRET=
-
-# Relay mode storage, optional. Without it the host is simply offered no
-# peer-to-peer-or-relay toggle.
-# COCINE_R2_ENDPOINT=
-# COCINE_R2_BUCKET=
-# COCINE_R2_KEY_ID=
-# COCINE_R2_SECRET=
-
-COCINE_VERSION=$(date -u +%Y-%m-%d)
-EOF
-  chmod 640 /etc/cocine/server.env
-  chown root:cocine /etc/cocine/server.env
-fi
-
-sed "s/cocine\.example\.com/${DOMAIN}/" "$HERE/Caddyfile" > /etc/caddy/Caddyfile
-
-install -m 644 "$HERE/cocine-server.service" /etc/systemd/system/
-install -m 644 "$HERE/cocine-keepalive.service" /etc/systemd/system/
-install -m 644 "$HERE/cocine-keepalive.timer" /etc/systemd/system/
-mkdir -p /opt/cocine/infra
-install -m 755 "$HERE/keepalive.sh" /opt/cocine/infra/keepalive.sh
+# The three sections below run BEFORE any package work, and the order is the
+# point. Stopping the unused services frees memory the install wants, the nice
+# drop-ins stop Ksplice and dnf-makecache fighting it for an eighth of a core,
+# and the crashkernel change is staged for the next boot. Run after the install
+# instead -- as they originally were -- and the install is the one thing that
+# has to survive without them, which on this shape it does not.
 
 # --- reclaim memory the image gives away -------------------------------------
 # Oracle Linux reserves a crash-dump area sized by a rule that reads
@@ -203,6 +117,112 @@ done
 systemctl disable --now \
   pmlogger_check.timer pmlogger_farm_check.timer pmlogger_daily.timer \
   pmie_check.timer pmie_farm_check.timer pmie_daily.timer >/dev/null 2>&1 || true
+
+# --- packages ----------------------------------------------------------------
+# Run the package manager at idle priority. This shape is 1/8 OCPU, and dnf
+# loading repository metadata saturates it so completely that sshd stops being
+# able to complete a handshake -- the box accepts TCP on 22 and then goes
+# silent, which looks like a network fault and is not one. Nicing it costs
+# nothing when nothing else wants the CPU, and keeps the machine reachable
+# while a fifteen-minute install runs.
+#
+# The Ksplice repository is excluded from these calls for the same reason: 30 MB
+# of metadata to parse, on a box that installs nothing from it. Ksplice itself
+# keeps working -- it does not go through these transactions.
+PKG="nice -n 19 ionice -c3"
+NOKS="--disablerepo=ol9_ksplice"
+
+say "packages"
+if command -v dnf >/dev/null; then
+  # Oracle Linux, which is what the micro shapes default to.
+  $PKG dnf $NOKS install -y curl firewalld
+  curl -fsSL https://rpm.nodesource.com/setup_20.x | $PKG bash -
+  $PKG dnf $NOKS install -y nodejs
+  $PKG dnf $NOKS install -y 'dnf-command(copr)' || true
+  $PKG dnf $NOKS copr enable -y @caddy/caddy || true
+  $PKG dnf $NOKS install -y caddy
+else
+  $PKG apt-get update -y
+  $PKG apt-get install -y curl debian-keyring debian-archive-keyring apt-transport-https firewalld
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  $PKG apt-get install -y nodejs
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+    > /etc/apt/sources.list.d/caddy-stable.list
+  $PKG apt-get update -y && $PKG apt-get install -y caddy
+fi
+
+# --- user and layout ---------------------------------------------------------
+say "user and directories"
+id -u cocine >/dev/null 2>&1 || useradd --system --home /opt/cocine --shell /usr/sbin/nologin cocine
+mkdir -p /opt/cocine /etc/cocine /var/log/caddy
+chown -R cocine:cocine /opt/cocine
+
+# --- the server --------------------------------------------------------------
+# `server.mjs` is built on your machine with `npm run build:server` and copied
+# here. Nothing is compiled on the instance: a 1 GB box has no business holding
+# a toolchain, and `npm ci` at the repo root would pull Electron onto it.
+say "server"
+if [ ! -f /opt/cocine/server.mjs ]; then
+  cat >&2 <<'MISSING'
+  /opt/cocine/server.mjs is not there.
+
+  On your own machine:
+      npm run build:server
+      scp dist/server.mjs opc@<instance>:/tmp/server.mjs
+      sudo mv /tmp/server.mjs /opt/cocine/server.mjs
+
+  Then run this again.
+MISSING
+  exit 1
+fi
+
+# The bundle keeps one dependency external: the native WebRTC addon that
+# bittorrent-tracker needs. It cannot be bundled, so it is installed.
+if [ ! -d /opt/cocine/node_modules/webrtc-polyfill ]; then
+  say "the one runtime dependency"
+  sudo -u cocine bash -c 'cd /opt/cocine && npm init -y >/dev/null && npm i --omit=dev webrtc-polyfill'
+fi
+
+# --- configuration -----------------------------------------------------------
+say "configuration"
+if [ ! -f /etc/cocine/server.env ]; then
+  cat > /etc/cocine/server.env <<EOF
+PORT=8787
+
+# Not optional behind TLS. The server derives the tracker address from the Host
+# header otherwise, which gives clients ws:// on the wrong port -- and the
+# failure looks like the transfer being broken rather than the address being
+# wrong.
+COCINE_PUBLIC_HOST=wss://${DOMAIN}
+
+# Voice relay. Fill these in once coturn is running on the second instance; see
+# docs/deploying.md. Both or neither -- half a configuration hands out
+# credentials nothing will accept.
+# COCINE_TURN_URLS=turn:turn.${DOMAIN}:3478,turns:turn.${DOMAIN}:443
+# COCINE_TURN_SECRET=
+
+# Relay mode storage, optional. Without it the host is simply offered no
+# peer-to-peer-or-relay toggle.
+# COCINE_R2_ENDPOINT=
+# COCINE_R2_BUCKET=
+# COCINE_R2_KEY_ID=
+# COCINE_R2_SECRET=
+
+COCINE_VERSION=$(date -u +%Y-%m-%d)
+EOF
+  chmod 640 /etc/cocine/server.env
+  chown root:cocine /etc/cocine/server.env
+fi
+
+sed "s/cocine\.example\.com/${DOMAIN}/" "$HERE/Caddyfile" > /etc/caddy/Caddyfile
+
+install -m 644 "$HERE/cocine-server.service" /etc/systemd/system/
+install -m 644 "$HERE/cocine-keepalive.service" /etc/systemd/system/
+install -m 644 "$HERE/cocine-keepalive.timer" /etc/systemd/system/
+mkdir -p /opt/cocine/infra
+install -m 755 "$HERE/keepalive.sh" /opt/cocine/infra/keepalive.sh
 
 # --- firewall ----------------------------------------------------------------
 # Oracle Linux images ship iptables rules that reject almost everything, which
