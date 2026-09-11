@@ -99,7 +99,15 @@ dropdown is a disabled one. Both instances share the one VCN, so this is done
 once.
 
 *Networking → Virtual cloud networks → Start VCN Wizard →
-"Create VCN with Internet Connectivity"*. Check the compartment selector is the
+"Create VCN with Internet Connectivity"*.
+
+**Not the "Create VCN" button beside it.** That one makes an empty shell — no
+subnets, no internet gateway, no route out — and the two forms ask overlapping
+questions, so nothing along the way tells you which you are in. The tell is the
+end: the wizard shows a review page listing what it will build. If no such list
+appears, back out. The symptom later is a VCN whose subnet list is empty.
+
+Check the compartment selector is the
 same one you will create the instances in, give it a name, and accept every
 default — the offered `10.0.0.0/16` with a `10.0.0.0/24` public subnet and a
 `10.0.1.0/24` private one. Nothing here has another network to avoid
