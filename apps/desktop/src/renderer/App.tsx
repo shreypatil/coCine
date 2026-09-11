@@ -20,7 +20,18 @@ const size = (b: number): string => {
   return `${(b / 1024).toFixed(0)} kB`
 }
 /** Kept in step with the main process, which uses the same value. */
-const DEFAULT_SERVER = 'ws://127.0.0.1:8787'
+/**
+ * Filled in from the main process at startup. Previously this file kept its own
+ * copy of the address, which meant "use default" pointed at localhost even on a
+ * release built for the shared server.
+ */
+const FALLBACK_SERVER = 'ws://127.0.0.1:8787'
+
+/** `wss://cocine.duckdns.org` -> `cocine.duckdns.org`, for saying where rooms
+ *  live without showing people a protocol scheme they did not ask about. */
+function hostOf (url: string): string {
+  try { return new URL(url).host } catch { return url }
+}
 
 /**
  * Electron wraps anything thrown in a handler as
@@ -132,6 +143,7 @@ export function App (): ReactElement {
   const [joinCode, setJoinCode] = useState('')
   const [name, setName] = useState('')
   const [identityLoaded, setIdentityLoaded] = useState(false)
+  const [defaultServer, setDefaultServer] = useState(FALLBACK_SERVER)
   const [draft, setDraft] = useState('')
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -201,6 +213,9 @@ export function App (): ReactElement {
   // panel is filled in rather than asking for the same three answers every launch.
   useEffect(() => {
     let live = true
+    void window.cocine.getDefaultServer?.()
+      .then(d => { if (live && d) setDefaultServer(d) })
+      .catch(() => { /* keep the fallback */ })
     void window.cocine.getIdentity().then(id => {
       if (!live) return
       setName(id.name)
@@ -726,14 +741,31 @@ export function App (): ReactElement {
             <div className="sect join">
               <h4>Watch together</h4>
               <label>Your name<input value={name} onChange={e => setName(e.target.value)} spellCheck={false} data-testid="name" /></label>
-              <label>
-                Server
-                <input value={url} onChange={e => setUrl(e.target.value)} spellCheck={false} data-testid="server" />
-                {url !== DEFAULT_SERVER && (
-                  <button className="mini reset" data-testid="resetserver"
-                    onClick={() => setUrl(DEFAULT_SERVER)}>use default</button>
-                )}
+              <label className="opt">
+                Which server
+                <select className="sel" data-testid="serverchoice"
+                  value={url === defaultServer ? 'shared' : 'own'}
+                  onChange={e => setUrl(e.target.value === 'shared' ? defaultServer : '')}>
+                  <option value="shared">The shared one — nothing to set up</option>
+                  <option value="own">My own server</option>
+                </select>
               </label>
+              {url === defaultServer
+                ? (
+                  <p className="quiet small" data-testid="serverwhich">
+                    Rooms run on {hostOf(defaultServer)}. Everyone you invite needs to be on the
+                    same server, and the film itself still goes between you rather than through it.
+                  </p>
+                  )
+                : (
+                  <label>
+                    Server address
+                    <input value={url} onChange={e => setUrl(e.target.value)} spellCheck={false}
+                      placeholder="wss://cocine.example.com" data-testid="server" />
+                    <button className="mini reset" data-testid="resetserver"
+                      onClick={() => setUrl(defaultServer)}>use the shared one</button>
+                  </label>
+                  )}
               <div className="opts" data-testid="roomoptions">
                 <h5>Your room</h5>
                 <label className="opt">

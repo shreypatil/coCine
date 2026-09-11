@@ -3,6 +3,23 @@ import { createServer, type Server as HttpServer } from 'node:http'
 import { RoomTracker, ANNOUNCE_PATH } from './tracker.js'
 
 /** Where anything outside asks whether this server is alive and busy. */
+/**
+ * Most people in one room.
+ *
+ * Not a licensing limit or a guess -- it is where this server stops being able
+ * to keep up. The periodic `transfer.status` broadcast sends an N-entry
+ * `perPeer` payload to N recipients and intersects N piece maps for the seek
+ * limit, so its cost is quadratic in room size. Measured on the deployed
+ * instance: 100 members cost about 95 MB, 150 cost 210 MB, and 200 reached
+ * 406 MB with 76 MB of the machine left. Past roughly a hundred the server
+ * queues outbound data faster than an eighth of a core can drain it.
+ *
+ * Fifty is comfortably inside the flat part of that curve and far beyond any
+ * plausible film night, and refusing the fifty-first person is much kinder than
+ * an out-of-memory kill that takes every other room down with it.
+ */
+export const MAX_ROOM_MEMBERS = 50
+
 export const HEALTH_PATH = '/health'
 /** Reported by /health so a deploy can be told apart from a restart. */
 const VERSION = process.env.COCINE_VERSION ?? 'dev'
@@ -47,6 +64,8 @@ export interface SignallingServerOptions {
   origin?: OriginConfig
   /** How long an empty room is kept before it is collected. */
   roomTtlMs?: number
+  /** Most people in one room. See MAX_ROOM_MEMBERS for why there is a limit. */
+  maxRoomMembers?: number
   /** Test affordance: delay every outbound message, with jitter, to stand in
    *  for a real network. Loopback is 0 ms, which exercises none of the clock
    *  estimation the design depends on. */
@@ -67,6 +86,7 @@ export class SignallingServer {
   readonly rooms: RoomStore
   private readonly startLeadMs: number
   private readonly roomTtlMs: number
+  private readonly maxRoomMembers: number
   private readonly log: (msg: string) => void
   private readonly delayMs: number
   private readonly jitterMs: number
@@ -78,6 +98,7 @@ export class SignallingServer {
   constructor (private readonly opts: SignallingServerOptions = {}) {
     this.startLeadMs = opts.startLeadMs ?? 300
     this.roomTtlMs = opts.roomTtlMs ?? 10 * 60_000
+    this.maxRoomMembers = opts.maxRoomMembers ?? MAX_ROOM_MEMBERS
     this.log = opts.log ?? (() => {})
     this.rooms = opts.store ?? new InMemoryRoomStore()
     this.delayMs = opts.simulatedDelayMs ?? 0
@@ -296,6 +317,15 @@ export class SignallingServer {
       } else {
         const found = this.rooms.get(normaliseCode(msg.code))
         if (!found) return this.send(ws, { t: 'error', message: 'No room with that code' })
+        // Checked before `add`, so the refusal costs the room nothing: a
+        // rejected joiner never appears in the member list, never triggers a
+        // broadcast, and never enlarges the next transfer.status payload.
+        if (found.members.size >= this.maxRoomMembers) {
+          return this.send(ws, {
+            t: 'error',
+            message: `That room is full (${this.maxRoomMembers} people). Start another one and watch in two groups.`
+          })
+        }
         room = found
       }
       const memberId = randomUUID()

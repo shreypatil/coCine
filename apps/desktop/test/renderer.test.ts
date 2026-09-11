@@ -535,15 +535,49 @@ describe('remembered identity', () => {
     await page.close()
   })
 
-  it('offers a way back to the default when the stored address is not it', async () => {
+  it('offers a way back to the shared server when the stored address is not it', async () => {
     // A stored address that no longer works is otherwise a dead end: the field
     // is prefilled with it and nothing says what it should have been.
     await open()
     await push({ connected: false })
     await expect.poll(async () => await page.inputValue('[data-testid="server"]')).toBe('ws://box:9000')
+    expect(await page.inputValue('[data-testid="serverchoice"]')).toBe('own')
+
     await page.click('[data-testid="resetserver"]')
-    expect(await page.inputValue('[data-testid="server"]')).toBe('ws://127.0.0.1:8787')
+    // Back on the shared server, the address field goes away entirely -- there
+    // is nothing to type, which is the point of it being the default.
+    await expect.poll(async () => await page.inputValue('[data-testid="serverchoice"]')).toBe('shared')
+    expect(await page.locator('[data-testid="server"]').count()).toBe(0)
     expect(await page.locator('[data-testid="resetserver"]').count()).toBe(0)
+    await page.close()
+  })
+
+  it('starts on the shared server and says where rooms live', async () => {
+    // Someone who was sent a build should not have to know a URL, or that a
+    // server exists at all.
+    await open()
+    await push({ connected: false })
+    await expect.poll(async () => await page.inputValue('[data-testid="serverchoice"]')).toBe('own')
+    await page.click('[data-testid="resetserver"]')
+    await expect.poll(async () =>
+      await page.locator('[data-testid="serverwhich"]').count()).toBe(1)
+    expect(await page.textContent('[data-testid="serverwhich"]')).toContain('127.0.0.1:8787')
+    await page.close()
+  })
+
+  it('lets someone choose their own server and type an address', async () => {
+    // Self-hosting stays available to anyone technical; it is the option
+    // rather than the requirement.
+    await open()
+    await push({ connected: false })
+    await page.click('[data-testid="resetserver"]')
+    await expect.poll(async () => await page.inputValue('[data-testid="serverchoice"]')).toBe('shared')
+
+    await page.selectOption('[data-testid="serverchoice"]', 'own')
+    await expect.poll(async () => await page.locator('[data-testid="server"]').count()).toBe(1)
+    expect(await page.inputValue('[data-testid="server"]')).toBe('')
+    await page.fill('[data-testid="server"]', 'wss://mine.example.com')
+    expect(await page.inputValue('[data-testid="serverchoice"]')).toBe('own')
     await page.close()
   })
 

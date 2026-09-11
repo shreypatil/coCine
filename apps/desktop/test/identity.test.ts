@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { IdentityStore, identityPathFor, DEFAULT_SERVER } from '../src/main/identity.js'
+import { IdentityStore, identityPathFor, DEFAULT_SERVER, defaultServer, PUBLIC_SERVER, LOCAL_SERVER } from '../src/main/identity.js'
 
 let dir: string
 let path: string
@@ -79,5 +79,42 @@ describe('IdentityStore', () => {
     const s = new IdentityStore(join(blocker, 'identity.json'))
     expect(() => s.save({ name: 'kiran' })).not.toThrow()
     expect(s.get().name).toBe('kiran')
+  })
+})
+
+describe('which server a build points at', () => {
+  // The whole reason a default server exists: somebody sent a build should be
+  // able to open it and join a room without knowing that servers exist.
+  it('sends a packaged release to the shared server', () => {
+    expect(defaultServer(true)).toBe(PUBLIC_SERVER)
+    expect(PUBLIC_SERVER.startsWith('wss://')).toBe(true)
+  })
+
+  it('sends an unpackaged run to a local one', () => {
+    // `npm run desktop` must never quietly join strangers on the real server.
+    expect(defaultServer(false)).toBe(LOCAL_SERVER)
+  })
+
+  it('lets COCINE_SERVER override either', () => {
+    const before = process.env.COCINE_SERVER
+    process.env.COCINE_SERVER = 'ws://elsewhere:1234'
+    try {
+      expect(defaultServer(true)).toBe('ws://elsewhere:1234')
+      expect(defaultServer(false)).toBe('ws://elsewhere:1234')
+    } finally {
+      if (before === undefined) delete process.env.COCINE_SERVER
+      else process.env.COCINE_SERVER = before
+    }
+  })
+
+  it('a stored address still wins over any default', () => {
+    // Self-hosting has to survive a restart, or it is not really an option.
+    const dir = mkdtempSync(join(tmpdir(), 'cocine-id-'))
+    try {
+      const store = new IdentityStore(identityPathFor(dir), PUBLIC_SERVER)
+      store.save({ server: 'wss://mine.example.com' })
+      const fresh = new IdentityStore(identityPathFor(dir), PUBLIC_SERVER)
+      expect(fresh.get().server).toBe('wss://mine.example.com')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

@@ -21,23 +21,42 @@ export interface Identity {
 }
 
 /**
- * Where the application looks for a room when nobody has said otherwise.
+ * The server a release talks to when nobody has said otherwise.
  *
- * Baked in at build time from `COCINE_DEFAULT_SERVER`, so a release points at
- * the instance its users are meant to join and a friend needs no setup at all.
- * Unset it and this is a development build talking to a local server.
- *
- * `COCINE_SERVER` overrides it at runtime, and the settings field overrides both
- * -- the server address is never hard-coded beyond reach, so anyone technical
- * can point the same build at their own instance.
+ * Having one means a friend who is sent a build needs no setup at all: they
+ * open it, type a room code, and are watching. That is the whole point of
+ * running it -- self-hosting is the option, not the requirement.
  */
+export const PUBLIC_SERVER = 'wss://cocine.duckdns.org'
+
+/** A server you started yourself, which is what a development run wants. */
+export const LOCAL_SERVER = 'ws://127.0.0.1:8787'
+
 declare const __COCINE_DEFAULT_SERVER__: string | undefined
 
-export const DEFAULT_SERVER: string =
-  process.env.COCINE_SERVER ??
-  (typeof __COCINE_DEFAULT_SERVER__ === 'string' && __COCINE_DEFAULT_SERVER__
-    ? __COCINE_DEFAULT_SERVER__
-    : 'ws://127.0.0.1:8787')
+/**
+ * Where the application looks for a room, in order of who gets the last word.
+ *
+ * `COCINE_SERVER` wins, for pointing a build somewhere once without changing
+ * anything. Then `COCINE_DEFAULT_SERVER`, baked in at build time, for a release
+ * aimed at a different instance. Then the public server for a packaged
+ * application, and a local one for an unpackaged run -- so `npm run desktop`
+ * never quietly joins strangers on the real server, and a release never
+ * requires anyone to know a URL.
+ *
+ * The settings field overrides whatever this returns and is persisted, so the
+ * address is never hard-coded beyond reach.
+ */
+export function defaultServer (isPackaged: boolean): string {
+  if (process.env.COCINE_SERVER) return process.env.COCINE_SERVER
+  if (typeof __COCINE_DEFAULT_SERVER__ === 'string' && __COCINE_DEFAULT_SERVER__) {
+    return __COCINE_DEFAULT_SERVER__
+  }
+  return isPackaged ? PUBLIC_SERVER : LOCAL_SERVER
+}
+
+/** The development default. Packaged builds go through `defaultServer`. */
+export const DEFAULT_SERVER: string = defaultServer(false)
 
 /** A sensible first guess, so nobody has to type their own name on first run. */
 function suggestedName (): string {
@@ -48,14 +67,18 @@ function suggestedName (): string {
   return 'me'
 }
 
-export function blankIdentity (): Identity {
-  return { id: randomUUID(), name: suggestedName(), server: DEFAULT_SERVER, lastCode: null, lastFilmDir: null }
+export function blankIdentity (server: string = DEFAULT_SERVER): Identity {
+  return { id: randomUUID(), name: suggestedName(), server, lastCode: null, lastFilmDir: null }
 }
 
 export class IdentityStore {
   private cached: Identity | null = null
 
-  constructor (private readonly path: string) {}
+  constructor (
+    private readonly path: string,
+    /** What a first run, or a file with no server in it, should point at. */
+    private readonly fallbackServer: string = DEFAULT_SERVER
+  ) {}
 
   get (): Identity {
     if (this.cached) return this.cached
@@ -66,12 +89,12 @@ export class IdentityStore {
       this.cached = {
         id: typeof raw.id === 'string' && raw.id ? raw.id : randomUUID(),
         name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim().slice(0, 40) : suggestedName(),
-        server: typeof raw.server === 'string' && raw.server ? raw.server : DEFAULT_SERVER,
+        server: typeof raw.server === 'string' && raw.server ? raw.server : this.fallbackServer,
         lastCode: typeof raw.lastCode === 'string' && raw.lastCode ? raw.lastCode : null,
         lastFilmDir: typeof raw.lastFilmDir === 'string' && raw.lastFilmDir ? raw.lastFilmDir : null
       }
     } catch {
-      this.cached = blankIdentity()
+      this.cached = blankIdentity(this.fallbackServer)
     }
     return this.cached
   }

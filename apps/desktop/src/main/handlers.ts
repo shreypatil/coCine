@@ -133,6 +133,8 @@ export interface HandlerDeps {
   setFullScreen: (on: boolean) => void
   isFullScreen: () => boolean
   getIdentity: () => Identity
+  /** The address a fresh install would use; see 'identity:defaultServer'. */
+  getDefaultServer?: () => string
   saveIdentity: (patch: Partial<Omit<Identity, 'id'>>) => Identity
   getTransfer: () => TransferLike | null
   /**
@@ -481,6 +483,15 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     },
 
     'identity:get': () => deps.getIdentity(),
+
+    /**
+     * The address a fresh install would use. The renderer needs it to offer
+     * "use the shared server" as a choice and to know whether the current
+     * setting is that or something the person typed -- previously it kept its
+     * own copy of the address, which meant the reset button on a release build
+     * would have pointed at localhost.
+     */
+    'identity:defaultServer': () => deps.getDefaultServer?.() ?? '',
 
     /**
      * The application's own film browser, used wherever the system dialog

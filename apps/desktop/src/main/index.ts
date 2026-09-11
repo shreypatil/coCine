@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { RoomClient } from '@cocine/client'
 import { VideoWindow } from './video-window.js'
 import { createHandlers, type RoomLike } from './handlers.js'
-import { IdentityStore, identityPathFor } from './identity.js'
+import { IdentityStore, identityPathFor, defaultServer } from './identity.js'
 import { FilmStore, TransferManager, OriginTransfer, installWebRtc, webRtcFailure, type MediaTransport } from '@cocine/client'
 import { sourceId, type Media } from '@cocine/protocol'
 import { MpvNotFoundError } from '@cocine/player'
@@ -57,7 +57,7 @@ let converting: {
 let room: RoomClient | null = null
 let mediaPath: string | null = null
 let statusTimer: NodeJS.Timeout | null = null
-const identity = new IdentityStore(identityPathFor(app.getPath('userData')))
+const identity = new IdentityStore(identityPathFor(app.getPath('userData')), defaultServer(app.isPackaged))
 // Films are kept until removed, so they live somewhere stable rather than a
 // temporary directory. The store owns listing and deletion, because retaining
 // gigabytes without a way to see them fills a drive silently.
@@ -579,6 +579,7 @@ const handlers = createHandlers({
   setFullScreen: on => mainWin?.setFullScreen(on),
   isFullScreen: () => mainWin?.isFullScreen() ?? false,
   getIdentity: () => identity.get(),
+  getDefaultServer: () => defaultServer(app.isPackaged),
   saveIdentity: patch => identity.save(patch),
   // Built on demand as well as eagerly: an early attempt can legitimately fail
   // (no tracker URL yet), and one that never retried is what made sharing
