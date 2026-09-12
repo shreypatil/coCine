@@ -27,6 +27,7 @@
     "nat-check": "tsx apps/server/scripts/nat-check.ts",
     "dist:linux": "npm run dist:linux --workspace @cocine/desktop",
     "dist:win": "npm run dist:win --workspace @cocine/desktop",
+    "dist:mac": "npm run dist:mac --workspace @cocine/desktop",
     "fetch-mpv": "node scripts/fetch-mpv.mjs",
     "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs",
     "fetch-native": "node scripts/fetch-native.mjs",
