@@ -29,6 +29,7 @@ import { ClientMessage, encode, normaliseCode, type ServerMessage } from '@cocin
 import type { Room } from './room.js'
 import { InMemoryRoomStore, type RoomStore } from './store.js'
 import { iceServersFor, type TurnConfig } from './turn.js'
+import { LogHub, RateSummary, type Logger } from '@cocine/logging'
 import { presign, objectKeyFor, DEFAULT_EXPIRY_SECONDS, type OriginConfig } from './origin.js'
 import { seekableBuckets, seekableAt, seekableMapOf } from './readiness.js'
 
@@ -55,6 +56,9 @@ export interface SignallingServerOptions {
    *  one-way delay plus seek latency in the room, or the slowest client starts late. */
   startLeadMs?: number
   log?: (msg: string) => void
+  /** Structured, channelled logging. Without one the server keeps its own,
+   *  writing nowhere, so tests stay silent and production does not. */
+  logger?: Logger
   store?: RoomStore
   /** Relay for voice only. Absent means public STUN alone, which is enough on
    *  most networks and leaves the rest unable to hold a call. */
@@ -88,6 +92,14 @@ export class SignallingServer {
   private readonly roomTtlMs: number
   private readonly maxRoomMembers: number
   private readonly log: (msg: string) => void
+  /** Per-area channels. Split because the question is nearly always "what was
+   *  voice doing", and a single stream buries it under transfer traffic. */
+  private readonly logRoom: Logger
+  private readonly logVoice: Logger
+  private readonly logNet: Logger
+  /** time.ping and peer.report arrive thousands of times a second at load and
+   *  say nothing individually; they are counted, not written. */
+  private readonly traffic: RateSummary
   private readonly delayMs: number
   private readonly jitterMs: number
   private readonly skewMs: number
@@ -100,6 +112,12 @@ export class SignallingServer {
     this.roomTtlMs = opts.roomTtlMs ?? 10 * 60_000
     this.maxRoomMembers = opts.maxRoomMembers ?? MAX_ROOM_MEMBERS
     this.log = opts.log ?? (() => {})
+    const base = opts.logger ?? new LogHub({ level: 'error', sinks: [] }).logger('server')
+    this.logRoom = base.child('room')
+    this.logVoice = base.child('voice')
+    this.logNet = base.child('net')
+    this.traffic = new RateSummary(base.child('traffic'))
+    this.traffic.start()
     this.rooms = opts.store ?? new InMemoryRoomStore()
     this.delayMs = opts.simulatedDelayMs ?? 0
     this.jitterMs = opts.simulatedJitterMs ?? 0
@@ -265,8 +283,16 @@ export class SignallingServer {
     ws.on('message', raw => {
       let msg: ClientMessage
       try { msg = ClientMessage.parse(JSON.parse(String(raw))) } catch (e) {
+        // Worth a warning rather than silence: a client the server cannot
+        // understand is a version skew or a bug, and it is invisible from the
+        // other end -- the sender just never gets a reply.
+        this.logNet.warn('rejected a message it could not parse', {
+          from: this.conns.get(ws)?.memberId ?? 'unidentified',
+          error: e, raw: String(raw).slice(0, 300)
+        })
         return this.send(ws, { t: 'error', message: `bad message: ${String(e)}` })
       }
+      this.record(ws, msg)
       // Stamped on receipt, before any work, so the clock estimate measures the
       // network rather than this handler.
       try { this.handle(ws, msg, this.now(), this.trackerUrlFor(req)) } catch (e) {
@@ -275,6 +301,49 @@ export class SignallingServer {
     })
     ws.on('close', () => this.onClose(ws))
     ws.on('error', () => { /* close will follow */ })
+  }
+
+  /**
+   * What arrived, at a level that reflects how much it tells you.
+   *
+   * `time.ping` and `peer.report` are per-tick chatter -- roughly 2,250 a
+   * second across 1500 connections -- and one line each would be tens of
+   * gigabytes a day. They are counted instead. Everything else is a person
+   * doing something, and is rare enough to write down in full.
+   *
+   * Voice gets its own channel and its own line for every message, because a
+   * call that silently never connects leaves no other trace: the negotiation is
+   * the only evidence there is.
+   */
+  private record (ws: WebSocket, msg: ClientMessage): void {
+    const conn = this.conns.get(ws)
+    const who = conn ? `${conn.room.members.get(conn.memberId)?.name ?? '?'}/${conn.memberId.slice(0, 8)}` : 'unjoined'
+    const room = conn?.room.code
+
+    if (msg.t === 'time.ping' || msg.t === 'peer.report') {
+      this.traffic.count(msg.t)
+      this.logNet.trace(msg.t, { who, room })
+      return
+    }
+
+    if (msg.t === 'rtc.signal') {
+      // The payload is an SDP or a candidate. Logged by shape rather than in
+      // full: an offer is several kilobytes and the useful facts are who it was
+      // for and what kind it was.
+      const p = msg.payload as { kind?: string; sdp?: string; candidate?: { candidate?: string } } | undefined
+      this.logVoice.info('signal in', {
+        room, from: who, to: msg.to.slice(0, 8), kind: p?.kind ?? 'unknown',
+        sdpBytes: p?.sdp?.length, candidate: p?.candidate?.candidate?.slice(0, 90)
+      })
+      return
+    }
+
+    if (msg.t === 'voice.state' || msg.t === 'voice.moderate') {
+      this.logVoice.info(msg.t, { room, who, ...msg })
+      return
+    }
+
+    this.logRoom.info(msg.t, { room, who, ...msg })
   }
 
   private onClose (ws: WebSocket): void {
@@ -286,6 +355,9 @@ export class SignallingServer {
     this.emitChat(c.room, 'left', who, 'left the room', null)
     this.broadcastState(c.room)
     this.log(`${who} left ${c.room.code} (${c.room.members.size} present)`)
+    this.logRoom.info('left', {
+      room: c.room.code, who, memberId: c.memberId.slice(0, 8), present: c.room.members.size
+    })
   }
 
   private handle (ws: WebSocket, msg: ClientMessage, s1: number, trackerUrl: string): void {
@@ -347,6 +419,10 @@ export class SignallingServer {
       if (optionNote) this.emitChat(room, 'system', msg.name, optionNote, memberId)
       this.broadcastState(room)
       this.log(`${msg.name} joined ${room.code} (${room.members.size} present)`)
+      this.logRoom.info('joined', {
+        room: room.code, name: msg.name, memberId: memberId.slice(0, 8),
+        present: room.members.size, created: msg.code === null
+      })
       return
     }
 
@@ -435,14 +511,36 @@ export class SignallingServer {
         // Relayed verbatim to exactly one member. The server does not read the
         // payload and never joins the call -- voice is peer to peer.
         const target = [...this.conns.values()].find(c => c.room === conn.room && c.memberId === msg.to)
-        if (!target) return
+        if (!target) {
+          // The single most useful line in the file for a call that never
+          // connects. Silently dropping it is indistinguishable, from either
+          // end, from a peer that simply never answered -- and it is what a
+          // stale member id, a member who left, or a cross-room id looks like.
+          this.logVoice.warn('signal dropped: no such member in this room', {
+            room: conn.room.code,
+            from: me.id.slice(0, 8),
+            to: msg.to.slice(0, 8),
+            present: [...conn.room.members.keys()].map(id => id.slice(0, 8))
+          })
+          return
+        }
         this.send(target.ws, { t: 'rtc.signal', from: me.id, payload: msg.payload })
+        this.logVoice.info('signal relayed', {
+          room: conn.room.code, from: me.id.slice(0, 8), to: msg.to.slice(0, 8)
+        })
         return
       }
 
       case 'voice.state': {
         conn.room.setVoice(me.id, msg)
         this.broadcastState(conn.room)
+        // Who the room now believes is in the call. If a client reports
+        // "nobody else is in voice" while this says otherwise, the fault is on
+        // the client; if they agree, it is here.
+        this.logVoice.info('voice roster', {
+          room: conn.room.code,
+          inVoice: [...conn.room.members.values()].filter(m => m.inVoice).map(m => m.name)
+        })
         return
       }
 

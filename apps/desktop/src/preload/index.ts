@@ -85,6 +85,10 @@ const api = {
   extractSubtitle: (index: number) => ipcRenderer.invoke('subs:extract', index),
   readSubtitles: (path: string) => ipcRenderer.invoke('subs:read', path),
   sendSignal: (to: string, payload: unknown) => ipcRenderer.invoke('voice:signal', to, payload),
+  // send, not invoke: a log record needs no reply, and awaiting one would put
+  // the main process in the path of every line the renderer writes.
+  log: (channel: string, level: string, msg: string, data?: unknown) =>
+    ipcRenderer.send('log:record', channel, level, msg, data),
   setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => ipcRenderer.invoke('voice:state', v),
   moderateVoice: (memberId: string, action: 'mute' | 'unmute') => ipcRenderer.invoke('voice:moderate', memberId, action),
   duckFilm: (ducked: boolean) => ipcRenderer.invoke('voice:duck', ducked),

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { VoiceMesh, type ConnectionLike } from '@cocine/voice'
 import { SpeakingDetector } from './speaking.js'
+import { logger } from './log.js'
 
 /**
  * The voice call, from the renderer's side.
@@ -31,6 +32,13 @@ export interface VoiceApi {
   setDeafened: (d: boolean) => void
   setPushToTalk: (p: boolean) => void
 }
+
+/**
+ * Voice fails silently and symmetrically: both ends see "nobody else is in
+ * voice", neither sees an error, and nothing in the code reads wrong. Every
+ * step of setup is written down so the next failure leaves evidence.
+ */
+const log = logger('voice')
 
 const MIC: MediaStreamConstraints = {
   audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -76,7 +84,18 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
   }, [inVoice, muted, deafened])
 
   useEffect(() => window.cocine.onSignal((from, payload) => {
-    void mesh.current?.handleSignal(from, payload as never).catch(e => setError(String(e)))
+    const p = payload as { kind?: string } | undefined
+    log.info('signal in', { from: from.slice(0, 8), kind: p?.kind ?? 'candidate', haveMesh: !!mesh.current })
+    if (!mesh.current) {
+      // Arriving before join() is not a bug in itself -- the other side may
+      // have got there first -- but it is dropped, and that is worth knowing.
+      log.warn('signal arrived before this client joined voice; dropped', { from: from.slice(0, 8) })
+      return
+    }
+    void mesh.current.handleSignal(from, payload as never).catch(e => {
+      log.error('handleSignal failed', { from: from.slice(0, 8), error: e })
+      setError(String(e))
+    })
   }), [])
 
   // The host asking someone to mute. Advisory: this client chooses to comply.
@@ -86,8 +105,19 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
   }), [])
 
   useEffect(() => {
+    // Logged even when there is no mesh: "the room says two people are in
+    // voice but the mesh was never told" is a real failure and would otherwise
+    // leave no trace at all.
+    log.info('members changed', {
+      self: selfId.slice(0, 8),
+      members: memberIds.map(id => id.slice(0, 8)),
+      haveMesh: !!mesh.current
+    })
     if (!mesh.current) return
-    void mesh.current.setMembers(memberIds).catch(e => setError(String(e)))
+    void mesh.current.setMembers(memberIds).catch(e => {
+      log.error('setMembers failed', e)
+      setError(String(e))
+    })
     // Somebody who left keeps neither an analyser nor a lit dot. Without this
     // the indicator freezes on whatever they were doing when they dropped.
     const here = new Set([...memberIds, selfId])
@@ -101,13 +131,18 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
 
   const join = useCallback(async () => {
     setError(null)
+    log.info('join requested', { self: selfId.slice(0, 8), members: memberIds.map(i => i.slice(0, 8)), iceServers: ice.current.length })
     try {
       const s = await navigator.mediaDevices.getUserMedia(MIC)
       stream.current = s
       for (const t of s.getAudioTracks()) t.enabled = false
       mesh.current = new VoiceMesh({
         selfId,
-        send: (to, payload) => void window.cocine.sendSignal(to, payload),
+        send: (to, payload) => {
+          const p = payload as { kind?: string; sdp?: string } | undefined
+          log.info('signal out', { to: to.slice(0, 8), kind: p?.kind ?? 'candidate', sdpBytes: p?.sdp?.length })
+          void window.cocine.sendSignal(to, payload)
+        },
         // These come from the server at welcome and may include a TURN relay.
           // With an empty list a call only ever works between peers on the same
           // network, which is the one case this app is not for.
@@ -128,6 +163,10 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
           }
           el.srcObject = remote as MediaStream
           detector.current?.watch(id, remote as MediaStream)
+          log.info('remote stream', {
+            peer: id.slice(0, 8),
+            tracks: (remote as MediaStream).getAudioTracks().map(t => ({ enabled: t.enabled, muted: t.muted }))
+          })
           el.muted = deafened
           // And if it still will not play, say so rather than being quietly
           // silent: "we both joined and heard nothing" needs a reason.
@@ -135,10 +174,13 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
             setError(`Could not play audio from the room: ${e instanceof Error ? e.message : String(e)}`)
           })
         },
-        onPeerStateChange: (id, state) => setPeers(p => ({
+        onPeerStateChange: (id, state) => {
+          log.info('peer state', { peer: id.slice(0, 8), state })
+          return setPeers(p => ({
           ...p,
           [id]: state === 'connected' ? 'connected' : state === 'failed' || state === 'closed' ? 'failed' : 'connecting'
-        }))
+          }))
+        }
       })
       // Your own voice, from the same stream that is being sent. A muted or
       // un-held push-to-talk track emits silence, so the dot correctly reflects
@@ -147,9 +189,16 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
       detector.current ??= new SpeakingDetector(setSpeaking)
       detector.current.watch(selfId, s)
       mesh.current.setLocalStream(s, s.getAudioTracks())
+      log.info('microphone open', {
+        tracks: s.getAudioTracks().map(t => ({ label: t.label, enabled: t.enabled, muted: t.muted }))
+      })
       await mesh.current.setMembers(memberIds)
+      log.info('mesh members set', { peers: mesh.current.connectedIds.map(i => i.slice(0, 8)) })
       setInVoice(true)
     } catch (e) {
+      // The name matters: NotAllowedError is the system refusing, which is a
+      // different problem from a device that is missing or in use elsewhere.
+      log.error('join failed', { name: (e as Error)?.name, error: e })
       setError(e instanceof Error ? `Could not use the microphone: ${e.message}` : String(e))
     }
   }, [selfId, memberIds.join(','), deafened])

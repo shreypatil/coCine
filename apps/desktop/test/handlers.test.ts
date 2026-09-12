@@ -764,3 +764,34 @@ describe('which servers the renderer is told about', () => {
     expect(await call(h, 'identity:servers')).toEqual({ dflt: '', shared: '' })
   })
 })
+
+describe('carrying voice negotiation between the renderer and the room', () => {
+  // Voice lives in the renderer, where Chromium has WebRTC and a microphone;
+  // the room connection lives in main. Every offer, answer and candidate makes
+  // this hop, and nothing covered it. A signal dropped here is invisible: the
+  // sender sees no error, the receiver simply never hears, and both ends report
+  // "nobody else is in voice" because no connection ever changes state.
+  it('passes a signal through to the room, with both arguments', async () => {
+    const sent: Array<{ to: string; payload: unknown }> = []
+    const room = { sendSignal: (to: string, payload: unknown) => sent.push({ to, payload }) }
+    const { h } = build({ getRoom: () => room as never })
+
+    await call(h, 'voice:signal', 'peer-2', { kind: 'offer', sdp: 'v=0 …' })
+    expect(sent).toEqual([{ to: 'peer-2', payload: { kind: 'offer', sdp: 'v=0 …' } }])
+  })
+
+  it('announces voice state to the room', async () => {
+    const states: unknown[] = []
+    const room = { setVoiceState: (v: unknown) => states.push(v) }
+    const { h } = build({ getRoom: () => room as never })
+
+    await call(h, 'voice:state', { inVoice: true, muted: false, deafened: false })
+    expect(states).toEqual([{ inVoice: true, muted: false, deafened: false }])
+  })
+
+  it('does not throw when there is no room yet', async () => {
+    // Joining voice before a room exists should be inert, not a crash.
+    const { h } = build({ getRoom: () => null })
+    await expect(call(h, 'voice:signal', 'peer-2', { kind: 'offer' })).resolves.not.toThrow()
+  })
+})

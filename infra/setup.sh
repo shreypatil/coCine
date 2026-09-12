@@ -192,6 +192,9 @@ fi
 say "user and directories"
 id -u cocine >/dev/null 2>&1 || useradd --system --home /opt/cocine --shell /usr/sbin/nologin cocine
 mkdir -p /opt/cocine /etc/cocine /var/log/caddy
+# Logs, split by area and by day; pruned nightly by cocine-logprune.timer.
+mkdir -p /var/log/cocine
+chown -R cocine:cocine /var/log/cocine
 chown -R cocine:cocine /opt/cocine
 # Caddy runs as its own user and writes the access log itself. Without this it
 # starts, fails to open the log, and exits 1 -- leaving the server healthy on
@@ -249,6 +252,13 @@ COCINE_PUBLIC_HOST=wss://${DOMAIN}
 # COCINE_R2_KEY_ID=
 # COCINE_R2_SECRET=
 
+# Logging. Raise to debug to record every call's negotiation in full; the
+# per-tick traffic (time.ping, peer.report) stays counted rather than written
+# unless this is set to trace, which at load is tens of gigabytes a day.
+COCINE_LOG_DIR=/var/log/cocine
+COCINE_LOG_KEEP_DAYS=7
+# COCINE_LOG_LEVEL=debug
+
 COCINE_VERSION=$(date -u +%Y-%m-%d)
 EOF
   chmod 640 /etc/cocine/server.env
@@ -260,8 +270,11 @@ sed "s/cocine\.example\.com/${DOMAIN}/" "$HERE/Caddyfile" > /etc/caddy/Caddyfile
 install -m 644 "$HERE/cocine-server.service" /etc/systemd/system/
 install -m 644 "$HERE/cocine-keepalive.service" /etc/systemd/system/
 install -m 644 "$HERE/cocine-keepalive.timer" /etc/systemd/system/
+install -m 644 "$HERE/cocine-logprune.service" /etc/systemd/system/
+install -m 644 "$HERE/cocine-logprune.timer" /etc/systemd/system/
 mkdir -p /opt/cocine/infra
 install -m 755 "$HERE/keepalive.sh" /opt/cocine/infra/keepalive.sh
+install -m 755 "$HERE/logprune.sh" /opt/cocine/infra/logprune.sh
 
 # --- firewall ----------------------------------------------------------------
 # Oracle Linux images ship iptables rules that reject almost everything, which
@@ -278,6 +291,7 @@ say "starting"
 systemctl daemon-reload
 systemctl enable --now cocine-server.service
 systemctl enable --now cocine-keepalive.timer
+systemctl enable --now cocine-logprune.timer
 systemctl enable caddy >/dev/null 2>&1 || true
 systemctl restart caddy
 

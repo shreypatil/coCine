@@ -8,6 +8,7 @@ import { RoomClient } from '@cocine/client'
 import { VideoWindow } from './video-window.js'
 import { createHandlers, type RoomLike } from './handlers.js'
 import { IdentityStore, identityPathFor, defaultServer, PUBLIC_SERVER } from './identity.js'
+import { setupLogging } from '@cocine/logging'
 import { FilmStore, TransferManager, OriginTransfer, installWebRtc, webRtcFailure, type MediaTransport } from '@cocine/client'
 import { sourceId, type Media } from '@cocine/protocol'
 import { MpvNotFoundError } from '@cocine/player'
@@ -57,6 +58,26 @@ let converting: {
 let room: RoomClient | null = null
 let mediaPath: string | null = null
 let statusTimer: NodeJS.Timeout | null = null
+/**
+ * Logging, set up before anything that might need explaining.
+ *
+ * Under the user's data directory rather than beside the application: it
+ * survives reinstalls, needs no privileges, and is somewhere a person can be
+ * asked to look. `COCINE_LOG_LEVEL=debug` raises it without a rebuild.
+ */
+const logging = setupLogging({
+  dir: join(app.getPath('userData'), 'logs'),
+  level: app.isPackaged ? 'info' : 'debug',
+  keepDays: 7
+})
+const logMain = logging.logger('main')
+const logVoiceMain = logging.logger('voice')
+logMain.info('starting', {
+  version: app.getVersion(), packaged: app.isPackaged,
+  platform: process.platform, arch: process.arch,
+  electron: process.versions.electron, node: process.versions.node
+})
+
 const identity = new IdentityStore(identityPathFor(app.getPath('userData')), defaultServer(app.isPackaged))
 // Films are kept until removed, so they live somewhere stable rather than a
 // temporary directory. The store owns listing and deletion, because retaining
@@ -443,6 +464,14 @@ const handlers = createHandlers({
     // Voice lives in the renderer, where Chromium supplies WebRTC and a
     // microphone. Main only carries the negotiation between the two.
     client.on('rtc-signal', (from: string, payload: unknown) => {
+      const p = payload as { kind?: string; sdp?: string } | undefined
+      // Both facts matter and they fail differently: a signal that arrives with
+      // no window to give it to is lost just as completely as one that never
+      // arrived, and nothing else would ever say so.
+      logVoiceMain.info('signal → renderer', {
+        from: from.slice(0, 8), kind: p?.kind ?? 'candidate',
+        sdpBytes: p?.sdp?.length, haveWindow: !!mainWin && !mainWin.isDestroyed()
+      })
       mainWin?.webContents.send('voice:signal', from, payload)
     })
     client.on('voice-moderated', (by: string, action: string) => {
@@ -595,6 +624,14 @@ const handlers = createHandlers({
   setSharedInfoHash: h => { sharedId = h },
   log: m => console.log(m)
 })
+// Records from the renderer, which cannot write files itself. `on` rather than
+// `handle`: nothing is returned and the renderer must not wait on us.
+ipcMain.on('log:record', (_e, channel: string, level: string, msg: string, data?: unknown) => {
+  const l = logging.logger(`renderer.${String(channel).slice(0, 40)}`)
+  const fn = (l as unknown as Record<string, (m: string, d?: unknown) => void>)[level] ?? l.info
+  fn.call(l, msg, data)
+})
+
 for (const [channel, fn] of Object.entries(handlers)) {
   ipcMain.handle(channel, (_e, ...args) => (fn as (...a: unknown[]) => unknown)(...args))
 }

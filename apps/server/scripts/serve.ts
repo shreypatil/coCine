@@ -1,5 +1,6 @@
 /** Standalone signalling server for manual testing. `npm run server` */
 import { SignallingServer } from '../src/server.js'
+import { setupLogging } from '@cocine/logging'
 import type { TurnConfig } from '../src/turn.js'
 import type { OriginConfig } from '../src/origin.js'
 
@@ -57,8 +58,23 @@ function originFromEnv (): OriginConfig | undefined {
 
 const turn = turnFromEnv()
 const origin = originFromEnv()
+
+/**
+ * Logs on disk as well as on stdout.
+ *
+ * journald already captures stdout, but it is rotated by size across the whole
+ * machine and mixes every unit together -- so "what was voice doing on Tuesday"
+ * is a much harder question than it should be. These are split by area and by
+ * day, and pruned on a timer; see infra/cocine-logprune.*.
+ */
+const logging = setupLogging({
+  dir: process.env.COCINE_LOG_DIR ?? '/var/log/cocine',
+  level: 'info',
+  keepDays: Number(process.env.COCINE_LOG_KEEP_DAYS ?? 7)
+})
 const server = new SignallingServer({
   port, log: m => console.log(`  ${m}`),
+  logger: logging.logger('server'),
   ...(turn ? { turn } : {}),
   ...(origin ? { origin } : {})
 })

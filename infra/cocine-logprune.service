@@ -1,0 +1,12 @@
+[Unit]
+Description=Remove coCine log files past the retention window
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/cocine/server.env
+ExecStart=/opt/cocine/infra/logprune.sh
+# The same courtesy the keepalive shows: this box is 1/8 OCPU and nothing here
+# is urgent enough to compete with a room in progress.
+Nice=19
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle

@@ -172,6 +172,7 @@ declare global {
       seek: (sec: number) => Promise<void>
       setFullScreen: (on?: boolean) => Promise<boolean>
       sendSignal: (to: string, payload: unknown) => Promise<void>
+      log: (channel: string, level: string, msg: string, data?: unknown) => void
       setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => Promise<void>
       moderateVoice: (memberId: string, action: 'mute' | 'unmute') => Promise<void>
       duckFilm: (ducked: boolean) => Promise<void>

@@ -1,0 +1,13 @@
+[Unit]
+Description=Prune coCine logs daily
+
+[Timer]
+# Shortly after midnight, when a day's file has just stopped being written to.
+OnCalendar=*-*-* 00:20:00
+# A machine that was asleep at 00:20 still prunes when it wakes, rather than
+# waiting a further day.
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

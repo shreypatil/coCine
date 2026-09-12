@@ -10,6 +10,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+# The hardening below is otherwise read-only, and the logs have to land.
+ReadWritePaths=/var/log/cocine
 Type=simple
 User=cocine
 Group=cocine
