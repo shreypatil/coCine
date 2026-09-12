@@ -2,7 +2,22 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <!--
+      media-src is separate from default-src because a film arrives two ways and
+      only one of them is same-origin. A host opens one off disk, which is a
+      file:// URL. Everybody else plays it from the transfer's stream server on
+      127.0.0.1 while it is still arriving -- read through the server rather
+      than off disk, because the file is written sparsely and reading it
+      directly gives zeros wherever a piece has not landed yet.
+
+      Without this, receiving a film failed with "Media load rejected by URL
+      safety check" on every platform, and the interface fell back to its empty
+      state as though nothing had been shared.
+
+      The port is chosen at runtime, hence the wildcard; the host is not, so
+      this stays far narrower than opening media-src up.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self' file: http://127.0.0.1:* http://localhost:*" />
     <title>coCine</title>
   </head>
   <body>
