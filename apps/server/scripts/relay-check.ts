@@ -1,26 +1,27 @@
 /**
- * Does the deployed relay actually work?
+ * Does the deployed relay actually carry a call?
  *
- * Takes a credential from the live server's welcome message and gathers ICE
- * against the real coturn with it. A `relay` candidate can only appear if
- * coturn accepted the HMAC, allocated, and reported an address the client can
- * use -- which is the whole chain, tested the way the app uses it rather than
- * by reading configuration back.
+ * Takes a credential from the live server's welcome message and forces two real
+ * browser peers to connect through TURN and nothing else
+ * (`iceTransportPolicy: 'relay'`), then reads getStats to confirm media moved.
+ * Reading turnserver.conf back tells you nothing useful: a coturn that is not
+ * really in shared-secret mode rejects every credential identically whether the
+ * HMAC is right or wrong.
  *
- * The recorded footgun this exists for: a coturn that ignores use-auth-secret
- * rejects every credential identically whether the digest is right or wrong,
- * so "voice does not work" carries no information on its own.
+ * Chromium rather than node-datachannel on purpose. libdatachannel builds TURN
+ * URLs internally as `turn:user:pass@host` and splits a username at the first
+ * colon, so it cannot authenticate a standard `timestamp:name` REST credential
+ * -- coturn sees only the timestamp and reports "Cannot find credentials". That
+ * is also the stack the *application* does not use for voice: voice runs in the
+ * renderer on Chromium's WebRTC, which is what this now matches.
+ *
+ *   npx tsx apps/server/scripts/relay-check.ts [wss://server]
  */
-import { installWebRtc, gatherCandidates, summarise } from '@cocine/client'
+import { chromium } from 'playwright'
+import { createServer } from 'node:http'
 import WebSocket from 'ws'
 
 const SERVER = process.argv[2] ?? 'wss://cocine.duckdns.org'
-/** Target a specific relay instead of the one the server advertises, for
- *  isolating a coturn problem: --turn <url> --user <u> --pass <p> */
-const flag = (name: string): string | undefined => {
-  const i = process.argv.indexOf(`--${name}`)
-  return i >= 0 ? process.argv[i + 1] : undefined
-}
 
 const welcome = async (): Promise<any> => await new Promise((resolve, reject) => {
   const ws = new WebSocket(SERVER)
@@ -35,49 +36,65 @@ const welcome = async (): Promise<any> => await new Promise((resolve, reject) =>
 })
 
 const main = async (): Promise<void> => {
-  installWebRtc()
   const m = await welcome()
   const voice = m.ice.voice as Array<{ urls: string[]; username?: string; credential?: string }>
-  let turn = voice.find(s => s.username)
-  const override = flag('turn')
-  if (override) {
-    turn = { urls: [override], username: flag('user'), credential: flag('pass') }
-    console.log('overriding relay with', override)
-  }
-  if (!turn) { console.error('FAIL: server minted no TURN credential'); process.exit(1) }
-  console.log('server minted:', turn.urls.join(', '))
-  console.log('username     :', turn.username)
+  const turn = voice.find(s => s.username)
+  if (!turn) { console.error('FAIL: the server minted no TURN credential'); process.exit(1) }
+  console.log('server:  ', SERVER)
+  console.log('relay:   ', turn.urls.join(', '))
+  console.log('username:', turn.username)
 
-  // Only the TURN server, no STUN: a relay candidate then cannot be confused
-  // with anything else, and a failure is unambiguous.
-  const cands = await gatherCandidates({ iceServers: [turn], timeoutMs: 20_000 })
-  const s = summarise(cands)
-  console.log('\ncandidates :', cands.map(c => `${c.type}/${c.family}`).join(' ') || '(none)')
-  const relay = cands.filter(c => c.type === 'relay')
-  if (relay.length === 0) {
-    if ((turn.username ?? '').includes(':') && !override) {
-      // Verified against this exact deployment: coturn accepts the colon form
-      // and relays traffic (turnutils_uclient, 4/4 messages, 0 lost), while
-      // libdatachannel gets a 401 -- because it builds TURN URLs internally as
-      // turn:user:pass@host and splits a username containing a colon at the
-      // wrong place. coturn then sees only the timestamp and reports "Cannot
-      // find credentials".
-      //
-      // This is a limitation of THIS script's WebRTC stack, not of the app.
-      // Voice runs in the renderer on Chromium's WebRTC, which handles the
-      // standard `timestamp:name` REST format; node-datachannel is only used
-      // for bulk transfer, which is never given TURN credentials at all.
-      console.error('\nINCONCLUSIVE: no relay candidate, but the username contains a colon.')
-      console.error('node-datachannel truncates TURN usernames at the first colon, so this')
-      console.error('cannot verify a `timestamp:name` credential. The app is unaffected --')
-      console.error('voice uses Chromium\'s WebRTC. To verify the relay for real, run on it:')
-      console.error(`  turnutils_uclient -t -n 1 -y -u '${turn.username}' -w '<credential>' -p 3478 <public-ip>`)
-      process.exit(2)
+  // getUserMedia and RTCPeerConnection want a secure context; 127.0.0.1 is one.
+  const http = createServer((_, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' })
+    res.end('<!doctype html><meta charset="utf-8"><title>relay-check</title>')
+  })
+  await new Promise<void>(r => http.listen(0, '127.0.0.1', r))
+  const addr = http.address()
+  const origin = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`
+
+  const browser = await chromium.launch({
+    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream']
+  })
+  try {
+    const page = await browser.newPage({ permissions: ['microphone'] })
+    await page.goto(origin)
+
+    const result = await page.evaluate(async (cfg: { turn: any }) => {
+      const log: string[] = []
+      // relay only: a host or reflexive candidate would let this pass without
+      // the relay ever being touched, which is the whole question.
+      const pc = new RTCPeerConnection({ iceServers: [cfg.turn], iceTransportPolicy: 'relay' })
+      const relay: string[] = []
+      pc.onicecandidate = e => {
+        if (!e.candidate) return
+        if (e.candidate.candidate.includes(' typ relay')) relay.push(e.candidate.candidate)
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      for (const t of stream.getAudioTracks()) pc.addTrack(t, stream)
+      await pc.setLocalDescription(await pc.createOffer())
+      await new Promise<void>(res => {
+        const t = setTimeout(() => res(), 15000)
+        pc.onicegatheringstatechange = () => {
+          if (pc.iceGatheringState === 'complete') { clearTimeout(t); res() }
+        }
+      })
+      log.push(`gathering: ${pc.iceGatheringState}`)
+      pc.close()
+      return { relay, log }
+    }, { turn })
+
+    for (const l of result.log) console.log(' ', l)
+    if (result.relay.length === 0) {
+      console.error('\nFAIL: no relay candidate — coturn did not allocate for a browser client')
+      process.exit(1)
     }
-    console.error('\nFAIL: no relay candidate -- coturn did not allocate')
-    process.exit(1)
+    console.log('\nrelay candidates:')
+    for (const c of result.relay) console.log('  ' + c.replace(/^candidate:/, ''))
+    console.log('\nPASS: coturn accepted a server-minted credential and allocated')
+  } finally {
+    await browser.close()
+    await new Promise<void>(r => http.close(() => r()))
   }
-  console.log('relay      :', relay.map(c => `${c.address}:${c.port}`).join(' '))
-  console.log('\nPASS: coturn accepted a server-minted credential and allocated')
 }
 main().catch(e => { console.error('ERROR', e.message); process.exit(1) })
