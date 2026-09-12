@@ -36,9 +36,23 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
 
 const TARGETS = {
-  win: { dir: 'release/win-unpacked', addon: 'win32-x64-msvc', format: 'PE', tag: 'win32-x64' },
-  linux: { dir: 'release/linux-unpacked', addon: 'linux-x64-gnu', format: 'ELF', tag: 'linux-x64' },
-  mac: { dir: 'release/mac', addon: 'darwin-arm64', format: 'Mach-O', tag: 'darwin-arm64' }
+  win: { dirs: ['release/win-unpacked'], addon: 'win32-x64-msvc', format: 'PE', tag: 'win32-x64' },
+  linux: { dirs: ['release/linux-unpacked'], addon: 'linux-x64-gnu', format: 'ELF', tag: 'linux-x64' },
+  // electron-builder names this after the architecture when one is listed
+  // explicitly, and plainly when it is building for the host's own. Both are
+  // correct output; looking for only one of them fails the run *after* a
+  // perfectly good dmg has been produced.
+  mac: {
+    dirs: ['release/mac-arm64', 'release/mac'],
+    addon: 'darwin-arm64', format: 'Mach-O', tag: 'darwin-arm64'
+  }
+}
+
+/** The first of a target's candidate directories that exists. */
+function outputDir (target) {
+  const spec = TARGETS[target]
+  for (const d of spec.dirs) if (existsSync(join(root, d))) return join(root, d)
+  return join(root, spec.dirs[0])
 }
 
 /** What kind of executable a file is, from its first four bytes. */
@@ -103,7 +117,7 @@ function contents (dir) {
   }
 }
 
-export function check (target, dir = join(root, TARGETS[target].dir)) {
+export function check (target, dir = outputDir(target)) {
   const spec = TARGETS[target]
   if (!existsSync(dir)) throw new Error(`${relative(root, dir)} does not exist — build it first`)
   const pkg = contents(dir)
