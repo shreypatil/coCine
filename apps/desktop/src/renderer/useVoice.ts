@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { VoiceMesh, type ConnectionLike } from '@cocine/voice'
+import { SpeakingDetector } from './speaking.js'
 
 /**
  * The voice call, from the renderer's side.
@@ -14,6 +15,10 @@ import { VoiceMesh, type ConnectionLike } from '@cocine/voice'
 
 export interface VoiceApi {
   inVoice: boolean
+  /** Who is audibly talking right now, by member id, including you. Measured
+   *  from the audio rather than announced, so it also answers "is the
+   *  microphone reaching the application at all". */
+  speaking: Record<string, boolean>
   muted: boolean
   deafened: boolean
   talking: boolean
@@ -46,6 +51,8 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
   const ice = useRef<RTCIceServer[]>(iceServers)
   ice.current = iceServers
 
+  const [speaking, setSpeaking] = useState<Record<string, boolean>>({})
+  const detector = useRef<SpeakingDetector | null>(null)
   const mesh = useRef<VoiceMesh | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const audio = useRef<Map<string, HTMLAudioElement>>(new Map())
@@ -81,7 +88,16 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
   useEffect(() => {
     if (!mesh.current) return
     void mesh.current.setMembers(memberIds).catch(e => setError(String(e)))
-  }, [memberIds.join(',')])
+    // Somebody who left keeps neither an analyser nor a lit dot. Without this
+    // the indicator freezes on whatever they were doing when they dropped.
+    const here = new Set([...memberIds, selfId])
+    for (const el of audio.current.keys()) if (!here.has(el)) detector.current?.unwatch(el)
+    setSpeaking(prev => {
+      const next: Record<string, boolean> = {}
+      for (const id of Object.keys(prev)) if (here.has(id)) next[id] = prev[id]!
+      return next
+    })
+  }, [memberIds.join(','), selfId])
 
   const join = useCallback(async () => {
     setError(null)
@@ -111,6 +127,7 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
             audio.current.set(id, el)
           }
           el.srcObject = remote as MediaStream
+          detector.current?.watch(id, remote as MediaStream)
           el.muted = deafened
           // And if it still will not play, say so rather than being quietly
           // silent: "we both joined and heard nothing" needs a reason.
@@ -123,6 +140,12 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
           [id]: state === 'connected' ? 'connected' : state === 'failed' || state === 'closed' ? 'failed' : 'connecting'
         }))
       })
+      // Your own voice, from the same stream that is being sent. A muted or
+      // un-held push-to-talk track emits silence, so the dot correctly reflects
+      // what the room can actually hear rather than what the microphone picks
+      // up.
+      detector.current ??= new SpeakingDetector(setSpeaking)
+      detector.current.watch(selfId, s)
       mesh.current.setLocalStream(s, s.getAudioTracks())
       await mesh.current.setMembers(memberIds)
       setInVoice(true)
@@ -138,6 +161,9 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
     stream.current = null
     for (const el of audio.current.values()) { el.pause(); el.srcObject = null; el.remove() }
     audio.current.clear()
+    detector.current?.close()
+    detector.current = null
+    setSpeaking({})
     setPeers({})
     setInVoice(false)
     setTalking(false)
@@ -170,7 +196,8 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
   }, [inVoice, pushToTalk])
 
   return {
-    inVoice, muted, deafened, talking, pushToTalk, peers, error,
+    inVoice,
+    speaking, muted, deafened, talking, pushToTalk, peers, error,
     join, leave,
     setMuted: setMutedState,
     setDeafened: setDeafenedState,

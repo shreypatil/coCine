@@ -829,12 +829,18 @@ export function App (): ReactElement {
                       <span className="nm">{m.name}</span>
                       {m.inVoice && (() => {
                         const link = m.id === s.memberId ? 'connected' : voice.peers[m.id]
+                        const talks = !!voice.speaking[m.id] && !m.muted && link === 'connected'
                         const cls = m.muted ? 'off' : link === 'failed' ? 'bad' : link === 'connecting' ? 'wait' : ''
                         const why = link === 'failed'
                           ? `No voice connection to ${m.name} — usually a firewall`
                           : link === 'connecting' ? `Connecting to ${m.name}…`
-                          : m.muted ? `${m.name} is muted` : `${m.name} is in voice`
-                        return <span className={`vdot ${cls}`} data-testid="vdot" data-link={link ?? 'none'} title={why} />
+                          : m.muted ? `${m.name} is muted`
+                          : talks ? `${m.name} is speaking`
+                          : `${m.name} is in voice`
+                        return (
+                          <span className={`vdot ${cls}${talks ? ' talking' : ''}`} data-testid="vdot"
+                            data-link={link ?? 'none'} data-speaking={talks ? 'yes' : 'no'} title={why} />
+                        )
                       })()}
                       {m.deafened && <span className="tag muted" title="Cannot hear the room">deafened</span>}
                       {m.isHost && <span className="tag">host</span>}

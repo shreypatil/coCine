@@ -295,6 +295,16 @@ body {
 }
 .vdot.off { background: var(--tx3); box-shadow: none; }
 
+/* Speaking. Grows and brightens rather than changing colour: the dot already
+   uses colour for whether the connection is up, and two meanings on one channel
+   would be unreadable. The ring is what carries it at a glance. */
+.vdot.talking {
+  background: var(--ok);
+  transform: scale(1.45);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 35%, transparent),
+              0 0 10px var(--ok);
+}
+
 /* ---------------------------------------------------------------- chat */
 .chatwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 14px 0 0; border-bottom: 1px solid var(--line-soft); }
 .chatwrap h4 {
@@ -655,8 +665,11 @@ body.overlay-body { background: transparent; }
 
 /* The live dot is the room breathing; the voice dot is somebody present. */
 .pill .live { animation: breathe 2.6s ease-in-out infinite; }
-.vdot { animation: breathe 2.2s ease-in-out infinite; }
+.vdot { animation: breathe 2.2s ease-in-out infinite; transition: transform .1s ease-out, box-shadow .1s ease-out; }
 .vdot.off { animation: none; }
+/* The idle breathing would fight the scale, and a speaking dot should read as
+   deliberate rather than ambient. */
+.vdot.talking { animation: none; }
 
 .pill { transition: background .14s, border-color .14s, color .14s, transform .08s; }
 .pill.code:active { transform: translateY(1px); }
