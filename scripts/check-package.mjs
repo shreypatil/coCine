@@ -81,10 +81,33 @@ export function addonStrategy (version) {
   return (major > 0 || minor >= 33) ? 'package' : 'local-build'
 }
 
+/**
+ * Where the payload sits, which is not the same on every platform.
+ *
+ * Windows and Linux put `resources/` beside the executable. macOS nests it
+ * inside the bundle, at `coCine.app/Contents/Resources/`. Looking only for the
+ * first found an empty archive on a Mac and reported "no copy of
+ * node-datachannel in the package at all" -- a false negative indistinguishable
+ * from the real failure this script exists to catch, which is worse than not
+ * checking, because it sends you looking for a missing dependency that is
+ * installed and packaged perfectly well.
+ */
+function resourcesDir (dir) {
+  const beside = join(dir, 'resources')
+  if (existsSync(beside)) return beside
+  for (const entry of existsSync(dir) ? readdirSync(dir) : []) {
+    if (!entry.endsWith('.app')) continue
+    const inside = join(dir, entry, 'Contents', 'Resources')
+    if (existsSync(inside)) return inside
+  }
+  return beside
+}
+
 /** Everything in the package: archive entries and the files beside it. */
 function contents (dir) {
-  const archive = join(dir, 'resources', 'app.asar')
-  const unpacked = join(dir, 'resources', 'app.asar.unpacked')
+  const res = resourcesDir(dir)
+  const archive = join(res, 'app.asar')
+  const unpacked = join(res, 'app.asar.unpacked')
 
   const packed = existsSync(archive)
     ? asar.listPackage(archive).map(p => p.replace(/^[/\\]/, '').split('\\').join('/'))
