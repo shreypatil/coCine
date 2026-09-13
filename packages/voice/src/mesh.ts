@@ -42,6 +42,24 @@ export interface VoiceMeshOptions {
 
 interface Peer { conn: ConnectionLike; pendingCandidates: unknown[]; remoteSet: boolean }
 
+/**
+ * An ICE candidate as plain data, fit to leave the page.
+ *
+ * `RTCIceCandidate` is a platform object: its fields are prototype getters, and
+ * structured clone -- which is what Electron IPC uses -- cannot copy it. It
+ * does not throw. It hands the other side an empty object, `addIceCandidate({})`
+ * accepts that without complaint, and the connection sits at `new` for ever
+ * with no error anywhere. Offers and answers are strings and crossed intact,
+ * which is what made this look like a network problem for days: every kind of
+ * signal was visibly sent and received, and only the candidates were hollow.
+ *
+ * `toJSON()` is the platform's own definition of the candidate as data.
+ */
+function plainCandidate (candidate: unknown): unknown {
+  const c = candidate as { toJSON?: () => unknown } | null
+  return c && typeof c.toJSON === 'function' ? c.toJSON() : candidate
+}
+
 export class VoiceMesh {
   private peers = new Map<string, Peer>()
   private localTracks: Array<{ track: unknown; stream: unknown }> = []
@@ -85,7 +103,7 @@ export class VoiceMesh {
     const conn = this.o.createConnection()
     const peer: Peer = { conn, pendingCandidates: [], remoteSet: false }
     conn.onicecandidate = e => {
-      if (e.candidate) this.o.send(id, { kind: 'candidate', candidate: e.candidate })
+      if (e.candidate) this.o.send(id, { kind: 'candidate', candidate: plainCandidate(e.candidate) })
     }
     conn.ontrack = e => { if (e.streams[0]) this.o.onRemoteStream(id, e.streams[0]) }
     conn.onconnectionstatechange = () => this.o.onPeerStateChange?.(id, conn.connectionState)

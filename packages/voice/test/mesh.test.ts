@@ -172,3 +172,36 @@ describe('people coming and going', () => {
     expect(seen).toEqual([])
   })
 })
+
+describe('what leaves the page', () => {
+  it('sends an ICE candidate as plain data, not as the platform object', async () => {
+    // The bug this exists for. RTCIceCandidate keeps its fields as prototype
+    // getters, and Electron IPC -- structured clone -- silently copies it as
+    // `{}`. Offers and answers are strings and crossed intact, so every kind of
+    // signal was visibly sent and received on both sides while the connections
+    // sat at `new` for ever, with no error anywhere, on every platform.
+    class PlatformCandidate {
+      constructor (private readonly fields: Record<string, unknown>) {}
+      get candidate (): unknown { return this.fields.candidate }
+      get sdpMid (): unknown { return this.fields.sdpMid }
+      get sdpMLineIndex (): unknown { return this.fields.sdpMLineIndex }
+      toJSON (): Record<string, unknown> { return { ...this.fields } }
+    }
+    const fields = { candidate: 'candidate:1 1 udp 2122 10.0.0.2 5000 typ host', sdpMid: '0', sdpMLineIndex: 0 }
+    const { m, sent, conns } = mesh('aaa')
+    await m.setMembers(['aaa', 'bbb'])
+    conns[0]!.onicecandidate!({ candidate: new PlatformCandidate(fields) })
+
+    const out = sent.find(s => s.payload.kind === 'candidate')!.payload.candidate as Record<string, unknown>
+    // Own, enumerable properties -- what structured clone actually copies.
+    expect({ ...out }).toEqual(fields)
+    expect(structuredClone(out)).toEqual(fields)
+  })
+
+  it('leaves a candidate that is already plain data alone', async () => {
+    const { m, sent, conns } = mesh('aaa')
+    await m.setMembers(['aaa', 'bbb'])
+    conns[0]!.onicecandidate!({ candidate: { candidate: 'x', sdpMid: '0' } })
+    expect(sent.find(s => s.payload.kind === 'candidate')!.payload.candidate).toEqual({ candidate: 'x', sdpMid: '0' })
+  })
+})
