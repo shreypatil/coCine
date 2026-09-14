@@ -55,6 +55,7 @@
     <h2 id="setup">Getting set up</h2>
     <pre><code>git clone https://github.com/shreypatil/coCine
 cd coCine
+git checkout dev  # where work happens; main is release-only
 npm install
 
 npm test          # unit + integration, no window, no display
@@ -568,8 +569,17 @@ npm run nat-check  # what this machine's network does to a peer connection</code
     </p>
 
     <h2 id="workflow">Working on it</h2>
+    <p>
+      Two branches matter. <code>main</code> is what has been tested by hand and released —
+      installers are cut from it, and installed copies look there for updates, so nothing is
+      committed to it directly. <code>dev</code> is where all work lands, the maintainer's
+      included. When <code>dev</code> has been tested by hand it is merged into
+      <code>main</code>, by the maintainer.
+    </p>
     <ul>
-      <li>Branch off <code>main</code>. Keep the branch to one change.</li>
+      <li>Branch off <code>dev</code>, keep the branch to one change, and open the pull request
+      <strong>against <code>dev</code></strong>. A pull request against <code>main</code> will
+      be retargeted or closed.</li>
       <li><code>npm test</code> and <code>npm run typecheck</code> must pass. If your change
       touches native windows, run <code>npm run test:app</code> too.</li>
       <li>Add the test <em>with</em> the fix, and let it describe the failure it prevents.</li>
