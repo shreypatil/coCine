@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { chromeOffset } from '../src/main/video-window.js'
-import { createHandlers, explainConnectError, type HandlerDeps, type PlayerLike, type RoomLike, type VideoLike, type TransferLike, type FilmStoreLike } from '../src/main/handlers.js'
+import { createHandlers, explainConnectError, DUCK_FACTOR, type HandlerDeps, type PlayerLike, type RoomLike, type VideoLike, type TransferLike, type FilmStoreLike } from '../src/main/handlers.js'
 
 /**
  * Every case below reproduces a bug that actually shipped. None of them needs
@@ -793,5 +793,42 @@ describe('carrying voice negotiation between the renderer and the room', () => {
     // Joining voice before a room exists should be inert, not a crash.
     const { h } = build({ getRoom: () => null })
     await expect(call(h, 'voice:signal', 'peer-2', { kind: 'offer' })).resolves.not.toThrow()
+  })
+})
+
+describe('quietening the film while the microphone is live', () => {
+  // The volume the viewer chose and whether we are ducked live in main, and the
+  // handler composes them; the two must never overwrite each other.
+  const rig = (chosen: number) => {
+    let ducked = false
+    const setVolume = vi.fn(async () => {})
+    const p = player({ setVolume } as Partial<PlayerLike>)
+    const { h } = build({
+      getVideo: () => video(p),
+      getVolume: () => chosen,
+      isDucked: () => ducked,
+      setDucked: d => { ducked = d }
+    } as Partial<HandlerDeps>)
+    return { h, setVolume }
+  }
+
+  it('dips to a fraction of the chosen volume, and back to exactly what was chosen', async () => {
+    const { h, setVolume } = rig(80)
+    await call(h, 'voice:duck', true)
+    expect(setVolume).toHaveBeenLastCalledWith(Math.round(80 * DUCK_FACTOR))
+    await call(h, 'voice:duck', false)
+    expect(setVolume).toHaveBeenLastCalledWith(80)
+  })
+
+  it('leaves most of the film there: a dip, not a disappearance', () => {
+    // 0.35 read as the film vanishing every time somebody pressed the talk
+    // key. Anyone who finds even this too much can turn ducking off.
+    expect(DUCK_FACTOR).toBeGreaterThanOrEqual(0.5)
+    expect(DUCK_FACTOR).toBeLessThan(1)
+  })
+
+  it('is inert with no player to duck', async () => {
+    const { h } = build({ getVideo: () => video(null) })
+    await expect(call(h, 'voice:duck', true)).resolves.not.toThrow()
   })
 })

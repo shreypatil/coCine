@@ -339,8 +339,9 @@ Requirement 7 asks what is newly possible. The largest one is not on the list:
   Web Audio should let the echo canceller see it. That would retire push-to-talk
   as a workaround rather than a preference. Worth a spike of its own; it is the
   single biggest quality-of-life win available here.
-- Per-user volume and film ducking, precisely, via Web Audio rather than by
-  setting a percentage on a foreign process.
+- ~~Per-user volume~~ done, on the element rather than through Web Audio (see
+  `apps/desktop/src/renderer/mixer.ts` for why). Film ducking precisely, via
+  Web Audio rather than by setting a percentage on a foreign process, remains.
 - Scrub-bar thumbnail previews, generated locally from what is already held.
 - Buffering and readiness drawn *on* the video instead of beside it.
 - Picture-in-picture, for free.

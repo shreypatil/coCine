@@ -256,9 +256,27 @@ itself played, and mpv plays through an entirely separate path, so on speakers
 every microphone picks the film up and sends it back to the room. No WebRTC
 setting fixes this.
 
-Headphones fix it. Push-to-talk and ducking the film while anyone speaks make it
-survivable without. Both are on by default and both are visible in the
-interface, so nobody has to discover the problem the hard way.
+Headphones fix it. Push-to-talk and ducking the film while your microphone is
+live make it survivable without. Both are on by default and both are visible in
+the interface, so nobody has to discover the problem the hard way. The dip is
+moderate — the film drops to 60 %, not to a whisper — and anyone in headphones
+can turn it off, since for them it only takes the film away. That preference is
+per machine.
+
+### Everyone has a volume, for you alone
+
+Each person in the call has a slider under their row — hover the row, press
+**volume** — and a **mute for me**. Both are local: nothing is sent, nobody is
+told, and the host's *ask to mute* is a different thing that says so. Levels are
+per session on purpose: member ids are minted per connection, so a setting keyed
+by one would not survive a rejoin, and keying by name misbehaves for two people
+called sam.
+
+Gain never exceeds one. Boosting a quiet person mostly amplifies their room, and
+on a marginal speakers-and-microphone setup it can tip the echo the canceller
+cannot hear into feedback. The slider is squared on the way to the element,
+because loudness is perceived roughly logarithmically and a linear map bunches
+the useful range at the bottom.
 
 ### Host mute is advisory, and says so
 

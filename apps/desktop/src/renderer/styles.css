@@ -238,7 +238,22 @@ body {
 /* ---------------------------------------------------------------- roles */
 .people li { position: relative; }
 .rowacts { margin-left: auto; display: none; gap: 4px; }
-.people li:hover .rowacts { display: flex; }
+.people li:hover .rowacts, .people li.open .rowacts { display: flex; }
+/* Your volume for one person, unfolded under their row. A full-width second
+   line rather than a slider squeezed beside the name: the sidebar is 276px and
+   the name, the dot, a tag and the actions already fill it. */
+.mixer {
+  flex: 1 0 100%; box-sizing: border-box; min-width: 0; display: flex; align-items: center; gap: 8px;
+  padding: 2px 0 4px 37px; animation: slidein .16s ease-out both;
+}
+.mixer .volslider { flex: 1 1 60px; width: auto; min-width: 60px; background: var(--line); }
+.mixer .mini { flex: 0 0 auto; white-space: nowrap; }
+.mixer .volslider::-webkit-slider-thumb { background: var(--a); box-shadow: 0 0 0 3px rgba(123, 92, 255, .18); }
+.mixer .volslider:disabled { opacity: .4; cursor: default; }
+.mixer .lvl {
+  font: 500 11px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--tx2);
+  min-width: 4ch; text-align: right;
+}
 /* The host tag and the actions occupy the same slot; hiding the tag on hover
    stops the row reflowing under the pointer. */
 .people li:hover .tag { display: none; }
@@ -1152,6 +1167,10 @@ body.overlay-body { background: transparent; }
 .stagebar.shown { opacity: 1; transform: none; pointer-events: auto; }
 
 .stagevol { display: flex; align-items: center; gap: 6px; }
+/* In the footer the slider sits on the panel palette rather than over the film. */
+.controls .volslider { background: var(--line); }
+.controls .volslider::-webkit-slider-thumb { background: var(--tx2); }
+.controls .volslider:hover::-webkit-slider-thumb { background: var(--tx); }
 .volslider {
   width: 84px; height: 3px; -webkit-appearance: none; appearance: none;
   background: rgba(255, 255, 255, .25); border-radius: 2px; cursor: pointer;

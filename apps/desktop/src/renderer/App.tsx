@@ -3,9 +3,10 @@ import type { ReactElement, DragEvent as ReactDragEvent, KeyboardEvent as ReactK
 import { useVoice } from './useVoice.js'
 import { FilmPicker } from './FilmPicker.js'
 import { hhmm, initials, tint } from './format.js'
+import { levelOf } from './mixer.js'
 import { attachVideoEngine } from './videoEngine.js'
 import { StageChat } from './StageChat.js'
-import { StageControls, useStageControls } from './StageControls.js'
+import { StageControls, FilmVolume, useStageControls } from './StageControls.js'
 import {
   SubtitleLayer, AssLayer, SubtitleControls, useSubtitles, DEFAULT_SUBTITLE_STYLE,
   type SubtitleStyle
@@ -176,6 +177,9 @@ export function App (): ReactElement {
    * there was no way to type in fullscreen unless you already knew.
    */
   const [fsDraft, setFsDraft] = useState<string | null>(null)
+  /** Whose per-person volume is unfolded under their row, if anyone's. One at
+   *  a time: the rows are narrow, and two open sliders read as a mixing desk. */
+  const [mixOpen, setMixOpen] = useState<string | null>(null)
   /** Bumped to ask the bar's chat box for the keyboard. */
   const [focusChatAt, setFocusChatAt] = useState(0)
   /** Whether that box currently has it, which holds the bar open. */
@@ -824,7 +828,7 @@ export function App (): ReactElement {
                 <h4>Watching · {s.members.length}</h4>
                 <ul className="people">
                   {s.members.map(m => (
-                    <li key={m.id} data-testid="member" data-name={m.name}>
+                    <li key={m.id} data-testid="member" data-name={m.name} className={mixOpen === m.id ? 'open' : undefined}>
                       <span className={`av t${tint(m.name)}`}>{initials(m.name)}</span>
                       <span className="nm">{m.name}</span>
                       {m.inVoice && (() => {
@@ -845,8 +849,21 @@ export function App (): ReactElement {
                       {m.deafened && <span className="tag muted" title="Cannot hear the room">deafened</span>}
                       {m.isHost && <span className="tag">host</span>}
                       {!m.mayControl && !m.isHost && <span className="tag muted" title="Cannot control playback">no control</span>}
-                      {s.isHost && !m.isHost && (
+                      {voice.mixer.muted[m.id] && <span className="tag muted" data-testid="mutedforme" title="Muted for you only">muted for you</span>}
+                      {(s.isHost && !m.isHost) || (voice.inVoice && m.inVoice && m.id !== s.memberId) ? (
                         <span className="rowacts">
+                          {voice.inVoice && m.inVoice && m.id !== s.memberId && (
+                            // Your own volume for this person -- nothing the
+                            // room sees. Distinct from the host's "ask to
+                            // mute" below, which is a request to them.
+                            <button className={mixOpen === m.id ? 'mini on' : 'mini'} data-testid="mixtoggle"
+                              aria-expanded={mixOpen === m.id}
+                              title={`How loud ${m.name} is for you`}
+                              onClick={() => setMixOpen(o => o === m.id ? null : m.id)}>
+                              {levelOf(voice.mixer, m.id) === 100 && !voice.mixer.muted[m.id] ? 'volume' : `${voice.mixer.muted[m.id] ? 'muted' : `${levelOf(voice.mixer, m.id)}%`}`}
+                            </button>
+                          )}
+                          {s.isHost && !m.isHost && (<>
                           {/* Spelled out rather than abbreviated: `take` and
                               `give` meant nothing without hovering for the
                               tooltip, and this is the panel a guest reads. */}
@@ -864,7 +881,25 @@ export function App (): ReactElement {
                               {m.muted ? 'ask to unmute' : 'ask to mute'}
                             </button>
                           )}
+                          </>)}
                         </span>
+                      ) : null}
+                      {mixOpen === m.id && voice.inVoice && m.inVoice && m.id !== s.memberId && (
+                        <div className="mixer" data-testid="mixer">
+                          <input className="volslider" type="range" min={0} max={100} step={1}
+                            data-testid="peerlevel" aria-label={`Volume of ${m.name} for you`}
+                            value={levelOf(voice.mixer, m.id)}
+                            disabled={!!voice.mixer.muted[m.id]}
+                            onChange={e => voice.setLevel(m.id, Number(e.target.value))} />
+                          <span className="lvl" data-testid="peerlevelval">
+                            {voice.mixer.muted[m.id] ? 'muted' : `${levelOf(voice.mixer, m.id)}%`}
+                          </span>
+                          <button className={voice.mixer.muted[m.id] ? 'mini on' : 'mini'} data-testid="muteforme"
+                            title={voice.mixer.muted[m.id] ? `Hear ${m.name} again` : `Stop hearing ${m.name}; they are not told`}
+                            onClick={() => voice.setMutedForMe(m.id, !voice.mixer.muted[m.id])}>
+                            {voice.mixer.muted[m.id] ? 'unmute for me' : 'mute for me'}
+                          </button>
+                        </div>
                       )}
                     </li>
                   ))}
@@ -979,6 +1014,11 @@ export function App (): ReactElement {
                         onChange={e => voice.setPushToTalk(e.target.checked)} />
                       Push to talk (hold V)
                     </label>
+                    <label className="toggle">
+                      <input type="checkbox" checked={voice.ducking} data-testid="ducking"
+                        onChange={e => voice.setDucking(e.target.checked)} />
+                      Quieten the film while I talk
+                    </label>
                     {(() => {
                       // Joining a call and being connected to the people in it
                       // are different things, and only one of them was visible.
@@ -1006,7 +1046,9 @@ export function App (): ReactElement {
                         : 'Microphone open'}
                     </p>
                     <p className="quiet">
-                      The film quietens while you talk, because echo cancellation cannot hear it.
+                      {voice.ducking
+                        ? 'The film quietens while you talk, because echo cancellation cannot hear it.'
+                        : 'On speakers the others may hear your film; headphones fix that.'}
                     </p>
                   </>
                 )}
@@ -1201,6 +1243,9 @@ export function App (): ReactElement {
           />
         </span>
         <span className="tc" data-testid="duration">{clock(duration)}</span>
+        {/* The same control as the fullscreen bar's: it was only there, so
+            adjusting the film windowed meant going fullscreen to do it. */}
+        <FilmVolume volume={s?.volume ?? 100} onVolume={v => void window.cocine.setFilmVolume?.(v)} />
         <button className="icon" data-testid="fullscreen" onClick={() => void window.cocine.setFullScreen()}
           aria-label="Toggle fullscreen">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 1h5v2H3v3H1zm14 0v5h-2V3h-3V1zM1 10h2v3h3v2H1zm14 0v5h-5v-2h3v-3z" /></svg>

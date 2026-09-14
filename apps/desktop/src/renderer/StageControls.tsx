@@ -64,6 +64,42 @@ export interface StageControlsProps {
   onRelease: () => void
 }
 
+/**
+ * The film's volume: a mute button and a slider.
+ *
+ * One component for both bars -- the windowed footer and the fullscreen stage
+ * bar -- so the two cannot drift. It is the film's volume only; what the room
+ * hears of each other is a separate thing and lives in the sidebar.
+ *
+ * `testId` prefixes the test ids, so the two copies stay distinguishable to a
+ * test: `stagevolume` on the stage bar, `volume` in the footer.
+ */
+export function FilmVolume ({ volume, onVolume, testId = '' }: {
+  volume: number
+  onVolume: (v: number) => void
+  testId?: string
+}): ReactElement {
+  return (
+    <span className="stagevol">
+      <button
+        className="icon" data-testid={`${testId}mute`}
+        onClick={() => onVolume(volume > 0 ? 0 : 100)}
+        aria-label={volume > 0 ? 'Mute the film' : 'Unmute the film'}
+      >
+        {volume === 0
+          ? <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3 4 6H1.5v4H4l3 3zM10.5 6l4 4m0-4-4 4" stroke="currentColor" strokeWidth="1.4" fill="none" /></svg>
+          : <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3 4 6H1.5v4H4l3 3z" /><path d="M10 5.5a3.5 3.5 0 0 1 0 5M12 3.5a6 6 0 0 1 0 9" stroke="currentColor" strokeWidth="1.3" fill="none" /></svg>}
+      </button>
+      <input
+        className="volslider" type="range" min={0} max={100} step={1}
+        value={volume} data-testid={`${testId}volume`}
+        onChange={e => onVolume(Number(e.target.value))}
+        aria-label="Film volume"
+      />
+    </span>
+  )
+}
+
 export function StageControls ({
   visible, paused, positionSec, durationSec, volume, mayControl, seekable,
   onPlayPause, onSeek, onVolume, onLeaveFullscreen, onHold, onRelease,
@@ -174,25 +210,7 @@ export function StageControls ({
 
       <span className="tc" data-testid="stageduration">{clock(duration)}</span>
 
-      {/* The film's volume only. What the room hears of each other is a
-          separate thing and stays in the sidebar. */}
-      <span className="stagevol">
-        <button
-          className="icon" data-testid="stagemute"
-          onClick={() => onVolume(volume > 0 ? 0 : 100)}
-          aria-label={volume > 0 ? 'Mute the film' : 'Unmute the film'}
-        >
-          {volume === 0
-            ? <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3 4 6H1.5v4H4l3 3zM10.5 6l4 4m0-4-4 4" stroke="currentColor" strokeWidth="1.4" fill="none" /></svg>
-            : <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 3 4 6H1.5v4H4l3 3z" /><path d="M10 5.5a3.5 3.5 0 0 1 0 5M12 3.5a6 6 0 0 1 0 9" stroke="currentColor" strokeWidth="1.3" fill="none" /></svg>}
-        </button>
-        <input
-          className="volslider" type="range" min={0} max={100} step={1}
-          value={volume} data-testid="stagevolume"
-          onChange={e => onVolume(Number(e.target.value))}
-          aria-label="Film volume"
-        />
-      </span>
+      <FilmVolume volume={volume} onVolume={onVolume} testId="stage" />
 
       <button
         className="icon" data-testid="stagefullscreen"

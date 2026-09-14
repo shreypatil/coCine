@@ -200,12 +200,22 @@ export function explainConnectError (err: unknown, url: string): Error {
 
 export const VIDEO_EXTENSIONS = ['mkv', 'mp4', 'avi', 'mov', 'webm', 'm4v', 'ts', 'mpg', 'mpeg', 'wmv', 'flv', 'ogv']
 
+/**
+ * How much of the film is left while this microphone is live.
+ *
+ * It was 0.35, and in use that read as the film disappearing every time anyone
+ * pressed the talk key. The point is only to keep the film from dominating what
+ * the microphone picks up; a moderate dip does that, and the person who finds
+ * even this too much can turn ducking off in the voice panel.
+ */
+export const DUCK_FACTOR = 0.6
+
 export function createHandlers (deps: HandlerDeps): Record<string, (...args: never[]) => unknown> {
   /** What the player should actually be set to: the viewer's volume, reduced
-   *  while somebody is talking. */
+   *  while this microphone is live. */
   const effectiveVolume = (): number => {
     const chosen = deps.getVolume?.() ?? 100
-    return deps.isDucked?.() ? Math.round(chosen * 0.35) : chosen
+    return deps.isDucked?.() ? Math.round(chosen * DUCK_FACTOR) : chosen
   }
 
   const log = deps.log ?? (() => {})

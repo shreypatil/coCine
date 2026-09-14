@@ -2,16 +2,23 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { VoiceMesh, type ConnectionLike } from '@cocine/voice'
 import { SpeakingDetector } from './speaking.js'
 import { logger } from './log.js'
+import { EMPTY, applyMixer, loadDucking, micState, prune, saveDucking, type Levels } from './mixer.js'
 
 /**
  * The voice call, from the renderer's side.
  *
  * Push-to-talk is the default rather than an option, and the film ducks while
- * anyone is speaking. Both exist for the same reason: **Chromium's echo
+ * your microphone is live. Both exist for the same reason: **Chromium's echo
  * canceller cannot hear the film.** It removes audio Chromium itself played,
  * and mpv plays through an entirely separate path, so on speakers every
  * microphone picks the film up and sends it back to the room. No WebRTC setting
- * fixes that. Headphones fix it; these two make it survivable without.
+ * fixes that. Headphones fix it; these two make it survivable without -- and
+ * somebody wearing them can turn the ducking off, since for them it only takes
+ * the film away.
+ *
+ * Each person in the call also has a volume of their own here, and can be
+ * muted for this listener alone. See mixer.ts for why that is local and per
+ * session.
  */
 
 export interface VoiceApi {
@@ -26,11 +33,18 @@ export interface VoiceApi {
   pushToTalk: boolean
   peers: Record<string, 'connecting' | 'connected' | 'failed'>
   error: string | null
+  /** Whether the film quietens while this microphone is live. Per machine. */
+  ducking: boolean
+  /** How loud each person is for me, 0-100, and whom I have muted for myself. */
+  mixer: Levels
   join: () => Promise<void>
   leave: () => void
   setMuted: (m: boolean) => void
   setDeafened: (d: boolean) => void
   setPushToTalk: (p: boolean) => void
+  setDucking: (d: boolean) => void
+  setLevel: (memberId: string, level: number) => void
+  setMutedForMe: (memberId: string, muted: boolean) => void
 }
 
 /**
@@ -53,6 +67,8 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
   const [talking, setTalking] = useState(false)
   const [peers, setPeers] = useState<Record<string, 'connecting' | 'connected' | 'failed'>>({})
   const [error, setError] = useState<string | null>(null)
+  const [ducking, setDuckingState] = useState(() => loadDucking(typeof localStorage === 'undefined' ? null : localStorage))
+  const [mixer, setMixer] = useState<Levels>(EMPTY)
 
   // Held in a ref so a re-issued credential reaches the next connection without
   // rebuilding the mesh and dropping the call in progress.
@@ -67,16 +83,36 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
 
   /** The single place the microphone is actually on or off. */
   const applyMic = useCallback((): void => {
-    const on = inVoice && !muted && (!pushToTalk || talking)
-    for (const t of stream.current?.getAudioTracks() ?? []) t.enabled = on
-    void window.cocine.duckFilm(on)
-  }, [inVoice, muted, pushToTalk, talking])
+    const { mic, duck } = micState({ inVoice, muted, pushToTalk, talking, ducking })
+    for (const t of stream.current?.getAudioTracks() ?? []) t.enabled = mic
+    void window.cocine.duckFilm(duck)
+  }, [inVoice, muted, pushToTalk, talking, ducking])
 
   useEffect(applyMic, [applyMic])
 
+  // The mixer, written onto every element whenever anything it depends on
+  // changes. Held in refs as well so an element created mid-call by the mesh
+  // (whose callbacks were bound at join) starts at the right level.
+  const mixerRef = useRef<Levels>(mixer)
+  const deafenedRef = useRef(deafened)
+  mixerRef.current = mixer
+  deafenedRef.current = deafened
   useEffect(() => {
-    for (const el of audio.current.values()) el.muted = deafened
-  }, [deafened])
+    applyMixer(audio.current, mixer, deafened)
+  }, [mixer, deafened])
+
+  const setDucking = useCallback((d: boolean): void => {
+    setDuckingState(d)
+    saveDucking(typeof localStorage === 'undefined' ? null : localStorage, d)
+    log.info('ducking', { on: d })
+  }, [])
+  const setLevel = useCallback((memberId: string, level: number): void => {
+    setMixer(m => ({ ...m, level: { ...m.level, [memberId]: Math.min(100, Math.max(0, Math.round(level))) } }))
+  }, [])
+  const setMutedForMe = useCallback((memberId: string, on: boolean): void => {
+    log.info('muted for me', { peer: memberId.slice(0, 8), on })
+    setMixer(m => ({ ...m, muted: { ...m.muted, [memberId]: on } }))
+  }, [])
 
   // Report to the room so everyone's indicators agree.
   useEffect(() => {
@@ -122,6 +158,7 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
     // the indicator freezes on whatever they were doing when they dropped.
     const here = new Set([...memberIds, selfId])
     for (const el of audio.current.keys()) if (!here.has(el)) detector.current?.unwatch(el)
+    setMixer(m => prune(m, here))
     setSpeaking(prev => {
       const next: Record<string, boolean> = {}
       for (const id of Object.keys(prev)) if (here.has(id)) next[id] = prev[id]!
@@ -167,7 +204,9 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
             peer: id.slice(0, 8),
             tracks: (remote as MediaStream).getAudioTracks().map(t => ({ enabled: t.enabled, muted: t.muted }))
           })
-          el.muted = deafened
+          // At whatever this listener already set for them, not full: a stream
+          // re-established mid-call should not come back at full volume.
+          applyMixer([[id, el]], mixerRef.current, deafenedRef.current)
           // And if it still will not play, say so rather than being quietly
           // silent: "we both joined and heard nothing" needs a reason.
           void el.play().catch((e: unknown) => {
@@ -201,7 +240,7 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
       log.error('join failed', { name: (e as Error)?.name, error: e })
       setError(e instanceof Error ? `Could not use the microphone: ${e.message}` : String(e))
     }
-  }, [selfId, memberIds.join(','), deafened])
+  }, [selfId, memberIds.join(',')])
 
   const leave = useCallback((): void => {
     mesh.current?.close()
@@ -214,6 +253,7 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
     detector.current = null
     setSpeaking({})
     setPeers({})
+    setMixer(EMPTY)
     setInVoice(false)
     setTalking(false)
     void window.cocine.duckFilm(false)
@@ -223,9 +263,15 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
   // Push to talk. Held, not toggled, and ignored while typing.
   useEffect(() => {
     if (!inVoice || !pushToTalk) { setTalking(false); return }
+    // Text fields only. A checkbox or a slider is an <input> too and keeps
+    // focus after a click, and "I ticked a box and then V stopped working" is
+    // not a rule anybody would guess.
     const typing = (e: KeyboardEvent): boolean => {
       const el = e.target as HTMLElement | null
-      return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')
+      if (!el) return false
+      if (el.tagName === 'TEXTAREA') return true
+      if (el.tagName !== 'INPUT') return false
+      return !['checkbox', 'radio', 'range', 'button', 'submit'].includes((el as HTMLInputElement).type)
     }
     // `code`, not `key`: with Caps Lock on, or Shift held, `key` is "V" and the
     // microphone silently never opened while the interface went on saying
@@ -247,9 +293,11 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
   return {
     inVoice,
     speaking, muted, deafened, talking, pushToTalk, peers, error,
+    ducking, mixer,
     join, leave,
     setMuted: setMutedState,
     setDeafened: setDeafenedState,
-    setPushToTalk
+    setPushToTalk,
+    setDucking, setLevel, setMutedForMe
   }
 }

@@ -52,14 +52,37 @@ const foreign = spec.stage !== null && process.platform !== spec.host
 if (spec.stage && !foreign) {
   console.log(`  building ${target} on ${process.platform}: using the binaries npm installed`)
 }
-const run = (cmd, args, cwd = root) => execFileSync(cmd, args, { cwd, stdio: 'inherit' })
+/**
+ * Run one step, and if it fails say which one in plain words.
+ *
+ * execFileSync's own failure is a Node stack trace about `Command failed`, and
+ * npm adds a screen of its own below that -- so the step's real message, which
+ * was printed with stdio inherited, scrolls off above and what gets pasted into
+ * a bug report is only the wrapper. That cost three round trips on a borrowed
+ * Mac before this existed.
+ */
+class StepFailed extends Error {
+  constructor (what, code) {
+    super(`${what} failed (exit ${code}). Its own message is printed above this line.`)
+    this.code = typeof code === 'number' && code > 0 ? code : 1
+  }
+}
+const run = (cmd, args, cwd = root, what = `${cmd} ${args.join(' ')}`) => {
+  try {
+    execFileSync(cmd, args, { cwd, stdio: 'inherit' })
+  } catch (err) {
+    // Thrown rather than exiting here: a failure inside the build must still
+    // reach the `finally` that puts this machine's own binaries back.
+    throw new StepFailed(what, err && typeof err.status === 'number' ? err.status : '?')
+  }
+}
 
 /** Files put aside while a foreign build runs, and put back afterwards. */
 const swapped = []
 
 function swapIn () {
   if (!foreign) return
-  run('node', [join(here, 'fetch-native.mjs'), target])
+  run('node', [join(here, 'fetch-native.mjs'), target], root, `staging native addons for ${target}`)
   const manifest = JSON.parse(readFileSync(join(root, '.native', spec.stage, 'manifest.json'), 'utf8'))
   const backups = join(root, '.native', 'host-backup')
   mkdirSync(backups, { recursive: true })
@@ -143,11 +166,17 @@ for (const b of bundled) {
 }
 
 try {
-  swapIn()
-  run('npx', ['electron-vite', 'build'], app)
-  run('npx', ['electron-builder', spec.flag, '--config', 'electron-builder.yml'], app)
-} finally {
-  swapBack()
+  try {
+    swapIn()
+    run('npx', ['electron-vite', 'build'], app, 'building the application (electron-vite)')
+    run('npx', ['electron-builder', spec.flag, '--config', 'electron-builder.yml'], app, 'packaging (electron-builder)')
+  } finally {
+    swapBack()
+  }
+  // After restoring, so a failing check still leaves the tree correct.
+  run('node', [join(here, 'check-package.mjs'), target], root, 'verifying the package (check-package)')
+} catch (err) {
+  if (!(err instanceof StepFailed)) throw err
+  console.error(`\n  ✗ ${err.message}`)
+  process.exit(err.code)
 }
-// After restoring, so a failing check still leaves the tree correct.
-run('node', [join(here, 'check-package.mjs'), target])

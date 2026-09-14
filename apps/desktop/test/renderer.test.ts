@@ -52,7 +52,10 @@ beforeAll(async () => {
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
   const addr = server.address()
   origin = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`
-  browser = await chromium.launch()
+  // A fake microphone, so joining voice can succeed and the in-call controls
+  // can be tested. Muted: the fake device is a tone, and nothing here asserts
+  // on sound.
+  browser = await chromium.launch({ args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--mute-audio'] })
 }, 120_000)
 
 afterAll(async () => {
@@ -61,7 +64,7 @@ afterAll(async () => {
 })
 
 async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
-  page = await browser.newPage({ viewport, permissions: ['clipboard-read', 'clipboard-write'] })
+  page = await browser.newPage({ viewport, permissions: ['clipboard-read', 'clipboard-write', 'microphone'] })
   // Stand in for the preload bridge. Calls are recorded on window.__calls so a
   // click can be asserted end to end without Electron.
   await page.addInitScript(() => {
@@ -117,6 +120,7 @@ async function open (viewport = { width: 1100, height: 800 }): Promise<Page> {
       pause: rec('pause'),
       seek: rec('seek'),
       setFullScreen: rec('setFullScreen'),
+      setFilmVolume: rec('setFilmVolume'),
       sendChat: rec('sendChat'),
       setControl: rec('setControl'),
       transferHost: rec('transferHost'),
@@ -267,6 +271,37 @@ describe('fullscreen', () => {
   })
 })
 
+describe('the film volume, windowed', () => {
+  // It was only on the fullscreen bar, so turning the film down while windowed
+  // meant going fullscreen to do it. The footer carries the same control.
+  it('has the slider and the mute button in the footer, driving the same setting', async () => {
+    await open()
+    await push({ volume: 100 })
+    await page.fill('[data-testid="controls"] [data-testid="volume"]', '40')
+    expect((await calls('setFilmVolume')).at(-1)).toEqual([40])
+
+    await page.click('[data-testid="controls"] [data-testid="mute"]')
+    expect((await calls('setFilmVolume')).at(-1)).toEqual([0])
+    // Muted, the same button restores full volume, and the slider follows the
+    // state main pushes rather than what was last dragged.
+    await push({ volume: 0 })
+    expect(await page.inputValue('[data-testid="controls"] [data-testid="volume"]')).toBe('0')
+    await page.click('[data-testid="controls"] [data-testid="mute"]')
+    expect((await calls('setFilmVolume')).at(-1)).toEqual([100])
+    await page.close()
+  })
+
+  it('does not push the fullscreen button off the bar', async () => {
+    await open({ width: 900, height: 700 })
+    await push()
+    const bar = (await page.locator('[data-testid="controls"]').boundingBox())!
+    const fs = (await page.locator('[data-testid="fullscreen"]').boundingBox())!
+    expect(fs.x + fs.width).toBeLessThanOrEqual(bar.x + bar.width)
+    expect(fs.y).toBeGreaterThanOrEqual(bar.y)
+    await page.close()
+  })
+})
+
 describe('keyboard', () => {
   it('space toggles playback, arrows seek by ten seconds', async () => {
     await open()
@@ -343,6 +378,74 @@ describe('voice', () => {
     await push({ members: inVoice, isHost: false })
     await page.hover('[data-testid="member"][data-name="dev"]')
     expect(await page.locator('[data-testid="mutethem"]').count()).toBe(0)
+    await page.close()
+  })
+
+  /** Press Join voice and wait until the panel is in the call. */
+  const joinVoice = async (): Promise<void> => {
+    await page.click('[data-testid="joinvoice"]')
+    await page.waitForSelector('[data-testid="leavevoice"]', { timeout: 10_000 })
+  }
+
+  it('quietens the film only while the microphone is live, and not for someone who turned that off', async () => {
+    await open()
+    await push({ members: inVoice })
+    await joinVoice()
+    // Push to talk: the film ducks on the way down and comes back on the way up.
+    await page.keyboard.down('v')
+    await expect.poll(async () => (await calls('duckFilm')).at(-1)).toEqual([true])
+    await page.keyboard.up('v')
+    await expect.poll(async () => (await calls('duckFilm')).at(-1)).toEqual([false])
+
+    // Turned off: the key still opens the microphone, and the film is left alone.
+    await page.uncheck('[data-testid="ducking"]')
+    const before = (await calls('duckFilm')).length
+    await page.keyboard.down('v')
+    await expect.poll(() => page.textContent('[data-testid="talkstate"]')).toContain('Talking')
+    await page.keyboard.up('v')
+    expect((await calls('duckFilm')).slice(before).filter(a => a[0] === true)).toEqual([])
+    expect(await page.textContent('[data-testid="voice"]')).toContain('headphones')
+
+    // And it is remembered on this machine.
+    await page.reload()
+    await page.waitForSelector('[data-testid="stage"]')
+    await push({ members: inVoice })
+    await joinVoice()
+    expect(await page.isChecked('[data-testid="ducking"]')).toBe(false)
+    await page.evaluate(() => localStorage.clear())
+    await page.close()
+  })
+
+  it('gives each other person in the call a volume for you alone', async () => {
+    const dev = inVoice[1]!
+    await open()
+    await push({ members: [inVoice[0]!, { ...dev, muted: false }] })
+    // Not offered before joining: there is nothing to hear yet.
+    await page.hover('[data-testid="member"][data-name="dev"]')
+    expect(await page.locator('[data-testid="mixtoggle"]').count()).toBe(0)
+
+    await joinVoice()
+    await page.hover('[data-testid="member"][data-name="dev"]')
+    await page.click('[data-testid="member"][data-name="dev"] [data-testid="mixtoggle"]')
+    await page.waitForSelector('[data-testid="mixer"]')
+    await page.fill('[data-testid="peerlevel"]', '40')
+    expect(await page.textContent('[data-testid="peerlevelval"]')).toBe('40%')
+    // The closed control says where it stands, so a turned-down person is visible.
+    expect(await page.textContent('[data-testid="member"][data-name="dev"] [data-testid="mixtoggle"]')).toBe('40%')
+
+    // Muted for me: the slider is kept, the room is not told.
+    await page.click('[data-testid="muteforme"]')
+    expect(await page.textContent('[data-testid="peerlevelval"]')).toBe('muted')
+    await page.mouse.move(0, 0)
+    expect(await page.locator('[data-testid="mutedforme"]').count()).toBe(1)
+    expect(await calls('moderateVoice')).toEqual([])
+    await page.hover('[data-testid="member"][data-name="dev"]')
+    await page.click('[data-testid="muteforme"]')
+    expect(await page.textContent('[data-testid="peerlevelval"]')).toBe('40%')
+
+    // Never for yourself.
+    await page.hover('[data-testid="member"][data-name="anjali"]')
+    expect(await page.locator('[data-testid="member"][data-name="anjali"] [data-testid="mixtoggle"]').count()).toBe(0)
     await page.close()
   })
 
