@@ -2,16 +2,19 @@
 
 Watch a film with friends, in sync, over a peer-to-peer connection.
 
-Phases 0 through 8 of the [build plan](#status) are implemented: mpv is driven
-over JSON IPC inside an Electron shell, a room of clients holds synchronised
-playback inside a 100 ms budget, the film is distributed peer to peer over
-BitTorrent while it plays, voice runs as a WebRTC mesh, voice falls back to a
-TURN relay where a direct connection is impossible, and a room that cannot use
-the swarm at all can fall back to fetching the film from object storage.
+Phases 0 through 8 of the [build plan](#status) and most of phase B are
+implemented: the film plays in a `<video>` element inside an Electron window
+(mpv, driven over JSON IPC, is kept behind a switch), a room of clients holds
+synchronised playback inside a 100 ms budget, the film is distributed peer to
+peer over BitTorrent while it plays, voice runs as a WebRTC mesh, voice falls
+back to a TURN relay where a direct connection is impossible, a room that
+cannot use the swarm at all can fall back to fetching the film from object
+storage, and installed copies point at a shared server so nobody has to run one.
 
 What remains is in [docs/TODO.md](docs/TODO.md). The largest item is not code:
-everything so far has been verified on one machine, and the peer-to-peer parts
-need two real machines on two real networks to be meaningfully tested.
+voice has now been used between two real machines on two real networks, but
+the film transfer has only been measured on one machine, and how often two real
+homes can reach each other directly is still being found out.
 
 ## Layout
 
@@ -19,15 +22,17 @@ need two real machines on two real networks to be meaningfully tested.
 packages/
   protocol/   wire contract — Zod schemas shared by client and server
   sync/       clock offset + drift correction — pure, no I/O, heavily tested
-  player/     mpv over JSON IPC, behind the PlayerController interface
+  player/     both engines behind PlayerController: <video> over IPC, mpv over JSON IPC;
+              ffmpeg conversion, subtitles, test-film generation
   client/     composes socket + clock + sync engine + player + transfer
   voice/      WebRTC mesh state machine — pure, driven with fake connections
+  logging/    channelled, per-day log files for the server and the desktop
 apps/
   server/     signalling: rooms, playback authority, tracker, readiness, TURN
   desktop/    Electron main + preload + React renderer
 harness/      transfer benchmark (WebTorrent vs custom policy) — see its README
-infra/        coturn configuration for the voice relay
-docs/         testing checklist and the outstanding-work list
+infra/        the shared server: systemd units, Caddy, coturn, setup scripts
+docs/         the GitHub Pages site, the deployment runbook, the outstanding-work list
 types/        ambient declarations for webtorrent and bittorrent-tracker
 ```
 
@@ -223,19 +228,22 @@ sync during transfer         p99 10.0 ms · worst 11.0 ms
 
 ### What phase 4 has not shown
 
-**Two real machines on two real networks.** Everything above runs on loopback in
-one process. That leaves untested: NAT traversal between actual hosts, real
-round-trip variance, and the ten to twenty-five per cent of peer pairs that
-cannot connect directly.
+**The transfer between two real machines on two real networks.** Everything
+above runs on loopback in one process. Voice has since connected between a
+Linux machine and a Windows one on different networks through the shared
+server, which exercises signalling, NAT traversal and the relay for real — but
+the swarm has not been measured that way: NAT traversal between actual hosts,
+real round-trip variance, and the ten to twenty-five per cent of peer pairs
+that cannot connect directly.
 
 Phase 6 added a relay, but only for voice — bulk transfer is never relayed, by
 design. So this gap is narrowed rather than closed, and measuring how often it
 bites on real connections is the open question. See
 [docs/TODO.md](docs/TODO.md).
 
-To try it yourself, run the server somewhere both machines can reach, then on
-each machine set that address in the join panel. One person opens a film, the
-other joins with the code.
+An installed copy already points at the shared server, so trying it needs
+nothing but two machines: one person opens a film and shares it, the other
+joins with the code.
 
 ## Voice
 
@@ -381,20 +389,23 @@ all, rather than one that fails when pressed.
 
 Three targets, built with electron-builder into `release/`.
 
-| Platform | Artifact | mpv |
-|---|---|---|
-| Linux | `.deb`, AppImage | **not bundled** — the `.deb` declares `Depends: mpv`; the AppImage relies on PATH |
-| Windows | NSIS `.exe` | bundled, ~120 MB, fetched by `scripts/fetch-mpv.mjs` |
-| macOS | `.dmg` | bundled — but the build needs an actual Mac |
+| Platform | Artifact | ffmpeg | mpv (optional engine) |
+|---|---|---|---|
+| Linux | `.deb`, AppImage | bundled; the `.deb` also declares `Depends: ffmpeg` and prefers apt's copy | **not bundled** — the `.deb` declares `Depends: mpv`; the AppImage relies on PATH |
+| Windows | NSIS `.exe` | bundled | bundled, ~120 MB, fetched by `scripts/fetch-mpv.mjs` |
+| macOS (Apple Silicon) | `.dmg` | copied from Homebrew at build time | bundled if staged — the build has to run on a Mac, see `docs/building-macos.md` |
 
-The asymmetry is deliberate. On Linux the package manager installs mpv better
-than we can, and shipping a second copy would be both larger and wrong. Windows
-and macOS have no such mechanism, so a copy travels with the application.
+ffmpeg is what the default `<video>` engine converts AVI, MPEG-2 and Xvid with,
+so every platform carries it. mpv is only reached by someone who sets
+`COCINE_PLAYER=mpv`; the asymmetry in how it ships is deliberate. On Linux the
+package manager installs it better than we can, and shipping a second copy
+would be both larger and wrong. Windows and macOS have no such mechanism, so a
+copy travels with the application.
 
-When mpv is nowhere to be found the application says so and names the install
-command for that platform, instead of failing with a spawn error against a
-window that never appears. `COCINE_MPV` overrides the search for an unusual
-install.
+When mpv is asked for and nowhere to be found the application says so and names
+the install command for that platform, instead of failing with a spawn error
+against a window that never appears. `COCINE_MPV` overrides the search for an
+unusual install.
 
 ### The server address is baked in
 
@@ -431,12 +442,14 @@ The `mac` and `win` sections of `electron-builder.yml` are where that switches o
 | `Esc` | leave fullscreen |
 | `V` (hold) | talk, while push-to-talk is on |
 
-Shortcuts are ignored while a text field has focus.
+Shortcuts are ignored while a text field has focus. `Enter` in fullscreen opens
+the chat composer.
 
-**Fullscreen has no visible controls yet.** Nothing can be drawn over the video
-until the overlay window lands after phase 3, so mpv itself reports what
-happened — a keyboard hint on entering, and brief confirmations for play, pause
-and seek. That is the one thing that can appear above the picture today.
+Fullscreen has a control bar under the default engine — play, seek, the film's
+volume, a chat box, and the way out — which appears on mouse movement and hides
+on its own. Under the mpv engine nothing can be drawn over the picture, so mpv
+itself reports what happened, and chat bubbles arrive through a shaped native
+overlay window instead.
 
 ## Phase 1 options
 
@@ -495,8 +508,12 @@ which `time-pos` reads stale and the engine corrects against a phantom drift.
 | 05 | Voice | **done** — mesh, push-to-talk, mute/deafen, advisory host mute |
 | 06 | NAT hardening | **done on this machine** — TURN credentials, plane split, forced-relay test; success rate needs real networks |
 | 07 | Relay mode | **done on this machine** — host toggle, signed URLs, film delivered with no peer connection; measured $0.02 a session on R2 |
-| 08 | Packaging | **done for Windows and Linux** — installers, bundled mpv, background updates; macOS needs a Mac to build |
-| 09 | Interface overhaul | not started — **blocked on your list of issues from manual testing** |
+| 08 | Packaging | **done** — installers for all three platforms, bundled ffmpeg (and mpv where it must ship), background updates; the Windows one has now run on Windows, the macOS one has run on a Mac but its post-build check still fails there |
+| 09 | Interface overhaul | **largely done through phase B** — fullscreen controls and chat, the film flow, the transfer panel, subtitles, speaking indicators, a per-person mixer; the rest is in `docs/TODO.md` |
+| B1 | A player of our own | **done** — `<video>` engine by default on every platform, mpv behind `COCINE_PLAYER`; see `docs/phase-B-plan.md` |
+| B2 | A public server | **done** — Oracle free tier, Caddy in front, coturn beside; installers point at it; `docs/deploying.md` |
+| B3 | macOS | **partly** — Apple Silicon build runs; `dist:mac` check fails on the Mac, unread |
+| B4 | Network simulation | not started |
 
 Deferred work, and the two things that need a second machine, are listed in
 [docs/TODO.md](docs/TODO.md).
@@ -509,15 +526,15 @@ coturn and a real MinIO up in containers live in that third layer, and skip
 themselves where Docker is absent.
 
 ```bash
-npm test          # layers 1 and 2 — 290 tests, ~40s
-npm run test:app  # layer 3 — real Electron and Docker, 21 tests, ~60s
+npm test          # layers 1 and 2 — about 780 tests, ~3 min
+npm run test:app  # layer 3 — real Electron and Docker, about 55 tests
 ```
 
 | Layer | What it covers | How |
 |---|---|---|
-| **Logic** | Sync engine, clock estimation, mpv handle parsing, and every IPC handler — dialog parenting, error propagation, room routing. | Plain unit tests. `main/handlers.ts` takes its dependencies as arguments precisely so it can be tested without Electron. |
-| **Renderer** | Real layout and real clicks against the built renderer, with the preload bridge stubbed. | Headless Chromium via Playwright. A DOM emulator would not do — it performs no layout, and layout is where the bug was. |
-| **Application** | The whole click path: click → preload → IPC → main handler → mpv → interface. Only the native dialog is stubbed. | Playwright's Electron support under `COCINE_HEADLESS`, which swaps the reparented player for a headless one and leaves the window hidden. |
+| **Logic** | Sync engine, clock estimation, mpv handle parsing, the voice mesh, the mixer, logging, and every IPC handler — dialog parenting, error propagation, room routing. | Plain unit tests. `main/handlers.ts` takes its dependencies as arguments precisely so it can be tested without Electron. |
+| **Renderer** | Real layout and real clicks against the built renderer, with the preload bridge stubbed and a fake, muted microphone so voice can be joined. | Headless Chromium via Playwright. A DOM emulator would not do — it performs no layout, and layout is where the bug was. |
+| **Application** | The whole click path: click → preload → IPC → main handler → player → interface, and a real voice call between the application and a second participant. Only the native dialog is stubbed. | Playwright's Electron support under `COCINE_HEADLESS`, which swaps the reparented player for a headless one and leaves the window hidden. |
 
 The regression that motivated the renderer layer is worth stating, because it is
 the kind a person catches by eye and a test suite usually does not. Adding a
@@ -533,14 +550,19 @@ player sees the same `PlayerController` either way.
 
 ## Manual testing
 
-Three terminals. The film can be anything mpv opens, or a generated fixture from
-`.fixtures/`.
+Three terminals — or two, since a development build can point at the shared
+server from the settings box instead of running one. The film can be anything
+the player opens, or a generated fixture from `.fixtures/`.
 
 ```bash
 npm run server                                   # 1: signalling on :8787
 npm run desktop -- --film=/path/to/film.mkv      # 2: first viewer
 npm run desktop -- --film=/path/to/film.mkv      # 3: second viewer
 ```
+
+Logs from a development run land in `~/.config/@cocine/desktop/logs/` on Linux
+(`userData/logs/` generally), one directory per channel and one file per day;
+`renderer.voice/` is the one to read when a call misbehaves.
 
 Open a film by dragging it onto the window, or with the **Open film** button.
 In the first window press **Create a room**; it shows a code like `4HTC-4M56` in

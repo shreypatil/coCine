@@ -1,22 +1,27 @@
 # Testing coCine across real machines
 
-Everything automated so far runs on **loopback, in one process**. That is a real
+Everything automated runs on **loopback, in one process**. That is a real
 limitation, not a formality: it means the swarm has never crossed a NAT, never
 seen a variable round trip, and never had a peer it simply could not reach.
 
-This is what to try once you have two machines, what is most likely to break,
-and how to tell one failure from another.
+Voice has: on 13 September a Linux machine and a Windows one on different
+networks held a call through the shared server, which proves signalling, NAT
+traversal and the relay for that plane. The film is the part still to find out.
 
-> Do this **after phase 6**. Phase 6 adds coturn, and roughly one peer pair in
-> five cannot connect without a relay. Before then, a failure to connect is
-> expected behaviour rather than a bug — see *Peers that cannot connect*.
+This is what to try with two machines, what is most likely to break, and how to
+tell one failure from another.
 
 ---
 
 ## Setup
 
-The server must be reachable from both machines. On a LAN, running it on one of
-them is enough.
+The easy way is the shared server: an installed copy already points at
+`wss://cocine.duckdns.org`, which has a relay beside it, so nothing needs to
+run anywhere. One person presses **Create a room** and reads out the code; the
+other types it in and presses **Join**.
+
+To run your own instead — on a LAN, or to read the server's logs while you
+test — start it on one machine and point both apps at it:
 
 ```bash
 # on the machine that will host the server
@@ -27,8 +32,8 @@ npm run desktop
 ```
 
 In the app, set **Server** to `ws://<server-machine-ip>:8787` rather than
-`127.0.0.1`. One person presses **Create a room** and reads out the code; the
-other types it in and presses **Join**.
+`127.0.0.1`. The shared server's logs, if you are using it, are in
+`/var/log/cocine/` on the instance, split by area and by day.
 
 Then one person opens a film. The other should start fetching it automatically.
 
@@ -276,7 +281,9 @@ Verified on this machine and not worth re-testing by hand:
 - A film transfers over WebRTC with TCP and uTP disabled, byte-identical
 - Playback starts at under 3 % downloaded with the room in sync at 10 ms p99
 - The readiness gate, the countdown, host controls and durability reporting
-- Rooms, codes, chat, roles, and the interface itself — 211 automated tests
+- Rooms, codes, chat, roles, and the interface itself — about 780 automated tests
+- A voice call between two real machines on two real networks, through the
+  shared server (Linux ↔ Windows, 13 September)
 
-What none of that touches is **two machines and a real network**. That is the
-whole of what is left to find out.
+What none of that touches is **the film between two machines on a real
+network**. That is the whole of what is left to find out.

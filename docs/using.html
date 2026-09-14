@@ -71,20 +71,22 @@
           <td><strong>Ubuntu, Mint, Debian</strong></td>
           <td><code>coCine-amd64.deb</code></td>
           <td>Double-click it and let the software installer do the rest. This is the option
-            to pick if you have a choice: it installs the video player coCine needs at the
-            same time.</td>
+            to pick if you have a choice: it pulls in the two helper programs coCine can use
+            at the same time, so there is nothing else to install.</td>
         </tr>
         <tr>
           <td><strong>Other Linux</strong></td>
           <td><code>coCine-x86_64.AppImage</code></td>
           <td>Right-click → Properties → tick “allow executing as a program”, then double-click.
-            You also need <b>mpv</b> installed; if it is missing, coCine tells you the exact
-            one-line command for your system and gives you a button to copy it.</td>
+            Everything it needs travels inside it.</td>
         </tr>
         <tr>
-          <td><strong>macOS</strong></td>
-          <td>—</td>
-          <td>Not yet. The Mac version has to be built on a Mac, and that has not happened.</td>
+          <td><strong>macOS</strong> (Apple Silicon)</td>
+          <td><code>coCine-arm64.dmg</code></td>
+          <td>Open it and drag coCine to Applications. The first launch is blocked with
+            “Apple could not verify…” because the app is not signed with an Apple developer
+            certificate: close that box, open <b>System Settings → Privacy &amp; Security</b>,
+            scroll down and press <b>Open Anyway</b>. Once. Intel Macs are not supported.</td>
         </tr>
       </tbody>
     </table>
@@ -106,10 +108,12 @@
       leave it alone.</li>
     </ul>
     <div class="warn">
-      <span class="h">If the Server box says 127.0.0.1</span>
-      <p>That address means “this computer”, which is a placeholder rather than a real
-      meeting point. Ask whoever invited you for the address they use, and paste it in. There
-      is a <b>use default</b> button to get back to the one the app shipped with.</p>
+      <span class="h">Which server?</span>
+      <p>An installed copy comes pointed at the shared one, so normally there is nothing to
+      do. If whoever invited you runs their own, paste the address they give you; there is a
+      way back to the shared one in the same box. An address of <code>127.0.0.1</code> means
+      “this computer” and only appears when running from source — it is a placeholder, not a
+      meeting point.</p>
     </div>
 
     <h2 id="host">Hosting a film night</h2>
@@ -141,10 +145,10 @@
 
     <h3>While you are sharing</h3>
     <ul>
-      <li><strong>Pause sharing</strong> stops your machine feeding the room — useful if you
-      need the bandwidth for something else. It pauses for everybody: whoever was downloading
-      from you stops until you resume. The panel says so plainly, and other people see you
-      marked <em>paused</em>.</li>
+      <li><strong>Pause sharing</strong> stops your machine taking on anyone new, and other
+      people see you marked <em>paused</em>. Honestly: someone already downloading from you
+      keeps going for now — stopping them properly without losing the connection is on the
+      list. If you need the bandwidth back this minute, <b>Unload film</b> is the sure way.</li>
       <li><strong>Unload film</strong> closes the film so you can open a different one. If you
       were the one sharing it, it comes off the room too, so nobody is left waiting for bytes
       that are not coming.</li>
@@ -196,8 +200,23 @@
       your screen is from everyone else's. Green is good. It fixes itself constantly by
       running a fraction faster or slower, which you will not notice.</li>
       <li><strong>Fullscreen</strong> with the button at the bottom right or <kbd>F</kbd>.
-      <kbd>Esc</kbd> comes back.</li>
+      <kbd>Esc</kbd> comes back. Moving the mouse shows a bar with play, seek, volume, a chat
+      box and the way out; it hides again on its own.</li>
+      <li><strong>The film's volume</strong> is the slider at the bottom right, in both views.
+      It is yours alone — everyone sets their own — and it is separate from how loud the
+      people in the call are.</li>
     </ul>
+
+    <h3>Subtitles</h3>
+    <p>
+      A <b>Subtitles</b> panel appears on the right once a film is open. It lists any
+      <code>.srt</code>, <code>.vtt</code>, <code>.ass</code> or <code>.ssa</code> file sitting
+      beside the film, and any subtitle tracks inside the film itself; pick one, or
+      <b>Off</b>. For plain text subtitles you can also set the size, how high up the picture
+      they sit, the colour, and a delay if they run early or late. Styled <code>.ass</code>
+      subtitles are drawn as their author designed them, so those controls step aside.
+      Subtitles are per person: your choice does not change anyone else's screen.
+    </p>
 
     <h2 id="talking">Chat and voice</h2>
     <h3>Chat</h3>
@@ -206,11 +225,11 @@
       who took control — so there is one place to look when you wonder what just happened.
     </p>
     <p>
-      <strong>In fullscreen</strong>, press <kbd>Enter</kbd> and type — the line appears over
-      the bottom of the picture as you write it. <kbd>Enter</kbd> again sends it,
-      <kbd>Esc</kbd> throws it away and puts the keyboard back on playback. Messages appear as
-      small bubbles over the bottom-left of the picture and fade away after a few seconds;
-      nothing else covers the film.
+      <strong>In fullscreen</strong>, press <kbd>Enter</kbd> and type, or move the mouse and
+      use the box at the left of the bar. <kbd>Enter</kbd> sends it, <kbd>Esc</kbd> throws it
+      away and puts the keyboard back on playback. Messages appear as small bubbles over the
+      bottom-left of the picture and fade away after a few seconds; nothing else covers the
+      film.
     </p>
 
     <h3>Voice</h3>
@@ -374,10 +393,12 @@
 
     <h3>The picture goes black when I go fullscreen</h3>
     <p>
-      The sound keeps playing and the picture never comes back, even after leaving fullscreen
-      and returning. This was mpv choosing a video output that cannot survive its window being
-      resized, and coCine now asks for a different one on Linux. If you still see it, start
-      coCine from a terminal with an output of your own choosing:
+      This only applies if you have started coCine with <code>COCINE_PLAYER=mpv</code>; the
+      player coCine normally uses does not do this. The sound keeps playing and the picture
+      never comes back, even after leaving fullscreen and returning. It was mpv choosing a
+      video output that cannot survive its window being resized, and coCine asks for a
+      different one on Linux. If you still see it, start coCine from a terminal with an output
+      of your own choosing:
     </p>
     <pre><code>COCINE_MPV_ARGS="--vo=x11" cocine</code></pre>
     <p>
@@ -414,10 +435,20 @@
 
     <h3>coCine says it needs mpv</h3>
     <p>
-      mpv is the video player coCine drives. On the screen you are looking at there is a
-      command and a <b>Copy the command</b> button: paste it into a terminal, press enter,
-      then start coCine again. On Ubuntu-like systems, installing the <code>.deb</code> instead
-      avoids this entirely.
+      You only see this if you asked for the mpv player with <code>COCINE_PLAYER=mpv</code>
+      and it is not installed. On the screen you are looking at there is a command and a
+      <b>Copy the command</b> button: paste it into a terminal, press enter, then start coCine
+      again — or leave the variable unset and use the built-in player, which needs nothing.
+    </p>
+
+    <h3>The film opens, but takes a while to appear</h3>
+    <p>
+      Most films play as they are. A few older forms — <code>.avi</code> files, and anything
+      encoded as MPEG-2 or Xvid — cannot be read by the built-in player directly, so coCine
+      converts them first with the ffmpeg it carries, and a progress line says what it is
+      doing and why. Repacking an <code>.avi</code> takes seconds; a real transcode of an old
+      rip takes minutes. Either happens once per file. If you have a whole library like that,
+      starting coCine with <code>COCINE_PLAYER=mpv</code> plays them directly instead.
     </p>
 
     <div class="foot">

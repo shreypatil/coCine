@@ -490,6 +490,12 @@ evening, and a server restart ends them, which is why the client reconnects by
 room code and why `RoomStore` sits behind an interface should that ever need to
 change.
 
+One consequence of `server.env` being precious: `setup.sh` writes it only when
+it is absent, so a re-run never adds a setting that was introduced later. When a
+new variable appears in the template — the `COCINE_LOG_*` keys did — append it
+to the live file by hand and restart the service. The file is the one piece of
+state that both matters and does not update itself.
+
 ---
 
 ## When something is wrong
@@ -512,6 +518,15 @@ first; it is the one `setup.sh` cannot do.
 server is handing out credentials (`COCINE_TURN_*` set, server restarted since),
 then watch `journalctl -u coturn -f` during a call.
 
+**Voice fails for everyone, or a call never connects.** Read
+`/var/log/cocine/server.voice/<today>.log`. A healthy call is a `voice roster`
+line naming both people, then `signal in` / `signal relayed` pairs — an offer,
+an answer, and a run of candidates each carrying a `candidate` string. A
+`WARN signal dropped: no such member in this room` names a stale member id;
+candidates logged without a `candidate` field mean the client is sending hollow
+ones, which was the bug that hid for days. The clients keep the other half of
+the story in `userData/logs/renderer.voice/`.
+
 **The instance vanished.** Reclamation. Check the keepalive was running —
 `journalctl -u cocine-keepalive` — and rebuild.
 
@@ -519,4 +534,9 @@ then watch `journalctl -u coturn -f` during a call.
 systemctl status cocine-server
 journalctl -u cocine-server -n 100
 curl -s localhost:8787/health
+ls /var/log/cocine/            # per-area logs: server.room, server.voice, server.net, logging
 ```
+
+Logs are pruned to seven days by `cocine-logprune.timer`; `COCINE_LOG_LEVEL=debug`
+in `/etc/cocine/server.env` records more, and `trace` writes every `time.ping`
+and `peer.report`, which at load is tens of gigabytes a day — turn it back off.

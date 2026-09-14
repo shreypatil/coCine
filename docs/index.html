@@ -54,7 +54,7 @@
     <span class="pill">The film travels <b>peer to peer</b></span>
     <span class="pill">Watch <b>while it arrives</b></span>
     <span class="pill">Voice and chat <b>built in</b></span>
-    <span class="pill">Linux · Windows · <b>macOS soon</b></span>
+    <span class="pill">Linux · Windows · macOS (Apple Silicon)</span>
   </div>
 
   <div class="doors">
@@ -112,10 +112,12 @@
 
   <h2 id="status">Where the project is</h2>
   <p>
-    Built and working: player control, the synchronisation engine, rooms and roles, transfer,
-    voice, relay fallbacks, and installers for Windows and Linux. Honest about the rest —
-    the peer-to-peer parts have been measured extensively on one machine, and the thing that
-    still needs proving is two real machines on two real home networks.
+    Built and working: the player, the synchronisation engine, rooms and roles, transfer,
+    voice, relay fallbacks, installers for all three platforms, and a shared server the
+    installers point at so nobody has to run one. Voice has been used between two real
+    machines on two real networks. Honest about the rest — the film transfer has been
+    measured extensively on one machine, and how often two real homes can reach each other
+    directly is the thing still being found out.
   </p>
   <p>
     The full list of what is deferred, blocked or known-broken lives in
@@ -124,8 +126,9 @@
   </p>
 
   <div class="foot">
-    coCine is MIT licensed. It drives <a href="https://mpv.io">mpv</a>, which is GPLv2+ and ships
-    as a separate program.
+    coCine is MIT licensed. It ships <a href="https://ffmpeg.org">ffmpeg</a> beside it and can
+    drive <a href="https://mpv.io">mpv</a> if asked to; both are separate programs under their
+    own licences.
     · <a href="https://github.com/shreypatil/coCine">Source on GitHub</a>
   </div>
 </div>

@@ -40,6 +40,23 @@ A warning that mpv is not staged is expected and fine. The `<video>` engine has
 been the default on every platform since B1.6; mpv is reached only by someone
 setting `COCINE_PLAYER=mpv` deliberately.
 
+### If it ends with "verifying the package (check-package) failed"
+
+The dmg is already built by then — `check-package` only verifies — so the app
+can be run and tested while the check is sorted out. The check's own finding is
+printed just above that line; it is what needs reading. The last Mac run
+(September 2026, Node 26) failed here and the finding was not captured, so this
+is open. To rerun the check alone, or against a different directory:
+
+```bash
+node scripts/check-package.mjs mac
+node -e "import('./scripts/check-package.mjs').then(m => console.log(m.check('mac').problems))"
+```
+
+Do not distribute a dmg the check refuses: what it guards against — a copy of
+node-datachannel with no loadable binary — is an app that installs perfectly and
+then cannot connect anybody.
+
 ## Running it
 
 Built locally and opened from `release/`, it just runs. Nothing downloaded it,

@@ -62,7 +62,8 @@ npm run typecheck # three tsconfigs: node, main, renderer
 npm run desktop   # build the renderer and launch the app
 npm run server    # the signalling server, on :8787</code></pre>
     <p>
-      Needs <code>mpv</code> and <code>ffmpeg</code> on <code>PATH</code>. Test films are
+      Needs <code>ffmpeg</code> on <code>PATH</code>, and <code>mpv</code> too if you want to
+      run or test that engine (<code>COCINE_PLAYER=mpv</code>). Test films are
       generated on first run and cached in <code>.fixtures/</code>. npm workspaces, not pnpm —
       for an environment reason rather than a principled one; switching is a
       <code>pnpm import</code> away.
@@ -80,9 +81,10 @@ npm run nat-check  # what this machine's network does to a peer connection</code
       <tbody>
         <tr><td><code>packages/protocol</code></td><td>The wire contract as Zod schemas, shared by both sides. Room codes, playback anchors, media sources.</td><td>no</td></tr>
         <tr><td><code>packages/sync</code></td><td>Clock offset estimation and the drift-correction engine. <b>The component the product hinges on.</b></td><td><b>no — deliberately</b></td></tr>
-        <tr><td><code>packages/player</code></td><td>mpv over JSON IPC behind a <code>PlayerController</code> interface; locating and bundling mpv; test-film generation.</td><td>yes</td></tr>
+        <tr><td><code>packages/player</code></td><td>Both engines behind one <code>PlayerController</code> interface: mpv over JSON IPC, and the <code>&lt;video&gt;</code> element driven over IPC from main. Locating mpv and ffmpeg, container compatibility and conversion, subtitle parsing, test-film generation.</td><td>yes</td></tr>
         <tr><td><code>packages/client</code></td><td>Composes socket + clock + sync engine + player + transfer. Both transports and the film store.</td><td>yes</td></tr>
-        <tr><td><code>packages/voice</code></td><td>The WebRTC mesh state machine, driven with fake connections in tests.</td><td>no</td></tr>
+        <tr><td><code>packages/voice</code></td><td>The WebRTC mesh state machine, driven with fake connections in tests — and, in <code>mesh-live.test.ts</code>, with real ones in Chromium.</td><td>no</td></tr>
+        <tr><td><code>packages/logging</code></td><td>Timestamped, channelled logging to per-channel, per-day files: the server's <code>/var/log/cocine/</code>, the desktop's <code>userData/logs/</code>, and the renderer's records shipped over IPC.</td><td>yes</td></tr>
         <tr><td><code>apps/server</code></td><td>Signalling, rooms, playback authority, the BitTorrent tracker, readiness maths, TURN credentials, signed URLs.</td><td>yes</td></tr>
         <tr><td><code>apps/desktop</code></td><td>Electron main, preload bridge, React renderer, native window choreography.</td><td>yes</td></tr>
         <tr><td><code>harness/</code></td><td>Transfer benchmark: custom scheduling policy against stock WebTorrent.</td><td>yes</td></tr>
@@ -107,7 +109,9 @@ npm run nat-check  # what this machine's network does to a peer connection</code
         <tr><td>Room rules, permissions, phases</td><td><code>apps/server/src/room.ts</code>, <code>server.ts</code>, <code>readiness.ts</code></td></tr>
         <tr><td>Anything the interface does</td><td><code>apps/desktop/src/renderer/App.tsx</code> and its siblings</td></tr>
         <tr><td>Anything IPC</td><td><code>apps/desktop/src/main/handlers.ts</code> (pure functions over injected deps) plus <code>preload/index.ts</code></td></tr>
-        <tr><td>Native windows: video surface, chat overlay</td><td><code>main/video-window.ts</code>, <code>main/chat-overlay.ts</code>, <code>main/x11-embed.ts</code></td></tr>
+        <tr><td>Which player runs, and the <code>&lt;video&gt;</code> engine</td><td><code>main/player-engine.ts</code>, <code>main/renderer-player.ts</code>, <code>main/convert.ts</code>; <code>renderer/videoEngine.ts</code>, <code>renderer/StageControls.tsx</code>, <code>renderer/Subtitles.tsx</code></td></tr>
+        <tr><td>Native windows: mpv's video surface, its chat overlay</td><td><code>main/video-window.ts</code>, <code>main/chat-overlay.ts</code>, <code>main/x11-embed.ts</code></td></tr>
+        <tr><td>Voice in the application</td><td><code>renderer/useVoice.ts</code> (the call), <code>mixer.ts</code> (per-person volume), <code>speaking.ts</code> (who is audible); <code>apps/server/scripts/voice-sim.ts</code> reproduces a call end to end without the desktop</td></tr>
         <tr><td>The film picker</td><td><code>main/browse.ts</code> (filesystem, no Electron) and <code>renderer/FilmPicker.tsx</code></td></tr>
         <tr><td>Transfer, both transports</td><td><code>packages/client/src/transfer.ts</code>, <code>origin-transfer.ts</code>, <code>pieces.ts</code>, <code>storage.ts</code></td></tr>
         <tr><td>Packaging</td><td><code>apps/desktop/electron-builder.yml</code>, <code>scripts/fetch-mpv.mjs</code>, <code>scripts/fetch-native.mjs</code>, <code>scripts/check-package.mjs</code></td></tr>
@@ -159,12 +163,43 @@ npm run nat-check  # what this machine's network does to a peer connection</code
       an 8 GB round trip per viewer.
     </p>
 
+    <h3>Two player engines behind a switch, <code>&lt;video&gt;</code> by default</h3>
+    <p>
+      Phase A drove mpv; phase B1 built a player into the window itself and measured it
+      against the same gates. It passed every one — and one number was worse: it holds the
+      room to a p99 drift of 48.7 ms against mpv's 26.9 ms, both inside the budget. So mpv
+      was not deleted. Both engines live behind <code>PlayerController</code>, the sync engine
+      cannot tell them apart, and <code>COCINE_PLAYER</code> picks one at launch. The default
+      is <code>html</code> on every platform because mpv's picture went black on entering
+      fullscreen in ordinary use and the <code>&lt;video&gt;</code> element never did, and
+      because chat, subtitles and controls over the picture are ordinary DOM there rather than
+      window choreography. What the element cannot read — AVI, MPEG-2, Xvid — the bundled
+      ffmpeg converts first, saying so. mpv remains the better answer for a library of old
+      rips, and the decision of which engine ships on which platform is meant to be taken
+      by hand, per platform, not by benchmark.
+    </p>
+
+    <h3>Everything that crosses IPC is plain data</h3>
+    <p>
+      Electron IPC is structured clone. Hand it a platform object — an
+      <code>RTCIceCandidate</code> — and it arrives as <code>{}</code>, without an error
+      anywhere. Voice did exactly that for days: offers and answers are strings and crossed
+      intact, so every signal was visibly sent and received on both ends while every peer
+      connection sat at <code>new</code> for ever, on every platform, and the network took the
+      blame. Serialise before the boundary (<code>toJSON()</code>), and test the boundary
+      itself: <code>voice.e2e.test.ts</code> presses <em>Join voice</em> in the real
+      application and reads the result off the screen, because every earlier test handed
+      signals between pages through a serialiser more forgiving than Electron's.
+    </p>
+
     <h3>mpv as a separate process, reparented with <code>--wid</code></h3>
     <p>
       Reimplementing a media player is not a project; driving a real one is. The consequence is
-      the constraint everything visual works around: <strong>nothing Chromium draws can appear
-      over the video</strong>, because the native surface sits above the page. Controls sit
-      beside and beneath it.
+      the constraint everything visual works around under that engine: <strong>nothing Chromium
+      draws can appear over the video</strong>, because the native surface sits above the page.
+      Controls sit beside and beneath it. This section, the two after it, and the ones on
+      window state and the viewport are about the mpv engine; the default engine has none of
+      these problems, which is much of why it is the default.
     </p>
     <p>
       Two follow-on decisions come from that. The surface is <strong>reparented into the main
@@ -276,7 +311,8 @@ npm run nat-check  # what this machine's network does to a peer connection</code
       They were one action, and that made two very different decisions look identical: putting
       a file on your own screen, and pushing several gigabytes at three other people. Opening
       now loads the film locally and does nothing else; <code>film:share</code> hashes and
-      announces it; sharing can be paused, which stops serving as well as fetching; and
+      announces it; sharing can be paused, which stops new peers connecting — not, yet, the
+      wires already open, which is recorded as outstanding; and
       unloading takes it off the room when this machine is the one that put it there. A film
       cannot be opened outside a room at all — watching alone is not what the application is
       for, and offering it made the room look optional.
@@ -435,7 +471,7 @@ npm run nat-check  # what this machine's network does to a peer connection</code
         <tr><td>Renderer in headless Chromium</td><td>part of <code>npm test</code></td>
           <td><b>Real layout.</b> A collapsed video stage, a composer overlapping the panel below, a checkbox stacked above its label — a DOM emulator performs no layout and catches none of these.</td></tr>
         <tr><td>Whole application</td><td><code>npm run test:app</code></td>
-          <td>Real Electron, real IPC, real mpv. Opt-in, because some of it needs a display.</td></tr>
+          <td>Real Electron, real IPC, a real player, and in <code>voice.e2e.test.ts</code> a real call. Opt-in, because some of it needs a display.</td></tr>
       </tbody>
     </table>
 
@@ -471,19 +507,23 @@ npm run nat-check  # what this machine's network does to a peer connection</code
 
     <h3>Not yet proven</h3>
     <ul>
-      <li><strong>Two real machines on two real networks.</strong> Everything measured so far
-      runs on loopback in one process. NAT traversal between actual hosts, real round-trip
-      variance, and the 10–25% of peer pairs that cannot connect directly are all untested.
+      <li><strong>The film transfer between two real machines on two real networks.</strong>
+      Voice has now connected between a Linux machine and a Windows one on different
+      networks through the shared server, so signalling, NAT traversal and the relay are
+      exercised for real. The transfer has not: NAT traversal for the swarm, real round-trip
+      variance, and how often a pair cannot connect directly — the number that decides how
+      often somebody hears everyone and still gets no film — are still to be measured.
       This is the single largest open item.</li>
-      <li><strong>IPv6 has no coverage</strong>, and probably matters more than “loose end”
-      suggests: ICE prioritises it where it exists, and for users on Indian ISPs it is
-      plausibly the biggest determinant of whether peer to peer works at all.</li>
-      <li><strong>The Windows installer has never been run on Windows</strong>, and the macOS
-      build has never been made — it needs a Mac.</li>
+      <li><strong>IPv6 between two machines.</strong> Everything up to it is asserted on one
+      machine — candidates gathered on real interfaces, IPv6 ranked first, the server
+      dual-stack — but whether two IPv6 peers actually connect, and whether IPv6-on-one-side
+      falls back correctly, needs the pairing. For users on Indian ISPs it is plausibly the
+      biggest determinant of whether peer to peer works at all.</li>
+      <li><strong>The macOS package.</strong> The app builds and runs on an Apple Silicon Mac,
+      but <code>npm run dist:mac</code> still fails at the post-build package check on that
+      machine and the cause has not been read yet — it needs the Mac.</li>
       <li><strong>Relay mode has only been proven against MinIO</strong>, not Cloudflare R2
       itself.</li>
-      <li><strong>TURN credential minting is unverified against a real coturn</strong>; the
-      image available for testing has no REST-auth path at all.</li>
     </ul>
 
     <h3>Deliberate limits</h3>
@@ -505,7 +545,10 @@ npm run nat-check  # what this machine's network does to a peer connection</code
       <li><strong>Nothing deletes films from the relay bucket</strong>; a lifecycle rule is the
       recommended answer and is a standing cost decision.</li>
       <li><strong>Chromium's echo canceller cannot hear mpv.</strong> No WebRTC setting fixes
-      it; a real fix means routing the film's audio through the same path as the call.</li>
+      it; a real fix means routing the film's audio through the same path as the call. Under
+      the <code>&lt;video&gt;</code> engine Chromium does play the film, and whether the
+      canceller now removes it has not been measured — until it is, push-to-talk and ducking
+      stay on by default.</li>
       <li><strong>No code signing.</strong> Windows SmartScreen warns on first install, and
       macOS cannot auto-update at all until there is a Developer ID certificate.</li>
       <li><strong>The piece scheduler is not faster than stock WebTorrent.</strong> It is kept
@@ -513,13 +556,15 @@ npm run nat-check  # what this machine's network does to a peer connection</code
       re-measuring once real peers with asymmetric uplinks exist.</li>
     </ul>
 
-    <h3>The one thing blocking public use</h3>
+    <h3>The shared server</h3>
     <p>
       An installed copy points at whatever <code>COCINE_DEFAULT_SERVER</code> was set to at build
-      time. Until an instance is running somewhere strangers can reach, a release build has
-      nowhere to point, and the “a friend installs from a link and joins a room” criterion
-      cannot be met however good the installer is. Nothing about this is hard-coded; what is
-      missing is a host.
+      time, and failing that at the shared server, which runs on Oracle's free tier with a
+      coturn relay beside it — <a href="https://github.com/shreypatil/coCine/blob/main/docs/deploying.md">docs/deploying.md</a>
+      is the runbook. Rooms are capped at fifty because the per-second transfer status
+      broadcast is O(N²) and a 1 GB instance was measured running out at two hundred. Logs
+      land in <code>/var/log/cocine/</code> split by area and day, and the voice channel is
+      the first place to look when a call does not connect.
     </p>
 
     <h2 id="workflow">Working on it</h2>

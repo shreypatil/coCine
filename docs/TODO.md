@@ -3,7 +3,7 @@
 A running list of what is deferred, blocked, or waiting on something only you can
 do. Everything here was a deliberate decision to postpone, not an oversight.
 
-Last updated after phase 8 (packaging).
+Last updated after the voice fix and the mixer (September 2026).
 
 ---
 
@@ -59,19 +59,31 @@ R2 has no free-egress equivalent to guess at, so the measured figures should hol
 but they are measured against MinIO's behaviour and R2's own request accounting
 may differ.
 
-### A macOS build, which needs a Mac
+### ~~A macOS build, which needs a Mac~~ — built, with one loose end
 
-Windows and Linux installers are built and verified. macOS cannot be built from
-Linux at all — the `.dmg` target needs macOS. Everything is configured for it, so
-on a Mac `npm run dist:mac` should work, but two parts have never run:
+Built on an Apple Silicon Mac on 12 September (`docs/building-macos.md` is the
+runbook), and the `.app` runs: it joined a room on the shared server, and its
+first attempt at receiving a film is what found the CSP rule that had been
+blocking every receiver on every platform. Whether a film has arrived there
+since the fix has not been recorded. Two things remain from the original list:
 
-- bundling mpv for macOS (`node scripts/fetch-mpv.mjs mac --from "$(brew --prefix)/bin/mpv"`),
-  including whether its dylib dependencies resolve inside the app bundle
-- the `.dmg` itself
+- bundling mpv for macOS has still not been tried — with the `<video>` engine
+  the default it is optional, and nobody has needed it
+- the post-build package check fails on that machine; see the section below
 
-### The Windows installer — run once, and it failed
+### The Windows installer — now runs, and holds a call
 
-It has now been installed on a real Windows machine, and it did not start:
+The build from 13 September installed on a real Windows machine, joined a room
+on the shared server, and held a voice call with a Linux machine on another
+network: offer, answer, thirty-one candidates, `connected` in 600 ms. So the
+two failures below are fixed, and what the rest of this section lists as
+untested on Windows — WebRTC initialising, the app starting at all — is now
+tested. Still not exercised there: the bundled `mpv.exe` (nobody has asked for
+that engine on Windows) and a film transfer.
+
+The history, kept because the packaging checks exist for it:
+
+It was installed on a real Windows machine, and it did not start:
 
 ```
 Error: Cannot load native addon for node-datachannel on win32 (x64).
@@ -101,15 +113,15 @@ the real check: whether WebRTC now initialises, whether the bundled `mpv.exe`
 starts, and whether `--wid` reparenting works on Windows at all, which is a
 different windowing path from X11.
 
-### The old note, still true of the rest of Windows
+### What is still untested on Windows
 
-`coCine-0.1.0-x64.exe` builds cleanly under wine and carries mpv, but no Windows
-machine has executed it. Untested there: whether the bundled `mpv.exe` starts,
-whether `--wid` reparenting works on Windows at all (it is a different windowing
-path from X11), and whether SmartScreen's warning is as tolerable as assumed.
+The installer has now run there and held a call. Not exercised: whether the
+bundled `mpv.exe` starts and whether `--wid` reparenting works on Windows at all
+(a different windowing path from X11) — both only matter to somebody who sets
+`COCINE_PLAYER=mpv` — and a film transfer to or from that machine.
 
-The Linux artifacts, by contrast, were run: the AppImage boots, finds mpv, and
-reports properly when mpv is missing.
+The Linux artifacts were run earlier: the AppImage boots, finds mpv when asked
+for it, and reports properly when it is missing.
 
 ### Xvfb on this machine is broken
 
@@ -119,22 +131,23 @@ virtual-display path for headless GUI testing is unavailable, and Electron tests
 currently run on the real display with `COCINE_HEADLESS=1` (which never shows a
 window). Reinstalling `xorg-server-xvfb` should fix it.
 
-### A public signalling server for the default build — now the last blocker
+### ~~A public signalling server for the default build~~ — done (phase B2)
 
-Everything else needed for a stranger to install and use coCine is in place: the
-`.deb` pulls mpv in through apt, the AppImage names the exact install command for
-the distribution it finds itself on, the picker no longer depends on the desktop's
-dialog, and the installers are built. What is missing is somewhere to point them.
+`wss://cocine.duckdns.org`, on Oracle's free tier with coturn beside it, and
+packaged builds point at it unless `COCINE_DEFAULT_SERVER` says otherwise.
+`docs/deploying.md` is the runbook. Rooms are capped at fifty; the reasoning is
+in the phase B plan.
 
+### `dist:mac` fails its post-build check on the Mac — unread
 
-An installed copy points at whatever `COCINE_DEFAULT_SERVER` was set to at build
-time. Until an instance is running somewhere your friends can reach, a release
-build has nowhere to point, and the phase 8 exit criterion — a friend installs
-from a link and joins a room without being told anything — cannot be met however
-good the installer is.
-
-The pieces are all configurable and none of them are hard-coded; what is missing
-is a host.
+The application builds and runs on an Apple Silicon Mac, but `npm run dist:mac`
+exits at `check-package` and the actual finding has not been read yet: the
+wrapper reported only the exit code, and the Mac had been returned before the
+lines above it were captured. `scripts/dist.mjs` now names the failing step in
+plain words, so the next run will say. Leading suspicion: the nested
+`webrtc-polyfill` copy of node-datachannel has no `build/Release` binary on a
+native Mac build under Node 26, and native builds skip the staging that would
+supply one. Needs the Mac.
 
 ---
 
@@ -243,23 +256,18 @@ frontend turned up, to go alongside it.
 
 **Broken, in rough order of severity**
 
-1. **Films received through relay mode are invisible and undeletable.**
-   `OriginTransfer.receive` never calls `store.record()`, so no `meta.json` is
-   written and `FilmStore.list()` skips the directory. Gigabytes accumulate with
-   no way to see or remove them from the app — which is exactly what the films-
-   on-disk view was required to prevent.
-2. **"Use default" resets a packaged build to `ws://127.0.0.1:8787`.** The
-   renderer holds its own copy of the default server address, which stopped being
-   true when the real default became a build-time value. The button also shows
-   permanently for every packaged user, since their address never equals the
-   hard-coded one.
+1. ~~**Films received through relay mode are invisible and undeletable.**~~ Done:
+   `OriginTransfer.receive` records them like the swarm path does.
+2. ~~**"Use default" resets a packaged build to `ws://127.0.0.1:8787`.**~~ Done:
+   main reports both the build's default and the shared server, and the
+   settings box offers the shared one.
 3. **The durability line lies in relay mode**, saying the film "needs the sharer"
    when the origin holds it and the sharer is irrelevant.
 4. ~~**There is no chat in fullscreen.**~~ Done: bubbles over the film, with the
    composer opening on Enter. See the section above.
-5. **Push-to-talk only binds lowercase `v`.** Holding Shift, or Caps Lock being
-   on, silently stops the microphone opening while the interface still says
-   "Hold V to talk".
+5. ~~**Push-to-talk only binds lowercase `v`.**~~ Done: it matches the physical
+   key. And a second cousin of it: the handler ignored keys whose target was any
+   `<input>`, so after ticking a checkbox `V` did nothing — now text fields only.
 6. ~~**A stray `console.log('open film clicked')`**~~ Gone.
 
 **Robustness**
@@ -294,6 +302,29 @@ frontend turned up, to go alongside it.
 ---
 
 ## Findings worth keeping
+
+### ICE candidates crossed Electron IPC as `{}`, and nothing said so
+
+The voice call never connected on any platform, for days, with no error. Both
+in-voice dots lit, your own speaking dot lit, the panel said "Nobody else is in
+voice yet". Every offer, answer and candidate was visibly sent on one side and
+received on the other, so the network took the blame.
+
+The cause: `RTCIceCandidate` is a platform object, its fields are prototype
+getters, and Electron IPC is structured clone — which does not throw on it, it
+hands main an empty object. Offers and answers are strings and crossed intact.
+The receiver's `addIceCandidate({})` accepted that without complaint, so every
+peer connection sat at `new` for ever and `onconnectionstatechange` never fired,
+which is the one event `voice.peers` is built from. Measured in a hidden
+Electron window: 28 candidates sent, 28 `{}` received, both sides `new` after
+four seconds; with `toJSON()` before the boundary, `connected` in under one.
+
+Why no test caught it: `mesh-live.test.ts` and `voice-sim.ts` both handed
+signals between pages through Playwright's serialiser, which honours `toJSON`,
+and one side with real candidates is enough for ICE to find the other through
+peer-reflexive discovery. The fix is one line in `packages/voice/src/mesh.ts`;
+the lesson is the rule now in the contributing guide — everything crossing IPC
+is plain data — and a test that goes through the real boundary.
 
 ### Electron's own file dialog cannot open a film on Linux
 
@@ -342,7 +373,15 @@ the interface falls back to a plain progress bar there.
 
 Real, small, and none of them blocking.
 
-### TURN HMAC credentials are unverified against a real coturn
+### ~~TURN HMAC credentials are unverified against a real coturn~~ — verified
+
+`npx tsx apps/server/scripts/relay-check.ts` drives Chromium with
+`iceTransportPolicy: 'relay'` against the deployed coturn using a credential
+minted by the live server, and allocates: five relay candidates in the
+configured port range. The note below is kept for the history of why the
+end-to-end test in the suite uses static credentials.
+
+#### The original note
 
 The credential minting is unit tested against the documented coturn REST scheme,
 and the forced-relay test proves a relayed connection genuinely carries data. But
@@ -407,15 +446,16 @@ one of the largest IPv6 deployments anywhere, so for a user base on Indian ISPs
 this remains plausibly the single biggest determinant of whether peer-to-peer
 works at all.
 
-### No runtime test that voice ICE reaches the peer connection
+### ~~No runtime test that voice ICE reaches the peer connection~~ — closed
 
-`RoomClient.ice` is covered by `apps/server/test/ice-delivery.test.ts`, and the
-pass-through into `RTCPeerConnection` is type-checked. But the renderer test layer
-does not assert the servers actually arrive at the constructor. This is precisely
-the shape of bug that existed until phase 6 — credentials minted correctly and
-then dropped on the floor — so it is worth closing properly.
+`apps/desktop/test/voice.e2e.test.ts` presses *Join voice* in the real
+application, with the real preload, main process and `RTCPeerConnection`, and
+reads "Connected to 1 of 1" off the screen. It exists because of the finding
+below, and it was checked to fail on the code that had the bug.
 
-### The packages declare no licence
+### ~~The packages declare no licence~~ — MIT, in `LICENSE` and `package.json`
+
+#### The original note
 
 The built `.deb` carries `License: unknown`, because the repository has no
 licence file. Worth settling before anything is distributed, and it interacts
