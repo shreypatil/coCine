@@ -205,3 +205,47 @@ describe('what leaves the page', () => {
     expect(sent.find(s => s.payload.kind === 'candidate')!.payload.candidate).toEqual({ candidate: 'x', sdpMid: '0' })
   })
 })
+
+describe('swapping the microphone under a live call', () => {
+  const withSenders = (): Fake & { replaced: Array<{ from: unknown; to: unknown }> } => {
+    const f = fakeConnection() as Fake & { replaced: Array<{ from: unknown; to: unknown }> }
+    f.replaced = []
+    f.getSenders = () => f.added.map(a => ({
+      track: (a as { t: unknown }).t,
+      replaceTrack: async (t: unknown) => { f.replaced.push({ from: (a as { t: unknown }).t, to: t }); (a as { t: unknown }).t = t }
+    }))
+    return f
+  }
+
+  it('replaces the track on every peer without renegotiating', async () => {
+    // Renegotiation is what drops a call; replaceTrack keeps the sender and
+    // swaps what flows through it. Used when a microphone opened silent.
+    const conns: ReturnType<typeof withSenders>[] = []
+    const m = new VoiceMesh({
+      selfId: 'aaa', send: () => {}, onRemoteStream: () => {},
+      createConnection: () => { const c = withSenders(); conns.push(c); return c }
+    })
+    m.setLocalStream('stream1', ['old'])
+    await m.setMembers(['aaa', 'bbb', 'ccc'])
+    await m.replaceLocalTrack('old', 'new', 'stream2')
+    for (const c of conns) {
+      expect(c.replaced).toEqual([{ from: 'old', to: 'new' }])
+      expect(c.added).toHaveLength(1)
+    }
+    // And whoever joins next is given the new track, not the old one.
+    await m.setMembers(['aaa', 'bbb', 'ccc', 'ddd'])
+    expect(conns[2]!.added).toEqual([{ t: 'new', s: 'stream2' }])
+  })
+
+  it('adds the track to a peer that never had a sender for the old one', async () => {
+    const conns: ReturnType<typeof withSenders>[] = []
+    const m = new VoiceMesh({
+      selfId: 'aaa', send: () => {}, onRemoteStream: () => {},
+      createConnection: () => { const c = withSenders(); conns.push(c); return c }
+    })
+    await m.setMembers(['aaa', 'bbb'])       // opened before any microphone
+    await m.replaceLocalTrack('old', 'new', 'stream')
+    expect(conns[0]!.replaced).toEqual([])
+    expect(conns[0]!.added).toEqual([{ t: 'new', s: 'stream' }])
+  })
+})

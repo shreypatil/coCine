@@ -194,6 +194,13 @@ export function App (): ReactElement {
   const memberIds = (s?.members ?? []).filter(m => m.inVoice || m.id === s?.memberId).map(m => m.id)
   const voice = useVoice(s?.memberId ?? '', memberIds, s?.voiceIce ?? [])
 
+  // The chosen speaker is for everything this window plays, the film included
+  // -- under the <video> engine it is an element here like the voices are.
+  useEffect(() => {
+    const v = videoRef.current as (HTMLVideoElement & { setSinkId?: (id: string) => Promise<void> }) | null
+    v?.setSinkId?.(voice.outputId ?? '').catch(() => { /* reported by the voice panel */ })
+  }, [voice.outputId, s?.mediaName, s?.playerEngine])
+
   useEffect(() => window.cocine.onState(setS), [])
 
   // Start the mark only once the window is really on screen. Until then a
@@ -1052,7 +1059,39 @@ export function App (): ReactElement {
                     </p>
                   </>
                 )}
+                {/* A microphone that opened and delivers nothing looks exactly
+                    like nobody talking. This is the one place that says so. */}
+                {voice.micNote && (
+                  <p className={voice.micHealth === 'live' ? 'quiet' : 'quiet vwarn'} data-testid="micnote" role="status">
+                    {voice.micNote}
+                  </p>
+                )}
                 {voice.error && <p className="quiet vwarn" data-testid="voiceerror">{voice.error}</p>}
+                {/* Which devices. Offered before joining as well, so somebody
+                    whose earbuds misbehave can pick the laptop microphone first.
+                    Names appear once the microphone has been used. */}
+                <div className="devices">
+                  <label className="opt">
+                    Microphone
+                    <select className="sel" data-testid="micselect" value={voice.inputId ?? ''}
+                      onChange={e => voice.setInput(e.target.value || null)}>
+                      <option value="">System default</option>
+                      {voice.devices.inputs.filter(d => d.id !== 'default').map(d => (
+                        <option key={d.id} value={d.id}>{d.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="opt">
+                    Speaker
+                    <select className="sel" data-testid="speakerselect" value={voice.outputId ?? ''}
+                      onChange={e => voice.setOutput(e.target.value || null)}>
+                      <option value="">System default</option>
+                      {voice.devices.outputs.filter(d => d.id !== 'default').map(d => (
+                        <option key={d.id} value={d.id}>{d.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
               </div>
 
               <div className="chatwrap">

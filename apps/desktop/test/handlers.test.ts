@@ -832,3 +832,36 @@ describe('quietening the film while the microphone is live', () => {
     await expect(call(h, 'voice:duck', true)).resolves.not.toThrow()
   })
 })
+
+describe('asking the operating system for the microphone', () => {
+  // macOS alone has a per-application gate. Asked from main, the prompt is
+  // ours and a refusal is a plain answer; left to Chromium it is a generic
+  // prompt and an error string.
+  const access = (status: string, answer = true) => {
+    const ask = vi.fn(async () => answer)
+    return { dep: { status: () => status as never, ask }, ask }
+  }
+
+  it('is not applicable where there is no gate', async () => {
+    const { h } = build({ mediaAccess: null })
+    expect(await call(h, 'voice:micAccess')).toBe('not-applicable')
+  })
+
+  it('asks once when undecided, and reports the answer', async () => {
+    const yes = access('not-determined', true)
+    expect(await call(build({ mediaAccess: yes.dep }).h, 'voice:micAccess')).toBe('granted')
+    expect(yes.ask).toHaveBeenCalledTimes(1)
+    const no = access('not-determined', false)
+    expect(await call(build({ mediaAccess: no.dep }).h, 'voice:micAccess')).toBe('denied')
+  })
+
+  it('does not ask again once granted or refused -- macOS would show nothing', async () => {
+    const granted = access('granted')
+    expect(await call(build({ mediaAccess: granted.dep }).h, 'voice:micAccess')).toBe('granted')
+    expect(granted.ask).not.toHaveBeenCalled()
+    const denied = access('denied')
+    expect(await call(build({ mediaAccess: denied.dep }).h, 'voice:micAccess')).toBe('denied')
+    expect(denied.ask).not.toHaveBeenCalled()
+    expect(await call(build({ mediaAccess: access('restricted').dep }).h, 'voice:micAccess')).toBe('denied')
+  })
+})

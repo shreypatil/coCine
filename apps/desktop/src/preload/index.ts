@@ -92,6 +92,7 @@ const api = {
   setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => ipcRenderer.invoke('voice:state', v),
   moderateVoice: (memberId: string, action: 'mute' | 'unmute') => ipcRenderer.invoke('voice:moderate', memberId, action),
   duckFilm: (ducked: boolean) => ipcRenderer.invoke('voice:duck', ducked),
+  micAccess: () => ipcRenderer.invoke('voice:micAccess'),
   onSignal: (cb: (from: string, payload: unknown) => void) => {
     const h = (_e: unknown, from: string, payload: unknown): void => cb(from, payload)
     ipcRenderer.on('voice:signal', h)

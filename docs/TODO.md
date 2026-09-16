@@ -303,6 +303,24 @@ frontend turned up, to go alongside it.
 
 ## Findings worth keeping
 
+### A Bluetooth microphone can open and deliver nothing
+
+Reported as "sometimes my own dot does not light, and opening another app that
+uses the mic makes coCine start working". Not permissions: Linux has none per
+application. The default microphone was a pair of OnePlus Buds, and their card
+was in `a2dp-sink` — playback only, no source. WirePlumber's `bluez_input`
+loopback exists in both profiles, so Chromium opens it and gets silence; the
+log shows the track `muted: true` at open in the failing run and `false` in
+every working one. WirePlumber is supposed to switch the card to HFP when a
+capture stream links to that loopback, and usually does; when the switch loses
+or is refused (multipoint earbuds with a phone holding the link), nothing says
+so. The second app's capture stream makes WirePlumber re-evaluate and the switch
+succeeds. macOS does the same dance in CoreAudio with the same failure.
+
+Now: `renderer/mic.ts` watches the track, the panel says what is wrong, and the
+microphone is re-requested up to three times with `replaceTrack` into the live
+call. A microphone and speaker picker lets the laptop's own be chosen instead.
+
 ### ICE candidates crossed Electron IPC as `{}`, and nothing said so
 
 The voice call never connected on any platform, for days, with no error. Both

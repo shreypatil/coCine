@@ -98,9 +98,19 @@ export interface Slot extends Rect { viewport?: { width: number; height: number 
 
 export interface OpenDialogResult { canceled: boolean; filePaths: string[] }
 
+/** macOS's per-app microphone permission, as Electron's systemPreferences exposes it. */
+export interface MediaAccessLike {
+  status: () => 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'
+  ask: () => Promise<boolean>
+}
+
+export type MicAccess = 'granted' | 'denied' | 'not-applicable'
+
 export interface HandlerDeps {
   /** Where the picker's shortcuts point. Injected so tests need no real home. */
   getHome?: () => string
+  /** Present on macOS only; every other platform has no such gate. */
+  mediaAccess?: MediaAccessLike | null
   showOpenDialog: (parent: unknown, options: Record<string, unknown>) => Promise<OpenDialogResult>
   getWindow: () => unknown | null
   getVideo: () => VideoLike | null
@@ -619,6 +629,29 @@ export function createHandlers (deps: HandlerDeps): Record<string, (...args: nev
     /** Opaque WebRTC negotiation, relayed by the server to one member. */
     'voice:signal': (to: string, payload: unknown) => {
       deps.getRoom()?.sendSignal(to, payload)
+    },
+
+    /**
+     * Whether the operating system lets this application use the microphone.
+     *
+     * Only macOS asks. Left to Chromium, a first use prompts with generic
+     * wording and a refusal surfaces as a Chromium error string in the
+     * renderer; asked here first, the prompt is ours and a refusal is a plain
+     * answer the interface can explain. One more macOS fact worth knowing: the
+     * grant is tied to the code signature, and this build is ad-hoc signed, so
+     * every rebuild is a new application to the permission system and asks
+     * again. A stale record can also deny without asking, which is what
+     * `tccutil reset Microphone net.cocine.app` is for.
+     */
+    'voice:micAccess': async (): Promise<MicAccess> => {
+      const access = deps.mediaAccess
+      if (!access) return 'not-applicable'
+      const now = access.status()
+      if (now === 'granted') return 'granted'
+      if (now === 'not-determined') return (await access.ask()) ? 'granted' : 'denied'
+      // denied, restricted: asking again shows nothing -- the answer has to be
+      // changed in System Settings, and the interface says so.
+      return 'denied'
     },
 
     'voice:state': (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => {

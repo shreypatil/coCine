@@ -176,6 +176,8 @@ declare global {
       setVoiceState: (v: { inVoice: boolean; muted: boolean; deafened: boolean }) => Promise<void>
       moderateVoice: (memberId: string, action: 'mute' | 'unmute') => Promise<void>
       duckFilm: (ducked: boolean) => Promise<void>
+      /** macOS's answer, or 'not-applicable' elsewhere. Optional: older bridges lack it. */
+      micAccess?: () => Promise<'granted' | 'denied' | 'not-applicable'>
       onSignal: (cb: (from: string, payload: unknown) => void) => () => void
       onModerated: (cb: (by: string, action: string) => void) => () => void
       onState: (cb: (s: State) => void) => () => void
