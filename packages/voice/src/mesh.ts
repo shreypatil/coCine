@@ -25,6 +25,8 @@ export interface ConnectionLike {
   setRemoteDescription: (d: { type: string; sdp?: string }) => Promise<void>
   addIceCandidate: (c: unknown) => Promise<void>
   addTrack: (track: unknown, stream: unknown) => void
+  /** Optional because the fakes predate it; every real connection has it. */
+  getSenders?: () => Array<{ track: unknown; replaceTrack: (t: unknown) => Promise<void> }>
   close: () => void
   onicecandidate: ((e: { candidate: unknown }) => void) | null
   ontrack: ((e: { streams: unknown[] }) => void) | null
@@ -79,6 +81,26 @@ export class VoiceMesh {
     this.localTracks = tracks.map(track => ({ track, stream }))
     for (const [, p] of this.peers) {
       for (const { track, stream: s } of this.localTracks) p.conn.addTrack(track, s)
+    }
+  }
+
+  /**
+   * Swap the microphone under a live call.
+   *
+   * `replaceTrack` renegotiates nothing: the other side keeps receiving on the
+   * same sender and hears the new track. This is how a microphone that opened
+   * silent -- Bluetooth earbuds still in music-only mode, typically -- is asked
+   * for again without anyone dropping out, and how a different device is chosen
+   * mid-call. Connections that have not been given a sender for the old track
+   * (opened before any local stream existed) get the new one added instead.
+   */
+  async replaceLocalTrack (oldTrack: unknown, track: unknown, stream: unknown): Promise<void> {
+    this.localTracks = this.localTracks.map(t => t.track === oldTrack ? { track, stream } : t)
+    if (!this.localTracks.some(t => t.track === track)) this.localTracks.push({ track, stream })
+    for (const [, p] of this.peers) {
+      const sender = p.conn.getSenders?.().find(s => s.track === oldTrack)
+      if (sender) await sender.replaceTrack(track)
+      else p.conn.addTrack(track, stream)
     }
   }
 

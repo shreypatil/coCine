@@ -449,6 +449,88 @@ describe('voice', () => {
     await page.close()
   })
 
+  it('offers a choice of microphone and speaker, reopens the mic on a new choice, and remembers both', async () => {
+    const seen: string[] = []
+    await open()
+    // The text of a console message collapses objects to "Array(1)"; the
+    // arguments carry the data.
+    page.on('console', m => { void Promise.all(m.args().map(a => a.jsonValue().catch(() => '?'))).then(v => seen.push(v.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '))) })
+    await push({ members: inVoice })
+    // Offered before joining too, so a misbehaving headset can be avoided up front.
+    expect(await page.locator('[data-testid="micselect"] option').count()).toBeGreaterThan(1)
+    await joinVoice()
+    // Names appear once the microphone has been used. Chromium's fake devices
+    // are called "Fake Audio Input 1" and so on.
+    await expect.poll(() => page.locator('[data-testid="micselect"] option').allTextContents(), { timeout: 5000 })
+      .toContain('Fake Audio Input 2')
+    const id = await page.locator('[data-testid="micselect"] option', { hasText: 'Fake Audio Input 2' }).getAttribute('value')
+    await page.selectOption('[data-testid="micselect"]', id!)
+    // The call is not left: the microphone is reopened and swapped in.
+    await expect.poll(() => seen.filter(t => t.includes('microphone open')).length, { timeout: 5000 }).toBeGreaterThanOrEqual(2)
+    expect(seen.some(t => t.includes('microphone open') && t.includes('Fake Audio Input 2'))).toBe(true)
+    expect(await page.locator('[data-testid="leavevoice"]').count()).toBe(1)
+    expect(await page.locator('[data-testid="voiceerror"]').count()).toBe(0)
+
+    const out = await page.locator('[data-testid="speakerselect"] option').nth(1).getAttribute('value')
+    await page.selectOption('[data-testid="speakerselect"]', out!)
+
+    // Remembered per machine. Checked in storage rather than across a reload:
+    // an ephemeral Playwright context re-salts device ids on every navigation,
+    // where the application's persistent profile keeps them stable.
+    expect(await page.evaluate(() => [localStorage.getItem('cocine.mic'), localStorage.getItem('cocine.speaker')])).toEqual([id, out])
+    await page.evaluate(() => localStorage.clear())
+    await page.close()
+  })
+
+  it('notices a microphone that opened silent, says so, and asks for it again', async () => {
+    // Bluetooth earbuds in music-only mode hand over a device that exists and
+    // delivers nothing. Chromium marks the track muted. The remedy people find
+    // by accident -- open another app that uses the mic -- is done on purpose.
+    const seen: string[] = []
+    await open()
+    page.on('console', m => seen.push(m.text()))
+    await page.evaluate(() => {
+      const w = window as unknown as { __gum: number }
+      w.__gum = 0
+      // A real stream whose track never carries frames: a destination node with
+      // nothing feeding it, and `muted` pinned so the watcher sees silence.
+      navigator.mediaDevices.getUserMedia = async () => {
+        w.__gum++
+        const ctx = new AudioContext()
+        const dest = ctx.createMediaStreamDestination()
+        const track = dest.stream.getAudioTracks()[0]!
+        Object.defineProperty(track, 'muted', { value: true })
+        Object.defineProperty(track, 'label', { value: 'OnePlus Buds 3' })
+        return dest.stream
+      }
+    })
+    await push({ members: inVoice })
+    await joinVoice()
+    await expect.poll(() => page.textContent('[data-testid="micnote"]').catch(() => ''), { timeout: 6000 })
+      .toContain('"OnePlus Buds 3" is not sending any sound')
+    // A second request follows without leaving the call.
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __gum: number }).__gum), { timeout: 8000 }).toBeGreaterThanOrEqual(2)
+    expect(seen.some(t => t.includes('microphone silent; will ask again'))).toBe(true)
+    expect(seen.some(t => t.includes('reacquiring the microphone'))).toBe(true)
+    // And the swap into the live peer connection succeeded rather than throwing.
+    await expect.poll(() => seen.filter(t => t.includes('microphone open')).length, { timeout: 5000 }).toBeGreaterThanOrEqual(2)
+    expect(seen.some(t => t.includes('reacquiring the microphone failed'))).toBe(false)
+    expect(await page.locator('[data-testid="leavevoice"]').count()).toBe(1)
+    await page.close()
+  })
+
+  it('explains a refusal from the operating system in words that say where to fix it', async () => {
+    await open()
+    await page.evaluate(() => {
+      (window as unknown as { cocine: Record<string, unknown> }).cocine.micAccess = () => Promise.resolve('denied')
+    })
+    await push({ members: inVoice })
+    await page.click('[data-testid="joinvoice"]')
+    await expect.poll(() => page.textContent('[data-testid="voiceerror"]').catch(() => '')).toContain('System Settings')
+    expect(await page.locator('[data-testid="leavevoice"]').count()).toBe(0)
+    await page.close()
+  })
+
   it('complies when the host asks it to mute, and says who asked', async () => {
     // Advisory by nature: nothing forces this, the client chooses to comply.
     await open()

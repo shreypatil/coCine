@@ -3,6 +3,10 @@ import { VoiceMesh, type ConnectionLike } from '@cocine/voice'
 import { SpeakingDetector } from './speaking.js'
 import { logger } from './log.js'
 import { EMPTY, applyMixer, loadDucking, micState, prune, saveDucking, type Levels } from './mixer.js'
+import {
+  MicWatch, REACQUIRE_ATTEMPTS, REACQUIRE_DELAY_MS, audioDevices, loadDevice, micConstraints, saveDevice,
+  silentMicMessage, type AudioDevices, type MicHealth
+} from './mic.js'
 
 /**
  * The voice call, from the renderer's side.
@@ -19,6 +23,12 @@ import { EMPTY, applyMixer, loadDucking, micState, prune, saveDucking, type Leve
  * Each person in the call also has a volume of their own here, and can be
  * muted for this listener alone. See mixer.ts for why that is local and per
  * session.
+ *
+ * The microphone is watched after it opens, because opening is not the same
+ * as delivering: Bluetooth earbuds left in music-only mode hand over a device
+ * that exists and is silent. A silent microphone is asked for again, a few
+ * times, and the new track is swapped into the live call; see mic.ts. The
+ * same swap is how a different microphone is chosen mid-call.
  */
 
 export interface VoiceApi {
@@ -45,6 +55,17 @@ export interface VoiceApi {
   setDucking: (d: boolean) => void
   setLevel: (memberId: string, level: number) => void
   setMutedForMe: (memberId: string, muted: boolean) => void
+  /** Whether the microphone is delivering sound, once it has been opened. */
+  micHealth: MicHealth | null
+  /** What to tell the person about their microphone, when something is off. */
+  micNote: string | null
+  /** Microphones and speakers on offer. Labels appear once the mic has been used. */
+  devices: AudioDevices
+  /** Chosen device ids; null means the system default. Remembered per machine. */
+  inputId: string | null
+  outputId: string | null
+  setInput: (id: string | null) => void
+  setOutput: (id: string | null) => void
 }
 
 /**
@@ -53,11 +74,6 @@ export interface VoiceApi {
  * step of setup is written down so the next failure leaves evidence.
  */
 const log = logger('voice')
-
-const MIC: MediaStreamConstraints = {
-  audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-  video: false
-}
 
 export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIceServer[] = []): VoiceApi {
   const [inVoice, setInVoice] = useState(false)
@@ -69,6 +85,16 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
   const [error, setError] = useState<string | null>(null)
   const [ducking, setDuckingState] = useState(() => loadDucking(typeof localStorage === 'undefined' ? null : localStorage))
   const [mixer, setMixer] = useState<Levels>(EMPTY)
+  const storage = typeof localStorage === 'undefined' ? null : localStorage
+  const [micHealth, setMicHealth] = useState<MicHealth | null>(null)
+  const [micNote, setMicNote] = useState<string | null>(null)
+  const [devices, setDevices] = useState<AudioDevices>({ inputs: [], outputs: [] })
+  const [inputId, setInputId] = useState<string | null>(() => loadDevice(storage, 'input'))
+  const [outputId, setOutputId] = useState<string | null>(() => loadDevice(storage, 'output'))
+  const inputRef = useRef(inputId)
+  const outputRef = useRef(outputId)
+  inputRef.current = inputId
+  outputRef.current = outputId
 
   // Held in a ref so a re-issued credential reaches the next connection without
   // rebuilding the mesh and dropping the call in progress.
@@ -80,10 +106,17 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
   const mesh = useRef<VoiceMesh | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const audio = useRef<Map<string, HTMLAudioElement>>(new Map())
+  const micWatch = useRef<MicWatch | null>(null)
+  /** Silent-microphone retries so far; reset the moment sound arrives. */
+  const retries = useRef(0)
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** The latest "microphone should be live" answer, for a track opened mid-call. */
+  const micOn = useRef(false)
 
   /** The single place the microphone is actually on or off. */
   const applyMic = useCallback((): void => {
     const { mic, duck } = micState({ inVoice, muted, pushToTalk, talking, ducking })
+    micOn.current = mic
     for (const t of stream.current?.getAudioTracks() ?? []) t.enabled = mic
     void window.cocine.duckFilm(duck)
   }, [inVoice, muted, pushToTalk, talking, ducking])
@@ -166,11 +199,165 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
     })
   }, [memberIds.join(','), selfId])
 
+  // ------------------------------------------------------------- devices
+
+  const refreshDevices = useCallback(async (): Promise<void> => {
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices()
+      setDevices(audioDevices(all))
+    } catch (e) { log.warn('could not list audio devices', e) }
+  }, [])
+
+  useEffect(() => {
+    void refreshDevices()
+    const md = navigator.mediaDevices as MediaDevices | undefined
+    md?.addEventListener?.('devicechange', refreshDevices)
+    return () => md?.removeEventListener?.('devicechange', refreshDevices)
+  }, [refreshDevices])
+
+  /** Route one element's playback to the chosen speaker. Default when null. */
+  const routeOutput = useCallback((el: HTMLMediaElement, id: string | null): void => {
+    const sink = el as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> }
+    if (!sink.setSinkId) return
+    sink.setSinkId(id ?? '').catch((e: unknown) => {
+      log.warn('could not route audio to the chosen speaker', { id, error: e })
+      setMicNote('The chosen speaker is unavailable; using the default.')
+      saveDevice(storage, 'output', null)
+      setOutputId(null)
+    })
+  }, [storage])
+
+  useEffect(() => {
+    for (const el of audio.current.values()) routeOutput(el, outputId)
+  }, [outputId, routeOutput])
+
+  const setOutput = useCallback((id: string | null): void => {
+    log.info('speaker chosen', { id: id?.slice(0, 8) ?? 'default' })
+    saveDevice(storage, 'output', id)
+    setOutputId(id)
+  }, [storage])
+
+  // --------------------------------------------------------- the microphone
+
+  /**
+   * Open the microphone -- the chosen one, or the default -- and hand the
+   * stream back. A chosen device that has gone is reported and replaced by the
+   * default rather than failing the whole call over a setting.
+   */
+  const acquire = useCallback(async (): Promise<MediaStream> => {
+    const wanted = inputRef.current
+    try {
+      return await navigator.mediaDevices.getUserMedia(micConstraints(wanted))
+    } catch (e) {
+      const name = (e as Error)?.name
+      if (wanted && (name === 'OverconstrainedError' || name === 'NotFoundError' || name === 'NotReadableError')) {
+        log.warn('chosen microphone unavailable; falling back to the default', { id: wanted.slice(0, 8), name })
+        setMicNote('The chosen microphone is unavailable; using the default.')
+        saveDevice(storage, 'input', null)
+        setInputId(null)
+        inputRef.current = null
+        return await navigator.mediaDevices.getUserMedia(micConstraints(null))
+      }
+      throw e
+    }
+  }, [storage])
+
+  /**
+   * Make a stream the one this client sends: watched for speech, watched for
+   * silence, and at whatever the microphone should currently be.
+   */
+  const adopt = useCallback((s: MediaStream, selfIdNow: string): void => {
+    stream.current = s
+    for (const t of s.getAudioTracks()) t.enabled = micOn.current
+    detector.current?.watch(selfIdNow, s)
+    const track = s.getAudioTracks()[0]
+    if (track) micWatch.current?.watch(track)
+    log.info('microphone open', {
+      tracks: s.getAudioTracks().map(t => ({ label: t.label, enabled: t.enabled, muted: t.muted }))
+    })
+  }, [])
+
+  /**
+   * Ask for the microphone again and swap it into the live call.
+   *
+   * This is the remedy people find by accident -- opening a second application
+   * that uses the microphone makes the first start working -- done on purpose:
+   * a fresh request gives the system another go at switching the earbuds. It
+   * is also how a different device is chosen without leaving voice.
+   */
+  const reacquire = useCallback(async (why: string): Promise<void> => {
+    if (!mesh.current) return
+    const old = stream.current
+    const oldTrack = old?.getAudioTracks()[0]
+    log.info('reacquiring the microphone', { why, attempt: retries.current, device: inputRef.current?.slice(0, 8) ?? 'default' })
+    try {
+      const s = await acquire()
+      const track = s.getAudioTracks()[0]
+      if (track) await mesh.current.replaceLocalTrack(oldTrack, track, s)
+      oldTrack?.stop()
+      adopt(s, selfId)
+    } catch (e) {
+      log.error('reacquiring the microphone failed', { name: (e as Error)?.name, error: e })
+      setMicNote(`Could not reopen the microphone: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }, [acquire, adopt, selfId])
+
+  // What happens as the microphone's health changes. Held in a ref so the
+  // MicWatch created at join always calls the current version.
+  const onMicHealth = useRef<(h: MicHealth) => void>(() => {})
+  onMicHealth.current = (h: MicHealth): void => {
+    setMicHealth(h)
+    const label = stream.current?.getAudioTracks()[0]?.label
+    if (h === 'live') {
+      if (retries.current > 0) log.info('microphone delivering after retry', { retries: retries.current })
+      retries.current = 0
+      if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null }
+      setMicNote(null)
+      return
+    }
+    if (h === 'ended') {
+      log.warn('microphone ended', { label })
+      setMicNote('The microphone was disconnected — asking for another…')
+      retries.current = 0
+      void reacquire('ended')
+      return
+    }
+    // Silent. The track opened, or went quiet, and no frames are arriving.
+    if (retries.current < REACQUIRE_ATTEMPTS) {
+      retries.current += 1
+      log.warn('microphone silent; will ask again', { label, attempt: retries.current, of: REACQUIRE_ATTEMPTS })
+      setMicNote(silentMicMessage(label, false))
+      retryTimer.current = setTimeout(() => { retryTimer.current = null; void reacquire('silent') }, REACQUIRE_DELAY_MS)
+    } else {
+      log.error('microphone silent after retries; giving up', { label, retries: retries.current })
+      setMicNote(silentMicMessage(label, true))
+    }
+  }
+
+  const setInput = useCallback((id: string | null): void => {
+    log.info('microphone chosen', { id: id?.slice(0, 8) ?? 'default' })
+    saveDevice(storage, 'input', id)
+    setInputId(id)
+    inputRef.current = id
+    setMicNote(null)
+    retries.current = 0
+    if (mesh.current) void reacquire('chosen')
+  }, [storage, reacquire])
+
   const join = useCallback(async () => {
     setError(null)
+    setMicNote(null)
     log.info('join requested', { self: selfId.slice(0, 8), members: memberIds.map(i => i.slice(0, 8)), iceServers: ice.current.length })
     try {
-      const s = await navigator.mediaDevices.getUserMedia(MIC)
+      // macOS gates the microphone per application. Asked from main first, the
+      // prompt is ours and a refusal is an answer rather than a Chromium error.
+      const access = await window.cocine.micAccess?.().catch(() => 'not-applicable' as const) ?? 'not-applicable'
+      if (access === 'denied') {
+        log.error('join failed', { name: 'SystemDenied' })
+        setError('macOS has blocked coCine\'s microphone. Allow it under System Settings → Privacy & Security → Microphone, then start coCine again.')
+        return
+      }
+      const s = await acquire()
       stream.current = s
       for (const t of s.getAudioTracks()) t.enabled = false
       mesh.current = new VoiceMesh({
@@ -197,6 +384,7 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
             el.style.display = 'none'
             document.body.appendChild(el)
             audio.current.set(id, el)
+            routeOutput(el, outputRef.current)
           }
           el.srcObject = remote as MediaStream
           detector.current?.watch(id, remote as MediaStream)
@@ -226,25 +414,36 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
       // what the room can actually hear rather than what the microphone picks
       // up.
       detector.current ??= new SpeakingDetector(setSpeaking)
-      detector.current.watch(selfId, s)
+      micWatch.current ??= new MicWatch(h => onMicHealth.current(h))
+      retries.current = 0
       mesh.current.setLocalStream(s, s.getAudioTracks())
-      log.info('microphone open', {
-        tracks: s.getAudioTracks().map(t => ({ label: t.label, enabled: t.enabled, muted: t.muted }))
-      })
+      adopt(s, selfId)
+      // Labels are only revealed once the microphone has been used.
+      void refreshDevices()
       await mesh.current.setMembers(memberIds)
       log.info('mesh members set', { peers: mesh.current.connectedIds.map(i => i.slice(0, 8)) })
       setInVoice(true)
     } catch (e) {
       // The name matters: NotAllowedError is the system refusing, which is a
       // different problem from a device that is missing or in use elsewhere.
-      log.error('join failed', { name: (e as Error)?.name, error: e })
-      setError(e instanceof Error ? `Could not use the microphone: ${e.message}` : String(e))
+      const name = (e as Error)?.name
+      log.error('join failed', { name, error: e })
+      setError(name === 'NotAllowedError'
+        ? 'The system did not allow coCine to use the microphone. Check the microphone permission for coCine in your system settings.'
+        : name === 'NotFoundError'
+          ? 'No microphone was found. Plug one in, or connect your headset, and try again.'
+          : e instanceof Error ? `Could not use the microphone: ${e.message}` : String(e))
     }
-  }, [selfId, memberIds.join(',')])
+  }, [selfId, memberIds.join(','), acquire, adopt, refreshDevices, routeOutput])
 
   const leave = useCallback((): void => {
     mesh.current?.close()
     mesh.current = null
+    micWatch.current?.unwatch()
+    if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null }
+    retries.current = 0
+    setMicHealth(null)
+    setMicNote(null)
     for (const t of stream.current?.getTracks() ?? []) t.stop()
     stream.current = null
     for (const el of audio.current.values()) { el.pause(); el.srcObject = null; el.remove() }
@@ -298,6 +497,7 @@ export function useVoice (selfId: string, memberIds: string[], iceServers: RTCIc
     setMuted: setMutedState,
     setDeafened: setDeafenedState,
     setPushToTalk,
-    setDucking, setLevel, setMutedForMe
+    setDucking, setLevel, setMutedForMe,
+    micHealth, micNote, devices, inputId, outputId, setInput, setOutput
   }
 }

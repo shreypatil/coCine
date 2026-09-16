@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu, systemPreferences } from 'electron'
 import type { BrowserWindow as BW } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, basename } from 'node:path'
@@ -607,6 +607,12 @@ const handlers = createHandlers({
   },
   setFullScreen: on => mainWin?.setFullScreen(on),
   isFullScreen: () => mainWin?.isFullScreen() ?? false,
+  mediaAccess: process.platform === 'darwin'
+    ? {
+        status: () => systemPreferences.getMediaAccessStatus('microphone'),
+        ask: () => systemPreferences.askForMediaAccess('microphone')
+      }
+    : null,
   getIdentity: () => identity.get(),
   getServers: () => ({ dflt: defaultServer(app.isPackaged), shared: PUBLIC_SERVER }),
   saveIdentity: patch => identity.save(patch),

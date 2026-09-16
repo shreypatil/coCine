@@ -418,6 +418,23 @@
       film away. Each person in the call also has a volume of their own on each listener's
       machine, applied to the element that plays them and never sent anywhere.
     </p>
+    <p>
+      A microphone opening is not the same as a microphone delivering. Bluetooth earbuds have
+      two mutually exclusive modes — high-quality playback with no microphone, and a
+      phone-quality headset mode with one — and the operating system has to switch them when
+      an app asks for the mic. When the switch loses a race or is refused (a phone holding
+      the link, typically), <code>getUserMedia</code> succeeds and the track carries nothing;
+      Chromium marks it <code>muted</code>. Every OS has a version of this. So the track is
+      watched after it opens: silence beyond a grace period is reported in the panel and the
+      microphone is asked for again, up to three times, the new track swapped into every
+      peer connection with <code>replaceTrack</code> so nobody drops — which is exactly the
+      remedy people find by accident when opening a second app that uses the mic makes the
+      first start working. The same swap is how a different microphone is chosen mid-call;
+      the speaker choice is applied to the elements that play each person and the film.
+      macOS alone adds a per-application permission on top, asked for from the main process
+      so the prompt carries coCine's own words and a refusal is explained rather than
+      surfacing as a Chromium error.
+    </p>
 
     <h2 id="overlay">Drawing over the picture</h2>
     <p>

@@ -244,6 +244,10 @@
       <li><b>mute</b> stops you being heard; <b>deafen</b> also stops you hearing the room.</li>
       <li>Too loud, too quiet? Hover their name and press <b>volume</b> for a slider that only
       affects what <em>you</em> hear, and a <b>mute for me</b>. Nobody is told.</li>
+      <li><b>Microphone</b> and <b>Speaker</b> at the bottom of the voice panel choose which
+      devices coCine uses — for the call and for the film. You can change them mid-call
+      without leaving voice, and the choice is remembered on this machine. Device names
+      appear once the microphone has been used.</li>
       <li>The host can <em>ask</em> you to mute. Your app does it for you — but it is a
       request, not something the host can enforce, and coCine says so rather than pretending
       otherwise.</li>
@@ -418,6 +422,24 @@
       Their computer and yours cannot reach each other directly. Chat and voice go through the
       meeting point, so they keep working. Switch the room to
       <b>Through the server</b> — see <a href="#sharing">above</a>.
+    </p>
+
+    <h3>My own dot does not light when I talk, and nobody hears me</h3>
+    <p>
+      The microphone opened but is delivering silence. Nine times in ten this is <b>Bluetooth
+      earbuds</b>: they have a music mode with no microphone and a call mode with one, the
+      system has to switch them when an app asks for the mic, and the switch sometimes fails —
+      especially if the earbuds are also connected to your phone, which may be holding the
+      call mode. coCine notices within a couple of seconds, says so in the voice panel, and
+      asks for the microphone again on its own three times, which is usually enough. If it
+      gives up: disconnect the earbuds from your phone or reconnect them to this machine, or
+      pick a different <b>Microphone</b> in the voice panel — the laptop's own always works.
+    </p>
+    <p>
+      On a Mac there is one more possibility: macOS has to <em>allow</em> coCine to use the
+      microphone. If it refused, coCine says so and where to fix it (System Settings →
+      Privacy &amp; Security → Microphone), and needs restarting afterwards. Each new build of
+      coCine asks again, because the permission is tied to the exact copy.
     </p>
 
     <h3>Everyone hears an echo of the film</h3>
