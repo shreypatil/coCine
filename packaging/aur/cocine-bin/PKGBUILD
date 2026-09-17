@@ -1,0 +1,48 @@
+# Maintainer: Shreya Patil <shreypatil@users.noreply.github.com>
+#
+# Repackages the .deb from the GitHub release, which is how Electron
+# applications live on the AUR: rebuilding Electron itself is not a package.
+# The source of this file is packaging/aur/cocine-bin in the coCine repository;
+# the AUR repository carries a copy plus .SRCINFO.
+
+pkgname=cocine-bin
+pkgver=0.1.1
+pkgrel=1
+pkgdesc="Watch a film with friends, in sync, peer to peer — with voice and chat"
+arch=('x86_64')
+url="https://github.com/shreypatil/coCine"
+license=('MIT')
+# What the Electron binary links against, plus ffmpeg. The bundled ffmpeg is
+# used when none is on PATH, so this is belt and braces: the distribution's
+# copy is newer and patched, and preferred when present.
+depends=('ffmpeg' 'gtk3' 'nss' 'libxss' 'libnotify' 'xdg-utils' 'at-spi2-core' 'libxtst' 'libsecret' 'alsa-lib')
+optdepends=('mpv: alternative player engine, selected with COCINE_PLAYER=mpv')
+provides=('cocine')
+conflicts=('cocine')
+# Prebuilt Electron: stripping or debug-editing it breaks the asar integrity check.
+options=('!strip' '!debug')
+_debname="coCine-${pkgver}-amd64.deb"
+source=("${_debname}::${url}/releases/download/v${pkgver}/${_debname}"
+        "LICENSE-${pkgver}::${url}/raw/v${pkgver}/LICENSE")
+sha256sums=('38a174976b770332e67bf9f7f5ff360322e50b2019a4037517446971643ee295'
+            '2e5f2ddb825450a38286fb2fdd2a4889c8028ecec91229d5a42f411748787e84')
+
+package() {
+  # A .deb is an ar archive holding data.tar.xz; bsdtar unpacks both.
+  bsdtar -xf "${srcdir}/${_debname}" -C "${srcdir}" data.tar.xz
+  bsdtar -xf "${srcdir}/data.tar.xz" -C "${pkgdir}" --no-same-owner
+
+  # The .deb's postinst chose the sandbox mode at install time; user
+  # namespaces are on by default on Arch, so the SUID sandbox is not needed.
+  chmod 0755 "${pkgdir}/opt/coCine/chrome-sandbox"
+
+  install -dm755 "${pkgdir}/usr/bin"
+  ln -s /opt/coCine/cocine "${pkgdir}/usr/bin/cocine"
+
+  # Debian's changelog directory has no place on Arch.
+  rm -rf "${pkgdir}/usr/share/doc"
+
+  install -Dm644 "${srcdir}/LICENSE-${pkgver}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 "${pkgdir}/opt/coCine/LICENSE.electron.txt" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.electron.txt"
+  install -Dm644 "${pkgdir}/opt/coCine/resources/ffmpeg/LICENSE.txt" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.ffmpeg.txt"
+}
