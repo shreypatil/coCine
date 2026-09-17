@@ -1,0 +1,28 @@
+pkgbase = cocine-bin
+	pkgdesc = Watch a film with friends, in sync, peer to peer — with voice and chat
+	pkgver = 0.1.1
+	pkgrel = 1
+	url = https://github.com/shreypatil/coCine
+	arch = x86_64
+	license = MIT
+	depends = ffmpeg
+	depends = gtk3
+	depends = nss
+	depends = libxss
+	depends = libnotify
+	depends = xdg-utils
+	depends = at-spi2-core
+	depends = libxtst
+	depends = libsecret
+	depends = alsa-lib
+	optdepends = mpv: alternative player engine, selected with COCINE_PLAYER=mpv
+	provides = cocine
+	conflicts = cocine
+	options = !strip
+	options = !debug
+	source = coCine-0.1.1-amd64.deb::https://github.com/shreypatil/coCine/releases/download/v0.1.1/coCine-0.1.1-amd64.deb
+	source = LICENSE-0.1.1::https://github.com/shreypatil/coCine/raw/v0.1.1/LICENSE
+	sha256sums = 38a174976b770332e67bf9f7f5ff360322e50b2019a4037517446971643ee295
+	sha256sums = 2e5f2ddb825450a38286fb2fdd2a4889c8028ecec91229d5a42f411748787e84
+
+pkgname = cocine-bin
