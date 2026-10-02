@@ -31,7 +31,8 @@
     "fetch-mpv": "node scripts/fetch-mpv.mjs",
     "fetch-ffmpeg": "node scripts/fetch-ffmpeg.mjs",
     "fetch-native": "node scripts/fetch-native.mjs",
-    "audit-native": "node scripts/audit-native.mjs"
+    "audit-native": "node scripts/audit-native.mjs",
+    "b4-matrix": "tsx apps/server/scripts/nat-matrix.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
