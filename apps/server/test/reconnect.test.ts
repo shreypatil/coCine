@@ -80,3 +80,70 @@ describe('losing the connection', () => {
     expect(client.connection).toBe('closed')
   }, 30000)
 })
+
+describe('a connection that goes silent without closing', () => {
+  // A laptop that sleeps, or loses its network, does not close its socket.
+  // TCP takes minutes to declare it dead, and in a real session the room went
+  // on listing somebody for two and a half minutes after their voice
+  // connection had failed. Both ends now treat silence as an answer.
+
+  it('is closed by the server, and the member removed, once it has said nothing for the idle limit', async () => {
+    const { default: WebSocket } = await import('ws')
+    const server = new SignallingServer({ idleTimeoutMs: 600 })
+    const port = await server.listen()
+    cleanups.push(() => server.close())
+    const watcher = new RoomClient({ url: `ws://127.0.0.1:${port}`, code: null, name: 'anjali', player: stubPlayer(), pingIntervalMs: 100 })
+    cleanups.push(() => watcher.close())
+    await watcher.connect()
+
+    // Joins, then never says another word -- and never closes.
+    const ghost = new WebSocket(`ws://127.0.0.1:${port}`)
+    cleanups.push(() => ghost.terminate())
+    await new Promise(r => ghost.once('open', r))
+    ghost.send(JSON.stringify({ t: 'hello', code: watcher.code, name: 'asleep' }))
+    await waitFor(() => watcher.members.some(m => m.name === 'asleep'), 3000, 'the ghost to join')
+
+    const started = Date.now()
+    await waitFor(() => !watcher.members.some(m => m.name === 'asleep'), 5000, 'the ghost to be removed')
+    expect(Date.now() - started).toBeLessThan(2500)
+    // And someone who is still talking is left alone.
+    expect(watcher.connection).toBe('connected')
+    expect(watcher.members.some(m => m.name === 'anjali')).toBe(true)
+  }, 20000)
+
+  it('does not close a client that is pinging, however long it stays', async () => {
+    const server = new SignallingServer({ idleTimeoutMs: 500 })
+    const port = await server.listen()
+    cleanups.push(() => server.close())
+    const a = new RoomClient({ url: `ws://127.0.0.1:${port}`, code: null, name: 'anjali', player: stubPlayer(), pingIntervalMs: 100 })
+    cleanups.push(() => a.close())
+    await a.connect()
+    let dropped = false
+    a.on('connection', (s: string) => { if (s !== 'connected') dropped = true })
+    await new Promise(r => setTimeout(r, 2000))
+    expect(dropped).toBe(false)
+    expect(a.connection).toBe('connected')
+  }, 20000)
+
+  it('is given up on by the client when the server stops answering, which starts a reconnect', async () => {
+    const server = new SignallingServer({ idleTimeoutMs: 0 })
+    const port = await server.listen()
+    cleanups.push(() => server.close())
+    const client = new RoomClient({
+      url: `ws://127.0.0.1:${port}`, code: null, name: 'anjali', player: stubPlayer(),
+      pingIntervalMs: 100, deadAfterMs: 800
+    })
+    cleanups.push(() => client.close())
+    await client.connect()
+    const code = client.code
+
+    const seen: string[] = []
+    client.on('connection', (st: string) => seen.push(st))
+    // The server's end stays open and goes mute: a dead route, not a refusal.
+    for (const ws of (server as unknown as { conns: Map<{ send: unknown }, unknown> }).conns.keys()) ws.send = () => {}
+    await waitFor(() => seen.includes('reconnecting'), 4000, 'the client to give up on the silent server')
+    // It came back to the same room under a new connection.
+    await waitFor(() => seen.at(-1) === 'connected', 10000, 'the reconnect')
+    expect(client.code).toBe(code)
+  }, 30000)
+})

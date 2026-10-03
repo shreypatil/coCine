@@ -544,6 +544,183 @@ describe('voice', () => {
   })
 })
 
+describe('voice across a change of identity', () => {
+  // The server hands out a new member id on every reconnect and every room
+  // joined. A real session's log showed what happened to a call that carried
+  // on regardless: it offered to its own new id, answered itself, and the rest
+  // of the room never saw it in voice again.
+  const members = [
+    { id: 'me', name: 'anjali', isHost: true, mayControl: true, inVoice: true, muted: false, deafened: false },
+    { id: 'b', name: 'dev', isHost: false, mayControl: true, inVoice: true, muted: false, deafened: false }
+  ]
+  const joinVoice = async (): Promise<void> => {
+    await page.click('[data-testid="joinvoice"]')
+    await page.waitForSelector('[data-testid="leavevoice"]', { timeout: 10_000 })
+  }
+  /** Every microphone track the page is handed, so leaks can be counted. */
+  const recordTracks = async (): Promise<void> => {
+    await page.evaluate(() => {
+      const w = window as unknown as { __tracks: MediaStreamTrack[] }
+      w.__tracks = []
+      const orig = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
+      navigator.mediaDevices.getUserMedia = async c => {
+        const s = await orig(c)
+        w.__tracks.push(...s.getAudioTracks())
+        return s
+      }
+    })
+  }
+  const liveTracks = async (): Promise<number> => await page.evaluate(() =>
+    (window as unknown as { __tracks: MediaStreamTrack[] }).__tracks.filter(t => t.readyState === 'live').length)
+
+  it('never signals its own new id after a reconnect, and tells the room it is still in voice', async () => {
+    await open()
+    await push({ members })
+    await joinVoice()
+    const before = (await calls('setVoiceState')).length
+
+    // A reconnect: everybody is a new member, and the server has not been told
+    // this one is in voice.
+    await push({
+      memberId: 'me2',
+      members: [
+        { ...members[0], id: 'me2', inVoice: false },
+        { ...members[1], id: 'b2' }
+      ]
+    })
+    await page.waitForTimeout(300)
+
+    const to = (await calls('sendSignal')).map(a => a[0])
+    expect(to, 'a signal was sent to this client\'s own id').not.toContain('me2')
+    // 'me2' sorts before 'b2'? No -- 'b2' < 'me2', so the other side offers; and
+    // the old id 'me' must not be calling anyone either.
+    const states = (await calls('setVoiceState')).slice(before)
+    expect(states.at(-1)?.[0]).toMatchObject({ inVoice: true })
+    expect(await page.locator('[data-testid="leavevoice"]').count()).toBe(1)
+    await page.close()
+  })
+
+  it('calls the room under the new id, not the old one', async () => {
+    await open()
+    // 'me' > 'b', so before the reconnect the other side offers. Afterwards
+    // 'a1' < 'b2' and this client must offer -- to 'b2', as 'a1'.
+    await push({ members })
+    await joinVoice()
+    await push({
+      memberId: 'a1',
+      members: [{ ...members[0], id: 'a1' }, { ...members[1], id: 'b2' }]
+    })
+    await expect.poll(async () => (await calls('sendSignal')).map(a => [a[0], (a[1] as { kind?: string })?.kind]), { timeout: 5000 })
+      .toContainEqual(['b2', 'offer'])
+    const to = (await calls('sendSignal')).map(a => a[0])
+    expect(to).not.toContain('a1')
+    await page.close()
+  })
+
+  it('leaves voice, microphone and all, when this client leaves the room', async () => {
+    await open()
+    await recordTracks()
+    await push({ members })
+    await joinVoice()
+    expect(await liveTracks()).toBe(1)
+
+    await push({ connected: false, memberId: '', members: [] })
+    await expect.poll(async () => (await calls('setVoiceState')).at(-1)?.[0], { timeout: 5000 })
+      .toMatchObject({ inVoice: false })
+    await expect.poll(liveTracks, { timeout: 5000 }).toBe(0)
+    await page.close()
+  })
+})
+
+describe('reopening the microphone', () => {
+  const members = [
+    { id: 'me', name: 'anjali', isHost: true, mayControl: true, inVoice: true, muted: false, deafened: false },
+    { id: 'b', name: 'dev', isHost: false, mayControl: true, inVoice: true, muted: false, deafened: false }
+  ]
+
+  it('asks once when a headset goes silent and then disconnects, and leaves no microphone open', async () => {
+    // From a real log: earbuds went silent, the retry started, and five
+    // milliseconds later the track ended. Two reopenings ran side by side,
+    // both "microphone open" lines appeared, and one stream was never stopped.
+    await open()
+    await page.evaluate(() => {
+      const w = window as unknown as { __gum: number; __inFlight: number; __maxInFlight: number; __tracks: MediaStreamTrack[] }
+      w.__gum = 0; w.__inFlight = 0; w.__maxInFlight = 0; w.__tracks = []
+      navigator.mediaDevices.getUserMedia = async () => {
+        w.__gum++; w.__inFlight++
+        w.__maxInFlight = Math.max(w.__maxInFlight, w.__inFlight)
+        // Slow, as a Bluetooth profile switch is, so overlap has room to happen.
+        await new Promise(r => setTimeout(r, w.__gum === 1 ? 0 : 600))
+        const ctx = new AudioContext()
+        const dest = ctx.createMediaStreamDestination()
+        const track = dest.stream.getAudioTracks()[0]!
+        Object.defineProperty(track, 'muted', { value: true })
+        Object.defineProperty(track, 'label', { value: 'OnePlus Buds 3' })
+        w.__tracks.push(track)
+        w.__inFlight--
+        return dest.stream
+      }
+    })
+    await push({ members })
+    await page.click('[data-testid="joinvoice"]')
+    await page.waitForSelector('[data-testid="leavevoice"]', { timeout: 10_000 })
+
+    // Silent after the grace period, then a retry two seconds on. The moment
+    // that retry is under way, the original track ends.
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __inFlight: number }).__inFlight), { timeout: 8000 }).toBe(1)
+    await page.evaluate(() => (window as unknown as { __tracks: MediaStreamTrack[] }).__tracks[0]!.dispatchEvent(new Event('ended')))
+    await page.waitForTimeout(1500)
+
+    const r = await page.evaluate(() => {
+      const w = window as unknown as { __maxInFlight: number; __tracks: MediaStreamTrack[] }
+      return { max: w.__maxInFlight, live: w.__tracks.filter(t => t.readyState === 'live').length }
+    })
+    expect(r.max, 'microphone requests running at once').toBe(1)
+    expect(r.live, 'microphone tracks left open').toBe(1)
+    await page.close()
+  })
+
+  it('keeps the chosen microphone through an absence, and takes it back when it returns', async () => {
+    await open()
+    // The choice is read once, at startup.
+    await page.evaluate(() => localStorage.setItem('cocine.mic', 'buds'))
+    await page.reload()
+    await page.waitForSelector('[data-testid="stage"]', { timeout: 8000 })
+    await page.evaluate(() => {
+      const w = window as unknown as { __back: boolean; __asked: Array<string | null> }
+      w.__back = false; w.__asked = []
+      const md = navigator.mediaDevices
+      md.getUserMedia = async c => {
+        const id = ((c?.audio as MediaTrackConstraints | undefined)?.deviceId as { exact?: string } | undefined)?.exact ?? null
+        w.__asked.push(id)
+        if (id === 'buds' && !w.__back) throw new DOMException('gone', 'OverconstrainedError')
+        const ctx = new AudioContext()
+        return ctx.createMediaStreamDestination().stream
+      }
+      const real = md.enumerateDevices.bind(md)
+      md.enumerateDevices = async () => {
+        const all = await real()
+        return w.__back ? [...all, { kind: 'audioinput', deviceId: 'buds', label: 'OnePlus Buds 3', groupId: 'g', toJSON: () => ({}) } as MediaDeviceInfo] : all
+      }
+    })
+    await push({ members })
+    await page.click('[data-testid="joinvoice"]')
+    await page.waitForSelector('[data-testid="leavevoice"]', { timeout: 10_000 })
+    expect(await page.evaluate(() => (window as unknown as { __asked: unknown[] }).__asked)).toEqual(['buds', null])
+    // Still the choice: earbuds that dropped out for a moment are still wanted.
+    expect(await page.evaluate(() => localStorage.getItem('cocine.mic'))).toBe('buds')
+    await expect.poll(() => page.textContent('[data-testid="micnote"]').catch(() => '')).toContain('until it comes back')
+
+    await page.evaluate(() => {
+      (window as unknown as { __back: boolean }).__back = true
+      navigator.mediaDevices.dispatchEvent(new Event('devicechange'))
+    })
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __asked: unknown[] }).__asked.at(-1)), { timeout: 5000 }).toBe('buds')
+    await page.evaluate(() => localStorage.clear())
+    await page.close()
+  })
+})
+
 describe('the readiness gate', () => {
   const status = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
     perPeer: [

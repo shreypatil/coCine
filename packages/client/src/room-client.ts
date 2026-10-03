@@ -18,6 +18,13 @@ export interface RoomClientOptions {
    *  is no value above that; 20 Hz keeps control lag well inside the budget. */
   tickHz?: number
   pingIntervalMs?: number
+  /**
+   * How long the server may say nothing before the connection is treated as
+   * dead and reconnected. It answers every ping, so silence this long means
+   * the socket is gone even though nothing has closed it -- which, after a
+   * laptop sleeps or Wi-Fi drops, can otherwise take TCP minutes to notice.
+   */
+  deadAfterMs?: number
   /** Called once a second to describe this client to the room. */
   getReport?: () => PeerReport | null
 }
@@ -87,6 +94,8 @@ export class RoomClient extends EventEmitter {
   connection: 'connected' | 'reconnecting' | 'closed' = 'closed'
   private wantConnection = true
   private reconnectAttempts = 0
+  /** When the server last said anything; see deadAfterMs. */
+  private lastHeard = 0
   private reconnectTimer: NodeJS.Timeout | null = null
 
   /**
@@ -112,7 +121,8 @@ export class RoomClient extends EventEmitter {
       ws.once('open', resolve)
       ws.once('error', reject)
     })
-    ws.on('message', raw => this.onMessage(String(raw)))
+    this.lastHeard = Date.now()
+    ws.on('message', raw => { this.lastHeard = Date.now(); this.onMessage(String(raw)) })
     // A socket that dies is not an error the caller can await -- it happens an
     // hour into a film, long after connect() resolved. Without this the room
     // went on showing a code and a drift reading while nothing worked.
@@ -135,7 +145,15 @@ export class RoomClient extends EventEmitter {
     }
 
     const pingMs = this.o.pingIntervalMs ?? 2000
-    this.timers.push(setInterval(() => this.ping(), pingMs))
+    const deadAfter = this.o.deadAfterMs ?? 15_000
+    this.timers.push(setInterval(() => {
+      if (Date.now() - this.lastHeard > deadAfter && this.ws === ws) {
+        // Closing it ourselves is what starts the reconnect; see onSocketClosed.
+        ws.terminate()
+        return
+      }
+      this.ping()
+    }, pingMs))
     const tickMs = 1000 / (this.o.tickHz ?? 20)
     this.timers.push(setInterval(() => { void this.runTick() }, tickMs))
   }

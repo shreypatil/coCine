@@ -14,6 +14,7 @@ import { sourceId, type Media } from '@cocine/protocol'
 import { MpvNotFoundError } from '@cocine/player'
 import { startUpdates } from './updates.js'
 import { ChatOverlay } from './chat-overlay.js'
+import { StatusSampler, lineLogger, watchRoom } from './diagnostics.js'
 import { ensurePlayable, conversionDir, embeddedSubtitles, extractSubtitle } from './convert.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -72,6 +73,13 @@ const logging = setupLogging({
 })
 const logMain = logging.logger('main')
 const logVoiceMain = logging.logger('voice')
+/** `[film] …` to logs/film/, and so on; see diagnostics.ts. Also echoed to the terminal by the console sink. */
+const line = lineLogger(c => logging.logger(c))
+const sampler = new StatusSampler(logging.logger('status'))
+// Whatever escapes everything else. Logged rather than left to Electron's
+// default, which in an installed copy is a dialog at best and nothing at worst.
+process.on('uncaughtException', err => logMain.error('uncaught exception', { error: err }))
+process.on('unhandledRejection', err => logMain.error('unhandled rejection', { error: err }))
 logMain.info('starting', {
   version: app.getVersion(), packaged: app.isPackaged,
   platform: process.platform, arch: process.arch,
@@ -136,9 +144,9 @@ async function closeFilm (opts: { stopTransfer?: boolean } = {}): Promise<void> 
   filmGeneration++
   const id = sharedId ?? receiving?.infoHash ?? null
   if (opts.stopTransfer !== false && id) {
-    try { await transfer?.stop(id) } catch (err) { console.error('[film] could not stop the transfer:', err) }
+    try { await transfer?.stop(id) } catch (err) { line('[film] could not stop the transfer', 'error', { error: err }) }
   }
-  try { await video?.player?.unload?.() } catch (err) { console.error('[film] could not unload the player:', err) }
+  try { await video?.player?.unload?.() } catch (err) { line('[film] could not unload the player', 'error', { error: err }) }
   mediaPath = null
   video?.setFilmOpen(false)
   sharedId = null
@@ -188,7 +196,7 @@ function ensureTransfer (client: RoomClient | null = room): MediaTransport | nul
   }
   transferMode = mode
   ;(transfer as unknown as { on: (e: string, f: (x: unknown) => void) => void })
-    .on('error', err => console.error('[transfer]', err))
+    .on('error', err => line('[transfer] error', 'error', { error: err }))
   return transfer
 }
 
@@ -294,11 +302,16 @@ function createWindow (): void {
 
   // Renderer console output normally goes nowhere visible. Forward it so a
   // failure in the interface shows up in the same terminal as everything else.
+  // Warnings and errors are kept as well: an exception in the interface is
+  // otherwise visible only to someone with the devtools open.
   mainWin.webContents.on('console-message', (e) => {
     const level = e.level === 'error' ? 'error' : 'log'
     console[level](`[renderer] ${e.message}`)
+    if (e.level === 'error' || e.level === 'warning') {
+      line('[renderer.console] ' + e.message, e.level === 'error' ? 'error' : 'warn', { source: e.sourceId, line: e.lineNumber })
+    }
   })
-  mainWin.webContents.on('render-process-gone', (_e, d) => console.error('[renderer] gone:', d.reason))
+  mainWin.webContents.on('render-process-gone', (_e, d) => line('[renderer] gone', 'error', { reason: d.reason, exitCode: d.exitCode }))
 
   mainWin.on('ready-to-show', () => { if (!process.env.COCINE_HEADLESS) mainWin?.show() })
   // Chromium throttles a hidden window: CSS animations freeze and timers slow to
@@ -314,6 +327,14 @@ function createWindow (): void {
   // conversation the main window was showing perfectly well.
   const pushState = (): void => {
     const s = state()
+    try {
+      sampler.sample({
+        connected: !!s.connected, phase: s.phase as string, paused: !!s.paused,
+        driftMs: s.driftMs as number | null, rttMs: s.rttMs as number | null, clockOffsetMs: s.clockOffsetMs as number | null,
+        positionSec: s.positionSec as number | null, mediaName: s.mediaName as string | null,
+        members: (s.members as unknown[]).length, transfers: s.transfers as never
+      })
+    } catch (err) { logMain.error('status sampling failed', { error: err }) }
     if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('state', s)
     overlay?.send('state', s)
   }
@@ -328,7 +349,7 @@ function createWindow (): void {
     // a second, opaque copy of something already on screen.
     const show = !!mainWin?.isFullScreen() && !!room &&
       !process.env.COCINE_HEADLESS && video?.engine !== 'html'
-    void overlay?.setVisible(show).catch(err => console.error('[overlay]', err))
+    void overlay?.setVisible(show).catch(err => line('[overlay] could not change visibility', 'error', { error: err }))
   }
   mainWin.on('enter-full-screen', syncOverlay)
   mainWin.on('leave-full-screen', syncOverlay)
@@ -364,16 +385,16 @@ function createWindow (): void {
       updater: autoUpdater as never,
       isPackaged: app.isPackaged,
       platform: process.platform,
-      log: m => console.log(m),
+      log: m => line(m.startsWith('[') ? m : `[update] ${m}`),
       getWindow: () => mainWin
     })
-    if (!outcome.checked) console.log(`[update] not checking: ${outcome.reason}`)
-  })().catch(err => console.log('[update] skipped:', String(err)))
+    if (!outcome.checked) line(`[update] not checking: ${outcome.reason}`)
+  })().catch(err => line('[update] skipped', 'warn', { error: err }))
 
   // Load the WebRTC addon now rather than on the first transfer: if it is
   // missing, the room should say so before anybody picks a film and waits.
   installWebRtc()
-  if (webRtcFailure()) console.error('[webrtc] unavailable:', webRtcFailure())
+  if (webRtcFailure()) line('[webrtc] unavailable', 'error', { reason: webRtcFailure() })
 
   video = new VideoWindow(mainWin)
   void video.start().catch((err: unknown) => {
@@ -383,7 +404,7 @@ function createWindow (): void {
     startupError = err instanceof MpvNotFoundError
       ? { message: err.message, howToInstall: err.howToInstall }
       : { message: `The video player could not start: ${String(err)}`, howToInstall: '' }
-    console.error('[startup]', startupError.message, startupError.howToInstall)
+    line('[startup] the player could not start', 'error', startupError)
     if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('state', state())
     return null
   }).then(async started => {
@@ -394,7 +415,7 @@ function createWindow (): void {
     if (arg) {
       mediaPath = arg.slice('--film='.length)
       video?.setFilmOpen(true)
-      try { await video?.player?.load(mediaPath) } catch (e) { console.error('could not load film:', e) }
+      try { await video?.player?.load(mediaPath) } catch (e) { line('[film] could not load the film given on the command line', 'error', { error: e }) }
     }
     statusTimer = setInterval(() => {
       // Keep the fetch windows on the playhead. Uses the room's position rather
@@ -468,12 +489,15 @@ const handlers = createHandlers({
       // Both facts matter and they fail differently: a signal that arrives with
       // no window to give it to is lost just as completely as one that never
       // arrived, and nothing else would ever say so.
-      logVoiceMain.info('signal → renderer', {
-        from: from.slice(0, 8), kind: p?.kind ?? 'candidate',
-        sdpBytes: p?.sdp?.length, haveWindow: !!mainWin && !mainWin.isDestroyed()
-      })
+      // Candidates at debug: they are most of a call's setup and say little
+      // one at a time, and at info they buried everything else in the log.
+      const haveWindow = !!mainWin && !mainWin.isDestroyed()
+      if (p?.kind || !haveWindow) {
+        logVoiceMain.info('signal → renderer', { from: from.slice(0, 8), kind: p?.kind ?? 'candidate', sdpBytes: p?.sdp?.length, haveWindow })
+      } else logVoiceMain.debug('signal → renderer', { from: from.slice(0, 8), kind: 'candidate', haveWindow })
       mainWin?.webContents.send('voice:signal', from, payload)
     })
+    watchRoom(client, logging.logger('room'))
     client.on('voice-moderated', (by: string, action: string) => {
       mainWin?.webContents.send('voice:moderated', by, action)
     })
@@ -490,7 +514,7 @@ const handlers = createHandlers({
           // and stays put. A fetch still in flight counts as from the room: it
           // has not finished yet, and it must not finish.
           if (roomFilmId || receiving) {
-            console.log('[film] the room took its film off; closing it here too')
+            line('[film] the room took its film off; closing it here too')
             await closeFilm()
           } else {
             sharing = 'off'
@@ -509,14 +533,14 @@ const handlers = createHandlers({
         try {
           const tm = ensureTransfer()
             if (!tm) throw new Error('no transport for this room yet')
-          console.log(`[film] room is sharing ${media?.name}; fetching`)
+          line(`[film] room is sharing ${media?.name}; fetching`, 'info', { source: source.kind, id: id.slice(0, 12) })
           receiving = { name: media?.name ?? '', infoHash: id }
           receiveError = null
           const { path } = await tm.receive(source)
           // The room may have moved on while that was fetching. Finishing the
           // job now would put back a film nobody else has any more.
           if (generation !== filmGeneration) {
-            console.log('[film] fetch finished after the room moved on; dropping it')
+            line('[film] fetch finished after the room moved on; dropping it')
             try { await tm.stop(id) } catch { /* already going */ }
             return
           }
@@ -535,7 +559,7 @@ const handlers = createHandlers({
           sharing = 'sharing'
           announcedByUs = false
           roomFilmId = id
-          console.log(`[film] streaming ${media?.name} from ${url}`)
+          line(`[film] streaming ${media?.name} from ${url}`)
         } catch (err) {
           // A failure for a film the room has already dropped is not news.
           if (generation !== filmGeneration) return
@@ -543,7 +567,7 @@ const handlers = createHandlers({
           // Only a console line before, which nobody can see in an installed
           // copy: the film simply never arrived and the interface said nothing.
           receiveError = err instanceof Error ? err.message : String(err)
-          console.error('[film] could not receive:', err)
+          line('[film] could not receive', 'error', { error: err })
         }
       })()
     })
@@ -594,7 +618,7 @@ const handlers = createHandlers({
     })
     converting = null
     if (result.converted) {
-      console.log(`[film] converted ${basename(path)} (${result.compatibility?.action})`)
+      line(`[film] converted ${basename(path)} (${result.compatibility?.action})`)
     }
     notifyState()
     return result.path
@@ -628,7 +652,7 @@ const handlers = createHandlers({
   closeFilm: async () => { await closeFilm() },
   getFilmStore: () => films,
   setSharedInfoHash: h => { sharedId = h },
-  log: m => console.log(m)
+  log: m => line(m)
 })
 // Records from the renderer, which cannot write files itself. `on` rather than
 // `handle`: nothing is returned and the renderer must not wait on us.

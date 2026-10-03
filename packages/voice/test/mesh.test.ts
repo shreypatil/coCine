@@ -249,3 +249,154 @@ describe('swapping the microphone under a live call', () => {
     expect(conns[0]!.added).toEqual([{ t: 'new', s: 'stream' }])
   })
 })
+
+describe('never calling itself', () => {
+  it('ignores a signal that claims to come from its own id', async () => {
+    // Seen in a real log: after a rejoin the client's new member id reached a
+    // mesh still holding the old one, it offered to its own new id, and the
+    // server delivered that offer straight back. An offer from yourself must
+    // never become a connection.
+    const { m, sent, conns } = mesh('aaa')
+    await m.handleSignal('aaa', { kind: 'offer', sdp: 'OFFER' })
+    await m.handleSignal('aaa', { kind: 'candidate', candidate: { c: 1 } })
+    expect(conns).toHaveLength(0)
+    expect(sent).toEqual([])
+    expect(m.connectedIds).toEqual([])
+  })
+})
+
+describe('a fresh offer from someone already connected', () => {
+  it('starts a new connection rather than renegotiating the old one', async () => {
+    // The other side rebuilt its end -- after a failure, or a rejoin -- and
+    // offered again. The old connection is dead weight; the answer must come
+    // from a new one.
+    const { m, sent, conns } = mesh('zzz')
+    await m.handleSignal('aaa', { kind: 'offer', sdp: 'OFFER' })
+    await m.handleSignal('aaa', { kind: 'offer', sdp: 'OFFER' })
+    expect(conns).toHaveLength(2)
+    expect(conns[0]!.closed).toBe(true)
+    expect(conns[1]!.remote).toBe('offer')
+    expect(sent.filter(s => s.payload.kind === 'answer')).toHaveLength(2)
+    expect(m.connectedIds).toEqual(['aaa'])
+  })
+
+  it('keeps the connection when the second offer arrives before any description', async () => {
+    // Candidates first, then the first offer: that is one connection, not two.
+    const { m, conns } = mesh('zzz')
+    await m.handleSignal('aaa', { kind: 'candidate', candidate: { c: 1 } })
+    await m.handleSignal('aaa', { kind: 'offer', sdp: 'OFFER' })
+    expect(conns).toHaveLength(1)
+    expect(conns[0]!.closed).toBe(false)
+  })
+})
+
+describe('a connection that fails', () => {
+  /** A mesh whose retry timers are run by hand. */
+  function withTimers (selfId: string, delays = [10, 20]): ReturnType<typeof mesh> & {
+    timers: Array<{ fn: () => void; ms: number; cleared: boolean }>
+    fire: () => Promise<void>
+    states: Array<[string, string]>
+  } {
+    const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = []
+    const sent: Array<{ to: string; payload: SignalPayload }> = []
+    const conns: Fake[] = []
+    const streams: Array<{ id: string; stream: unknown }> = []
+    const states: Array<[string, string]> = []
+    const m = new VoiceMesh({
+      selfId,
+      send: (to, payload) => sent.push({ to, payload }),
+      createConnection: () => { const c = fakeConnection(); conns.push(c); return c },
+      onRemoteStream: (id, stream) => streams.push({ id, stream }),
+      onPeerStateChange: (id, st) => states.push([id, st]),
+      retryDelaysMs: delays,
+      setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t },
+      clearTimeout: h => { (h as { cleared: boolean }).cleared = true }
+    })
+    const fire = async (): Promise<void> => {
+      const t = timers.find(x => !x.cleared && !(x as { ran?: boolean }).ran)
+      if (!t) throw new Error('no timer pending')
+      ;(t as { ran?: boolean }).ran = true
+      t.fn()
+      await new Promise(r => setTimeout(r, 0))
+    }
+    return { m, sent, conns, streams, timers, fire, states }
+  }
+
+  const fail = (c: Fake): void => { c.connectionState = 'failed'; c.onconnectionstatechange?.() }
+  const connect = (c: Fake): void => { c.connectionState = 'connected'; c.onconnectionstatechange?.() }
+
+  it('is replaced by a new connection and a new offer from the side that offers', async () => {
+    const { m, sent, conns, timers, fire, states } = withTimers('aaa')
+    await m.setMembers(['aaa', 'bbb'])
+    expect(sent.filter(s => s.payload.kind === 'offer')).toHaveLength(1)
+
+    fail(conns[0]!)
+    expect(timers).toHaveLength(1)
+    expect(timers[0]!.ms).toBe(10)
+    await fire()
+
+    expect(conns).toHaveLength(2)
+    expect(conns[0]!.closed).toBe(true)
+    expect(sent.filter(s => s.payload.kind === 'offer' && s.to === 'bbb')).toHaveLength(2)
+    expect(m.connectedIds).toEqual(['bbb'])
+    // The interface hears it is being tried again, not that it is still failed.
+    expect(states.at(-1)).toEqual(['bbb', 'connecting'])
+  })
+
+  it('is left to the other side to restart when this side does not offer', async () => {
+    // Both sides restarting at once would collide exactly as two first offers do.
+    const { m, conns, timers } = withTimers('zzz')
+    await m.handleSignal('aaa', { kind: 'offer', sdp: 'OFFER' })
+    fail(conns[0]!)
+    expect(timers).toHaveLength(0)
+    expect(m.connectedIds).toEqual(['aaa'])
+  })
+
+  it('backs off between attempts and gives up when they run out', async () => {
+    const { m, conns, timers, fire } = withTimers('aaa', [10, 20])
+    await m.setMembers(['aaa', 'bbb'])
+    fail(conns[0]!)
+    await fire()
+    fail(conns[1]!)
+    expect(timers[1]!.ms).toBe(20)
+    await fire()
+    fail(conns[2]!)
+    expect(timers).toHaveLength(2)
+    expect(conns).toHaveLength(3)
+  })
+
+  it('starts the back-off again once a retry connects', async () => {
+    const { m, conns, timers, fire } = withTimers('aaa', [10, 20])
+    await m.setMembers(['aaa', 'bbb'])
+    fail(conns[0]!)
+    await fire()
+    connect(conns[1]!)
+    fail(conns[1]!)
+    expect(timers[1]!.ms).toBe(10)
+  })
+
+  it('stops retrying someone who has left', async () => {
+    const { m, conns, timers } = withTimers('aaa')
+    await m.setMembers(['aaa', 'bbb'])
+    fail(conns[0]!)
+    await m.setMembers(['aaa'])
+    expect(timers[0]!.cleared).toBe(true)
+    expect(m.connectedIds).toEqual([])
+  })
+
+  it('stops retrying when the call is closed', async () => {
+    const { m, conns, timers } = withTimers('aaa')
+    await m.setMembers(['aaa', 'bbb'])
+    fail(conns[0]!)
+    m.close()
+    expect(timers[0]!.cleared).toBe(true)
+  })
+
+  it('does not schedule a second retry while one is pending', async () => {
+    const { m, conns, timers } = withTimers('aaa')
+    await m.setMembers(['aaa', 'bbb'])
+    fail(conns[0]!)
+    fail(conns[0]!)
+    expect(timers).toHaveLength(1)
+  })
+})

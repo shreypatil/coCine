@@ -49,7 +49,8 @@ beforeAll(async () => {
   origin = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`
 
   browser = await chromium.launch({
-    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream']
+    // Muted: the fake microphone is a tone, and nothing here listens to it.
+    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--mute-audio']
   })
 }, 180_000)
 
@@ -59,11 +60,11 @@ afterAll(async () => {
 })
 
 /** One participant, holding the real VoiceMesh. */
-async function participant (selfId: string): Promise<Page> {
+async function participant (selfId: string, retryDelaysMs?: number[]): Promise<Page> {
   const page = await browser.newPage({ permissions: ['microphone'] })
   await page.goto(origin)
   await page.addScriptTag({ content: meshJs })
-  await page.evaluate(async (id: string) => {
+  await page.evaluate(async ({ id, retryDelaysMs }: { id: string; retryDelaysMs?: number[] }) => {
     const w = window as any
     w.outbox = []
     w.remote = []
@@ -80,10 +81,11 @@ async function participant (selfId: string): Promise<Page> {
         const el = new Audio(); el.srcObject = stream; el.muted = true; void el.play()
         w.audioEl = el
       },
-      onPeerStateChange: (memberId: string, state: string) => { w.states[memberId] = state }
+      onPeerStateChange: (memberId: string, state: string) => { w.states[memberId] = state },
+      retryDelaysMs
     })
     w.mesh.setLocalStream(stream, stream.getAudioTracks())
-  }, selfId)
+  }, { id: selfId, retryDelaysMs })
   return page
 }
 
@@ -103,6 +105,23 @@ async function pump (a: { page: Page; id: string }, b: { page: Page; id: string 
   }
 }
 
+/** Audio packets the current connection to `from` has received, waiting a while for the first. */
+async function packetsFrom (page: Page, from: string): Promise<number> {
+  return await page.evaluate(async (id: string) => {
+    const w = window as any
+    const pc: RTCPeerConnection = w.mesh.peers.get(id).conn
+    for (let i = 0; i < 40; i++) {
+      let n = 0
+      ;(await pc.getStats()).forEach((r: any) => {
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') n = r.packetsReceived ?? 0
+      })
+      if (n > 0) return n
+      await new Promise(r => setTimeout(r, 200))
+    }
+    return 0
+  }, from)
+}
+
 describe('a real call between two participants', () => {
   it('connects, exchanges streams, and delivers audio packets', async () => {
     // shouldInitiate compares ids, so these decide who offers.
@@ -119,20 +138,45 @@ describe('a real call between two participants', () => {
       expect(await a.page.evaluate(() => (window as any).remote)).toContain(b.id)
       expect(await b.page.evaluate(() => (window as any).remote)).toContain(a.id)
 
-      const packets = await b.page.evaluate(async () => {
+      expect(await packetsFrom(b.page, a.id), 'audio packets received').toBeGreaterThan(0)
+    } finally { await a.page.close(); await b.page.close() }
+  }, 240_000)
+
+  it('comes back with audio after a connection fails', async () => {
+    // A real failure takes Chromium half a minute to declare, so the failure is
+    // delivered the way the connection would deliver it, and everything after
+    // -- the new connection, the new offer, the other side replacing its end,
+    // and audio flowing again -- is real.
+    const a = { page: await participant('aaaa', [50]), id: 'aaaa' }
+    const b = { page: await participant('bbbb', [50]), id: 'bbbb' }
+    try {
+      await a.page.evaluate(async (p: string) => { await (window as any).mesh.setMembers([p]) }, b.id)
+      await b.page.evaluate(async (p: string) => { await (window as any).mesh.setMembers([p]) }, a.id)
+      await pump(a, b, 20)
+      expect(await a.page.evaluate((p: string) => (window as any).states[p], b.id)).toBe('connected')
+
+      const before = await a.page.evaluate((p: string) => {
         const w = window as any
-        const pc: RTCPeerConnection = w.mesh.peers.get('aaaa').conn
-        for (let i = 0; i < 40; i++) {
-          let n = 0
-          ;(await pc.getStats()).forEach((r: any) => {
-            if (r.type === 'inbound-rtp' && r.kind === 'audio') n = r.packetsReceived ?? 0
-          })
-          if (n > 0) return n
-          await new Promise(r => setTimeout(r, 200))
-        }
-        return 0
-      })
-      expect(packets, 'audio packets received').toBeGreaterThan(0)
+        const peer = w.mesh.peers.get(p)
+        w.oldConn = peer.conn
+        // What the connection itself does when ICE gives up.
+        Object.defineProperty(peer.conn, 'connectionState', { value: 'failed', configurable: true })
+        peer.conn.onconnectionstatechange()
+        return w.states[p]
+      }, b.id)
+      expect(before).toBe('failed')
+
+      await new Promise(r => setTimeout(r, 200))
+      await pump(a, b, 20)
+
+      const replaced = await a.page.evaluate((p: string) => {
+        const w = window as any
+        return w.mesh.peers.get(p).conn !== w.oldConn && w.oldConn.signalingState === 'closed'
+      }, b.id)
+      expect(replaced, 'a new connection replaced the failed one').toBe(true)
+      expect(await a.page.evaluate((p: string) => (window as any).states[p], b.id)).toBe('connected')
+      expect(await b.page.evaluate((p: string) => (window as any).states[p], a.id)).toBe('connected')
+      expect(await packetsFrom(b.page, a.id), 'audio packets on the new connection').toBeGreaterThan(0)
     } finally { await a.page.close(); await b.page.close() }
   }, 240_000)
 })

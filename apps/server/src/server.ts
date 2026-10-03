@@ -78,6 +78,14 @@ export interface SignallingServerOptions {
   /** Test affordance: run the server's clock deliberately offset from the
    *  clients', so the offset estimation has something real to recover. */
   simulatedSkewMs?: number
+  /**
+   * How long a connection may send nothing before it is closed and its member
+   * removed. Clients ping every two seconds, so silence this long means the
+   * machine has gone -- asleep, off the network -- without its socket closing,
+   * which TCP alone took minutes to notice: the room went on listing someone
+   * who had left, and voice went on trying to reach them. 0 turns it off.
+   */
+  idleTimeoutMs?: number
 }
 
 export class SignallingServer {
@@ -85,6 +93,9 @@ export class SignallingServer {
   private wss: WebSocketServer | null = null
   readonly tracker = new RoomTracker()
   private conns = new Map<WebSocket, Conn>()
+  /** When each socket last sent anything, by the real clock; see idleTimeoutMs. */
+  private heard = new Map<WebSocket, number>()
+  private idleTimer: NodeJS.Timeout | null = null
   private sweeper: NodeJS.Timeout | null = null
   private statusTimer: NodeJS.Timeout | null = null
   readonly rooms: RoomStore
@@ -158,6 +169,11 @@ export class SignallingServer {
     this.statusTimer.unref?.()
     this.sweeper = setInterval(() => this.rooms.sweep(this.roomTtlMs), 60_000)
     this.sweeper.unref?.()
+    const idleMs = this.opts.idleTimeoutMs ?? 15_000
+    if (idleMs > 0) {
+      this.idleTimer = setInterval(() => this.closeSilent(idleMs), Math.max(250, Math.floor(idleMs / 3)))
+      this.idleTimer.unref?.()
+    }
     const addr = this.http.address()
     const port = typeof addr === 'object' && addr ? addr.port : 0
     this.port = port
@@ -279,8 +295,25 @@ export class SignallingServer {
     return `ws://${withPort}${ANNOUNCE_PATH}`
   }
 
+  /** Close every connection that has been silent too long. Its close handler removes the member. */
+  private closeSilent (idleMs: number): void {
+    const now = Date.now()
+    for (const [ws, at] of this.heard) {
+      if (now - at <= idleMs) continue
+      const c = this.conns.get(ws)
+      this.logNet.info('closing a silent connection', {
+        who: c ? `${c.room.members.get(c.memberId)?.name ?? '?'}/${c.memberId.slice(0, 8)}` : 'unjoined',
+        room: c?.room.code, silentMs: now - at
+      })
+      this.heard.delete(ws)
+      ws.terminate()
+    }
+  }
+
   private onConnection (ws: WebSocket, req?: { headers?: Record<string, string | string[] | undefined> }): void {
+    this.heard.set(ws, Date.now())
     ws.on('message', raw => {
+      this.heard.set(ws, Date.now())
       let msg: ClientMessage
       try { msg = ClientMessage.parse(JSON.parse(String(raw))) } catch (e) {
         // Worth a warning rather than silence: a client the server cannot
@@ -299,7 +332,7 @@ export class SignallingServer {
         this.send(ws, { t: 'error', message: e instanceof Error ? e.message : String(e) })
       }
     })
-    ws.on('close', () => this.onClose(ws))
+    ws.on('close', () => { this.heard.delete(ws); this.onClose(ws) })
     ws.on('error', () => { /* close will follow */ })
   }
 
@@ -699,6 +732,7 @@ export class SignallingServer {
   async close (): Promise<void> {
     if (this.sweeper) clearInterval(this.sweeper)
     if (this.statusTimer) clearInterval(this.statusTimer)
+    if (this.idleTimer) clearInterval(this.idleTimer)
     for (const c of this.conns.keys()) c.terminate()
     this.tracker.close()
     this.wss?.close()
