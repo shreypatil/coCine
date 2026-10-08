@@ -6,7 +6,7 @@
 # the AUR repository carries a copy plus .SRCINFO.
 
 pkgname=cocine-bin
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="Watch a film with friends, in sync, peer to peer — with voice and chat"
 arch=('x86_64')
@@ -24,7 +24,7 @@ options=('!strip' '!debug')
 _debname="coCine-${pkgver}-amd64.deb"
 source=("${_debname}::${url}/releases/download/v${pkgver}/${_debname}"
         "LICENSE-${pkgver}::${url}/raw/v${pkgver}/LICENSE")
-sha256sums=('38a174976b770332e67bf9f7f5ff360322e50b2019a4037517446971643ee295'
+sha256sums=('a11d9d45c565f4d791709ddec85924dbbfae741562df6caf5bd82627b4c812a9'
             '2e5f2ddb825450a38286fb2fdd2a4889c8028ecec91229d5a42f411748787e84')
 
 package() {

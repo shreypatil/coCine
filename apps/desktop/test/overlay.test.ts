@@ -33,6 +33,14 @@ const STATE = {
   ]
 }
 
+/**
+ * The state, with its messages said just now. The overlay lets a bubble go
+ * after fifteen seconds, and stamping them when this file loaded meant a slow
+ * renderer build -- a busy machine -- aged them out before the first test ran,
+ * and the overlay correctly drew nothing.
+ */
+const fresh = (): typeof STATE => ({ ...STATE, messages: STATE.messages.map(m => ({ ...m, atServerMs: Date.now() })) })
+
 beforeAll(async () => {
   execFileSync('npx', ['electron-vite', 'build'], { cwd: join(process.cwd(), 'apps/desktop'), stdio: 'ignore' })
   server = createServer((req, res) => {
@@ -79,7 +87,7 @@ const push = async (over: Record<string, unknown> = {}): Promise<void> => {
   await page.evaluate(([base, o]) => {
     const w = window as unknown as Record<string, unknown>
     ;(w.__push as (s: unknown) => void)?.({ ...(base as object), ...(o as object) })
-  }, [STATE, over] as const)
+  }, [fresh(), over] as const)
 }
 const calls = async (name: string): Promise<unknown[][]> =>
   page.evaluate(n => (window as unknown as { __calls: Array<{ name: string; args: unknown[] }> })
@@ -154,7 +162,10 @@ describe('the fullscreen chat overlay', () => {
     // the conversation is not.
     await openOverlay()
     await push()
-    await expect.poll(async () => (await lastShape()).length).toBeGreaterThan(0)
+    // Measured after paint. On a loaded machine the first paint of a fresh
+    // page has been seen to take three seconds, against the one a poll waits
+    // by default.
+    await expect.poll(async () => (await lastShape()).length, { timeout: 8000 }).toBeGreaterThan(0)
     const rects = await lastShape()
     const view = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }))
     const covered = rects.reduce((a, r) => a + r.width * r.height, 0)

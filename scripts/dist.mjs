@@ -49,6 +49,16 @@ if (!Object.keys(TARGETS).includes(target ?? '')) {
 const spec = TARGETS[target]
 /** Staging only makes sense when this machine is not the target. */
 const foreign = spec.stage !== null && process.platform !== spec.host
+// A Windows build from Linux runs the installer under wine to produce its
+// uninstaller. After a wine upgrade, wine's first run migrates its prefix and
+// offers to install Wine Mono and Gecko in a dialog -- which nothing answers
+// during a build, so the step hung until electron-builder killed it, leaving a
+// 238 KB stub where the installer should be. Neither is needed to run NSIS.
+// Explicit settings from the environment still win.
+if (target === 'win' && process.platform !== 'win32') {
+  process.env.WINEDLLOVERRIDES ??= 'mscoree,mshtml='
+  process.env.WINEDEBUG ??= '-all'
+}
 if (spec.stage && !foreign) {
   console.log(`  building ${target} on ${process.platform}: using the binaries npm installed`)
 }

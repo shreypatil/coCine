@@ -29,7 +29,7 @@ of a paid certificate, not a fault in the build.
 
 ### Everybody in the room needs the same version
 
-**The current release is 0.1.1**, and the
+**The current release is 0.1.2**, and the
 [releases page](https://github.com/shreypatil/coCine/releases/latest) is the
 authority on that — this line is updated by hand and the tag is not.
 
@@ -342,7 +342,7 @@ systemd. Run by hand it cannot write there and prints
 regardless, but it means no log file to read afterwards.
 
 **Everyone must run the same version of coCine as the server was built from.**
-A self-hosted server built from `dev` and a guest on the 0.1.1 release is a
+A self-hosted server built from `dev` and a guest on the 0.1.2 release is a
 version skew like any other; see the top of this file.
 
 ### Letting the others reach it
